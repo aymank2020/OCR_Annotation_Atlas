@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Atlas Capture – Annotation Tool</title>
+  <link rel="stylesheet" href="src/styles.css" />
+</head>
+<body>
+  <div id="app">
+    <!-- Sidebar -->
+    <aside id="sidebar">
+      <div class="logo">
+        <div class="logo-icon">X</div>
+        <div>
+          <div class="logo-title">Atlas Capture</div>
+          <div class="logo-sub">Labels</div>
+        </div>
+      </div>
+      <nav>
+        <a href="#" class="nav-item active" data-page="annotate">
+          <svg viewBox="0 0 24 24"><path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/></svg>
+          Annotate
+        </a>
+        <a href="#" class="nav-item" data-page="guidelines">
+          <svg viewBox="0 0 24 24"><path d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"/></svg>
+          Guidelines
+        </a>
+        <a href="#" class="nav-item" data-page="validator">
+          <svg viewBox="0 0 24 24"><path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+          Validator
+        </a>
+        <a href="#" class="nav-item" data-page="history">
+          <svg viewBox="0 0 24 24"><path d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+          History
+        </a>
+      </nav>
+    </aside>
+
+    <!-- Main Content -->
+    <main id="main">
+
+      <!-- ============ ANNOTATE PAGE ============ -->
+      <section id="page-annotate" class="page active">
+        <div class="page-header">
+          <h1>Label Episode</h1>
+          <p class="page-desc" id="episode-desc">A person is completing a physical task from an egocentric perspective.</p>
+          <div class="header-actions">
+            <button class="btn-outline" id="btn-report">⚑ Report</button>
+            <button class="btn-primary" id="btn-complete">✓ Complete</button>
+          </div>
+        </div>
+
+        <div class="annotate-layout">
+          <!-- Video Panel -->
+          <div class="video-panel">
+            <div class="video-placeholder" id="video-area">
+              <div class="video-drop-zone" id="drop-zone">
+                <div class="drop-icon">🎬</div>
+                <p>Drop a video file here or click to select</p>
+                <input type="file" id="video-input" accept="video/*" hidden />
+                <button class="btn-outline" onclick="document.getElementById('video-input').click()">Select Video</button>
+              </div>
+              <video id="video-player" controls hidden></video>
+            </div>
+            <div class="video-controls" id="video-controls" style="display:none">
+              <button id="btn-loop" class="ctrl-btn active">⟳ Loop ON</button>
+              <select id="speed-select" class="ctrl-select">
+                <option value="0.25">0.25x</option>
+                <option value="0.5">0.5x</option>
+                <option value="1" selected>1x</option>
+                <option value="1.5">1.5x</option>
+                <option value="2">2x</option>
+              </select>
+              <span id="time-display" class="time-display">0:00.0 / 0:00.0</span>
+            </div>
+
+            <!-- Quick Guide -->
+            <div class="quick-guide">
+              <div class="quick-guide-title">📖 Quick Guide</div>
+              <ul>
+                <li>→ Write in instruction format (e.g., "pick up mug")</li>
+                <li>→ Capture all major actions in the segment</li>
+                <li>→ Only label what you can see – don't assume</li>
+                <li>→ Use at least 2 words per label</li>
+                <li class="warn">⚠ AI hints may be wrong — always verify</li>
+              </ul>
+            </div>
+          </div>
+
+          <!-- Segments Panel -->
+          <div class="segments-panel">
+            <div class="segments-header">
+              <span class="seg-title">Segments (<span id="seg-count">0</span>)</span>
+              <div class="seg-shortcuts">
+                <span>J/K Nav</span> • <span>E Edit</span> • <span>S Split</span> •
+                <span>D Delete</span> • <span>M Merge</span> • <span>U Undo</span> • <span>L Loop</span>
+              </div>
+              <label class="auto-scroll-label">
+                <input type="checkbox" id="auto-scroll" checked /> Auto-scroll
+              </label>
+            </div>
+
+            <div id="segments-list"></div>
+
+            <div class="seg-actions">
+              <button class="btn-outline" id="btn-add-seg">+ Add Segment</button>
+              <button class="btn-outline" id="btn-undo">↩ Undo</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ GUIDELINES PAGE ============ -->
+      <section id="page-guidelines" class="page">
+        <div class="page-header">
+          <h1>Annotation Guidelines</h1>
+          <p class="page-desc">Atlas Capture Standard Text Annotation Rules — Single source of truth</p>
+        </div>
+        <div class="guidelines-tabs">
+          <button class="gtab active" data-tab="core">Core Rules</button>
+          <button class="gtab" data-tab="verbs">Verb Rules</button>
+          <button class="gtab" data-tab="format">Format Rules</button>
+          <button class="gtab" data-tab="segments">Segment Editing</button>
+          <button class="gtab" data-tab="edge">Edge Cases</button>
+          <button class="gtab" data-tab="checklist">Checklist</button>
+        </div>
+        <div id="guidelines-content" class="guidelines-content"></div>
+      </section>
+
+      <!-- ============ VALIDATOR PAGE ============ -->
+      <section id="page-validator" class="page">
+        <div class="page-header">
+          <h1>Label Validator</h1>
+          <p class="page-desc">Check your label against all annotation rules before submitting</p>
+        </div>
+        <div class="validator-layout">
+          <div class="validator-input-area">
+            <textarea id="validator-input" placeholder='Enter label to validate, e.g. "pick up scissors, cut tape with scissors"' rows="4"></textarea>
+            <button class="btn-primary" id="btn-validate">Validate Label</button>
+          </div>
+          <div id="validator-results" class="validator-results hidden">
+            <div id="val-score" class="val-score"></div>
+            <div id="val-issues" class="val-issues"></div>
+            <div id="val-suggestions" class="val-suggestions"></div>
+          </div>
+          <div class="validator-reference">
+            <h3>Common Mistakes Checklist</h3>
+            <div class="mistake-grid" id="mistake-grid"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ HISTORY PAGE ============ -->
+      <section id="page-history" class="page">
+        <div class="page-header">
+          <h1>Annotation History</h1>
+          <p class="page-desc">Review and export your completed annotations</p>
+        </div>
+        <div class="history-toolbar">
+          <button class="btn-outline" id="btn-export-json">⬇ Export JSON</button>
+          <button class="btn-outline" id="btn-export-csv">⬇ Export CSV</button>
+          <button class="btn-danger" id="btn-clear-history">🗑 Clear All</button>
+        </div>
+        <div id="history-list" class="history-list"></div>
+      </section>
+
+    </main>
+  </div>
+
+  <!-- Edit Modal -->
+  <div id="edit-modal" class="modal hidden">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3>Edit Segment Label</h3>
+        <button class="modal-close" id="modal-close">✕</button>
+      </div>
+      <div class="modal-body">
+        <label>Segment <span id="modal-seg-id"></span></label>
+        <input type="text" id="modal-label-input" placeholder='e.g. "pick up scissors, cut tape with scissors"' />
+        <div id="modal-realtime-feedback" class="modal-feedback"></div>
+        <div class="modal-hint">
+          <strong>Format:</strong> imperative voice · use comma/and for multiple actions · no numerals · no inspect/check/reach
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-outline" id="modal-cancel">Cancel</button>
+        <button class="btn-primary" id="modal-save">Save (Enter)</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast -->
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="src/app.js"></script>
+</body>
+</html>
