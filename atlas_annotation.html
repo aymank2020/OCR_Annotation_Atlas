@@ -1,0 +1,925 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>Atlas Capture – Annotation Tool</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet">
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --ink:#0b0d12;
+  --ink2:#141720;
+  --ink3:#1c2030;
+  --ink4:#252c3f;
+  --line:#2e3650;
+  --line2:#3d4a6a;
+  --fg:#e8ecf8;
+  --fg2:#9aa5c4;
+  --fg3:#5a6585;
+  --accent:#5b8af0;
+  --accent2:#4070e0;
+  --green:#34d399;
+  --red:#f87171;
+  --amber:#fbbf24;
+  --mono:'JetBrains Mono',monospace;
+  --sans:'Syne',sans-serif;
+}
+html,body{height:100%;background:var(--ink);color:var(--fg);font-family:var(--sans);font-size:14px;overflow:hidden}
+#app{display:flex;height:100vh;overflow:hidden}
+
+/* ── SIDEBAR ── */
+#sb{
+  width:200px;min-width:200px;
+  background:var(--ink2);
+  border-right:1px solid var(--line);
+  display:flex;flex-direction:column;
+  padding:0;overflow:hidden;
+}
+.sb-logo{
+  display:flex;align-items:center;gap:10px;
+  padding:18px 16px;
+  border-bottom:1px solid var(--line);
+}
+.sb-logo-mark{
+  width:34px;height:34px;border-radius:8px;
+  background:var(--accent);
+  display:flex;align-items:center;justify-content:center;
+  font-family:var(--sans);font-weight:800;font-size:18px;color:#fff;
+  letter-spacing:-1px;flex-shrink:0;
+}
+.sb-logo-text{font-weight:700;font-size:14px;line-height:1.2}
+.sb-logo-sub{font-size:11px;color:var(--fg3);font-weight:400}
+nav{padding:12px 8px;display:flex;flex-direction:column;gap:2px}
+.ni{
+  display:flex;align-items:center;gap:10px;
+  padding:9px 12px;border-radius:7px;
+  color:var(--fg2);text-decoration:none;
+  font-size:13px;font-weight:600;cursor:pointer;
+  transition:all .15s;border:none;background:transparent;width:100%;text-align:left;
+}
+.ni:hover{background:var(--ink3);color:var(--fg)}
+.ni.active{background:var(--accent);color:#fff}
+.ni-icon{width:16px;height:16px;flex-shrink:0;opacity:.8}
+.ni.active .ni-icon{opacity:1}
+
+/* ── MAIN ── */
+#main{flex:1;display:flex;flex-direction:column;overflow:hidden;min-width:0}
+.page{display:none;flex-direction:column;height:100%;overflow:hidden}
+.page.on{display:flex}
+
+/* ── PAGE HEADER ── */
+.ph{
+  display:flex;align-items:center;gap:12px;flex-wrap:wrap;
+  padding:14px 20px;
+  border-bottom:1px solid var(--line);
+  background:var(--ink2);flex-shrink:0;
+}
+.ph h1{font-size:16px;font-weight:800;letter-spacing:-.3px}
+.ph-desc{color:var(--fg3);font-size:12px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ph-actions{display:flex;gap:8px;margin-left:auto;flex-shrink:0}
+
+/* ── BUTTONS ── */
+.btn{
+  padding:7px 14px;border-radius:6px;border:none;
+  font-size:12px;font-weight:700;font-family:var(--sans);
+  cursor:pointer;transition:all .15s;white-space:nowrap;
+}
+.btn-primary{background:var(--accent);color:#fff}
+.btn-primary:hover{background:var(--accent2)}
+.btn-ghost{background:transparent;border:1px solid var(--line2);color:var(--fg2)}
+.btn-ghost:hover{background:var(--ink3);color:var(--fg)}
+.btn-danger{background:transparent;border:1px solid var(--red);color:var(--red)}
+.btn-danger:hover{background:rgba(248,113,113,.1)}
+
+/* ── ANNOTATE LAYOUT ── */
+.ann-layout{display:flex;flex:1;overflow:hidden}
+
+/* VIDEO PANEL */
+.vp{width:56%;min-width:360px;border-right:1px solid var(--line);display:flex;flex-direction:column;overflow-y:auto;overflow-x:hidden}
+.video-area{background:#000;position:relative;min-height:220px;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+#video-player{width:100%;max-height:320px;object-fit:contain;display:none}
+.drop-zone{
+  display:flex;flex-direction:column;align-items:center;gap:12px;
+  padding:32px 20px;cursor:pointer;width:100%;
+  border:2px dashed var(--line2);border-radius:10px;margin:16px;
+  transition:border-color .2s;color:var(--fg3);text-align:center;
+}
+.drop-zone:hover,.drop-zone.drag-over{border-color:var(--accent);color:var(--fg2)}
+.drop-icon{font-size:36px;line-height:1}
+.drop-label{font-size:13px;font-weight:600}
+.drop-sub{font-size:11px}
+.browse-btn{
+  background:var(--ink3);border:1px solid var(--line2);color:var(--fg2);
+  padding:6px 14px;border-radius:6px;font-size:12px;font-weight:700;
+  cursor:pointer;font-family:var(--sans);margin-top:4px;transition:all .15s;
+}
+.browse-btn:hover{background:var(--ink4);color:var(--fg)}
+
+.vcontrols{
+  display:flex;align-items:center;gap:8px;flex-wrap:wrap;
+  padding:8px 12px;background:var(--ink);border-top:1px solid var(--line);
+  flex-shrink:0;
+}
+.vc-btn{
+  padding:4px 10px;border-radius:5px;border:1px solid var(--line);
+  background:var(--ink3);color:var(--fg2);font-size:11px;font-weight:700;
+  cursor:pointer;font-family:var(--sans);transition:all .15s;
+}
+.vc-btn:hover,.vc-btn.on{background:var(--accent);border-color:var(--accent);color:#fff}
+.vc-select{
+  padding:4px 8px;background:var(--ink3);border:1px solid var(--line);
+  border-radius:5px;color:var(--fg2);font-size:11px;font-family:var(--sans);
+}
+.vc-time{font-family:var(--mono);font-size:11px;color:var(--fg3);margin-left:auto}
+
+.quick-guide{
+  margin:12px;background:var(--ink);border:1px solid var(--line);
+  border-radius:8px;padding:10px 12px;flex-shrink:0;
+}
+.qg-title{font-size:11px;font-weight:700;color:var(--fg3);margin-bottom:6px;letter-spacing:.5px;text-transform:uppercase}
+.qg-item{font-size:11px;color:var(--fg3);padding:2px 0;display:flex;gap:6px}
+.qg-item.warn{color:var(--amber)}
+.qg-arrow{color:var(--accent);flex-shrink:0}
+
+/* SEGMENTS PANEL */
+.sp{flex:1;display:flex;flex-direction:column;overflow:hidden;min-width:0}
+.sp-head{
+  padding:10px 12px;border-bottom:1px solid var(--line);
+  display:flex;align-items:center;gap:8px;flex-wrap:wrap;flex-shrink:0;
+}
+.sp-title{font-size:13px;font-weight:800}
+.sp-shortcuts{color:var(--fg3);font-size:10px;flex:1;font-family:var(--mono)}
+.sp-autoscroll{font-size:11px;color:var(--fg3);display:flex;align-items:center;gap:5px;cursor:pointer}
+#seg-list{flex:1;overflow-y:auto;padding:8px;display:flex;flex-direction:column;gap:5px}
+.seg-empty{text-align:center;padding:40px 20px;color:var(--fg3);font-size:13px}
+
+.seg{
+  background:var(--ink3);border:1px solid var(--line);border-radius:8px;
+  padding:10px 12px;display:flex;align-items:flex-start;gap:10px;
+  cursor:pointer;transition:all .15s;
+}
+.seg:hover{border-color:var(--line2)}
+.seg.sel{border-color:var(--accent);background:rgba(91,138,240,.08)}
+.seg-num{
+  width:24px;height:24px;border-radius:50%;flex-shrink:0;
+  background:var(--ink4);color:var(--fg2);
+  font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;
+  transition:all .15s;
+}
+.seg.sel .seg-num{background:var(--accent);color:#fff}
+.seg-body{flex:1;min-width:0}
+.seg-timing{
+  display:flex;align-items:center;gap:4px;
+  font-family:var(--mono);font-size:10px;color:var(--fg3);margin-bottom:5px;
+}
+.t-adj{
+  background:none;border:none;color:var(--fg3);cursor:pointer;
+  font-size:12px;line-height:1;padding:0 2px;
+  border-radius:3px;font-family:var(--mono);transition:all .1s;
+}
+.t-adj:hover{color:var(--accent);background:rgba(91,138,240,.15)}
+.seg-dur{color:var(--fg3);opacity:.6}
+.seg-lbl{font-size:12px;color:var(--fg);word-break:break-word;line-height:1.4}
+.seg-lbl.empty{color:var(--fg3);font-style:italic}
+.seg-lbl.noact{color:var(--amber)}
+
+.seg-btns{display:flex;gap:3px;flex-shrink:0}
+.sb-btn{
+  width:26px;height:26px;background:none;border:none;
+  border-radius:5px;color:var(--fg3);cursor:pointer;
+  display:flex;align-items:center;justify-content:center;
+  font-size:13px;transition:all .1s;
+}
+.sb-btn:hover{background:var(--ink4);color:var(--fg)}
+.sb-btn.red:hover{color:var(--red)}
+
+.sp-footer{display:flex;gap:8px;padding:10px;border-top:1px solid var(--line);flex-shrink:0}
+
+/* ── GUIDELINES ── */
+.g-tabs{display:flex;gap:4px;padding:12px 20px;border-bottom:1px solid var(--line);flex-wrap:wrap;flex-shrink:0}
+.g-tab{
+  padding:5px 12px;border-radius:5px;border:1px solid var(--line);
+  background:transparent;color:var(--fg3);font-size:12px;font-weight:700;
+  cursor:pointer;font-family:var(--sans);transition:all .15s;
+}
+.g-tab:hover{background:var(--ink3);color:var(--fg)}
+.g-tab.active{background:var(--accent);border-color:var(--accent);color:#fff}
+.g-content{flex:1;overflow-y:auto;padding:20px}
+.g-section{margin-bottom:24px}
+.g-section h2{font-size:15px;font-weight:800;color:var(--accent);margin-bottom:12px;letter-spacing:-.2px}
+.g-section h3{font-size:12px;font-weight:700;color:var(--fg2);margin:14px 0 8px;text-transform:uppercase;letter-spacing:.4px}
+.g-section p{font-size:12px;color:var(--fg3);margin-bottom:8px;line-height:1.6}
+
+.rb{
+  border-radius:6px;padding:8px 12px;margin:4px 0;
+  font-size:12px;font-family:var(--mono);display:flex;align-items:flex-start;gap:8px;line-height:1.4;
+}
+.rb.ok{background:rgba(52,211,153,.07);border:1px solid rgba(52,211,153,.2);color:#6ee7b7}
+.rb.ok::before{content:'✓';color:var(--green);flex-shrink:0;font-weight:700}
+.rb.no{background:rgba(248,113,113,.07);border:1px solid rgba(248,113,113,.2);color:#fca5a5}
+.rb.no::before{content:'✗';color:var(--red);flex-shrink:0;font-weight:700}
+.rb.warn{background:rgba(251,191,36,.07);border:1px solid rgba(251,191,36,.2);color:#fde68a}
+.rb.warn::before{content:'⚠';color:var(--amber);flex-shrink:0}
+.rb.info{background:rgba(91,138,240,.07);border:1px solid rgba(91,138,240,.25);color:#a5b4fc;font-family:var(--sans);font-size:12px}
+.rb.info::before{content:'ℹ';color:var(--accent);flex-shrink:0}
+
+.dd{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:10px 0}
+.dd-do,.dd-dont{border-radius:8px;padding:12px}
+.dd-do{background:rgba(52,211,153,.05);border:1px solid rgba(52,211,153,.15)}
+.dd-dont{background:rgba(248,113,113,.05);border:1px solid rgba(248,113,113,.15)}
+.dd-do h4{color:var(--green);font-size:11px;font-weight:700;margin-bottom:6px;text-transform:uppercase;letter-spacing:.4px}
+.dd-dont h4{color:var(--red);font-size:11px;font-weight:700;margin-bottom:6px;text-transform:uppercase;letter-spacing:.4px}
+.dd-do li,.dd-dont li{font-size:11px;color:var(--fg3);margin:3px 0;list-style:none;line-height:1.4}
+
+.vt{width:100%;border-collapse:collapse;font-size:12px;margin:8px 0}
+.vt th{background:var(--ink4);padding:8px 10px;text-align:left;border:1px solid var(--line);color:var(--fg3);font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.3px}
+.vt td{padding:7px 10px;border:1px solid var(--line);color:var(--fg)}
+.vt td:first-child{font-family:var(--mono);color:#93c5fd;font-size:11px}
+.vt tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+
+.alert{border-radius:8px;padding:10px 14px;margin:8px 0;font-size:12px;line-height:1.5}
+.alert.danger{background:rgba(248,113,113,.08);border:1px solid rgba(248,113,113,.3);color:var(--red)}
+.alert.warn{background:rgba(251,191,36,.08);border:1px solid rgba(251,191,36,.3);color:var(--amber)}
+.alert.info{background:rgba(91,138,240,.08);border:1px solid rgba(91,138,240,.3);color:#a5b4fc}
+
+/* ── VALIDATOR ── */
+.val-layout{flex:1;overflow-y:auto;padding:20px;display:flex;flex-direction:column;gap:16px}
+.val-input-area{display:flex;flex-direction:column;gap:10px;max-width:640px}
+#val-input{
+  width:100%;background:var(--ink3);border:1px solid var(--line);border-radius:8px;
+  padding:12px;color:var(--fg);font-size:13px;font-family:var(--sans);resize:vertical;
+  line-height:1.5;
+}
+#val-input:focus{outline:none;border-color:var(--accent)}
+#val-results{max-width:640px;border-radius:8px;border:1px solid var(--line);padding:14px;background:var(--ink3);display:none}
+.v-score{font-size:15px;font-weight:800;padding:10px 14px;border-radius:6px;margin-bottom:10px;display:flex;align-items:center;gap:8px}
+.v-score.pass{background:rgba(52,211,153,.1);color:var(--green)}
+.v-score.fail{background:rgba(248,113,113,.1);color:var(--red)}
+.v-score.warn{background:rgba(251,191,36,.1);color:var(--amber)}
+.v-issue{display:flex;gap:8px;padding:6px 0;border-bottom:1px solid var(--line);font-size:12px;line-height:1.4}
+.v-issue:last-child{border-bottom:none}
+.vi-icon{flex-shrink:0;font-size:13px}
+.vi-e .vi-icon{color:var(--red)}
+.vi-w .vi-icon{color:var(--amber)}
+.vi-ok .vi-icon{color:var(--green)}
+
+.mistake-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:10px;max-width:900px}
+.mc{background:var(--ink3);border:1px solid var(--line);border-radius:8px;padding:12px}
+.mc h4{font-size:12px;font-weight:700;color:var(--amber);margin-bottom:5px}
+.mc p{font-size:11px;color:var(--fg3);margin-bottom:6px;line-height:1.4}
+.mc-bad{font-family:var(--mono);font-size:11px;color:#fca5a5}
+.mc-good{font-family:var(--mono);font-size:11px;color:#6ee7b7}
+.val-h3{font-size:13px;font-weight:800;margin-bottom:12px}
+
+/* ── HISTORY ── */
+.hist-bar{display:flex;gap:8px;padding:12px 20px;border-bottom:1px solid var(--line);flex-shrink:0}
+.hist-list{flex:1;overflow-y:auto;padding:16px 20px;display:flex;flex-direction:column;gap:10px}
+.hc{background:var(--ink3);border:1px solid var(--line);border-radius:8px;padding:14px}
+.hc-head{font-size:13px;font-weight:700;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center}
+.hc-time{font-size:11px;color:var(--fg3);font-weight:400}
+.hc-row{display:flex;gap:8px;align-items:baseline;padding:4px 0;border-bottom:1px solid var(--line);font-size:11px;color:var(--fg3)}
+.hc-row:last-child{border-bottom:none}
+.hc-n{font-weight:700;color:var(--accent);width:18px;flex-shrink:0}
+.hc-t{font-family:var(--mono);width:130px;flex-shrink:0}
+.hc-l{flex:1;color:var(--fg)}
+.empty-hist{text-align:center;padding:40px;color:var(--fg3);font-size:13px}
+
+/* ── MODAL ── */
+#modal{
+  position:fixed;inset:0;background:rgba(0,0,0,.75);
+  display:flex;align-items:center;justify-content:center;z-index:1000;display:none;
+}
+#modal.on{display:flex}
+.modal-box{
+  background:var(--ink3);border:1px solid var(--line2);border-radius:10px;
+  width:480px;max-width:95vw;box-shadow:0 24px 60px rgba(0,0,0,.6);
+}
+.m-head{display:flex;align-items:center;justify-content:space-between;padding:16px 18px;border-bottom:1px solid var(--line)}
+.m-head h3{font-size:14px;font-weight:800}
+.m-close{background:none;border:none;color:var(--fg3);cursor:pointer;font-size:18px;line-height:1;padding:2px 6px;border-radius:4px}
+.m-close:hover{color:var(--fg);background:var(--ink4)}
+.m-body{padding:18px;display:flex;flex-direction:column;gap:10px}
+.m-label{font-size:11px;font-weight:700;color:var(--fg3);text-transform:uppercase;letter-spacing:.4px}
+#m-input{
+  width:100%;background:var(--ink);border:1px solid var(--line);border-radius:7px;
+  padding:10px 12px;color:var(--fg);font-size:13px;font-family:var(--sans);
+}
+#m-input:focus{outline:none;border-color:var(--accent)}
+#m-fb{font-size:11px;min-height:16px;font-family:var(--mono)}
+#m-fb.ok{color:var(--green)}
+#m-fb.err{color:var(--red)}
+#m-fb.warn{color:var(--amber)}
+.m-hint{font-size:11px;color:var(--fg3);background:var(--ink);border-radius:6px;padding:8px 10px;line-height:1.5}
+.m-foot{display:flex;justify-content:flex-end;gap:8px;padding:14px 18px;border-top:1px solid var(--line)}
+
+/* ── TOAST ── */
+#toast{
+  position:fixed;bottom:20px;right:20px;
+  background:var(--ink3);border:1px solid var(--line2);border-radius:8px;
+  padding:10px 16px;font-size:12px;font-weight:600;z-index:2000;
+  box-shadow:0 4px 20px rgba(0,0,0,.5);display:none;
+  transition:opacity .3s;
+}
+#toast.ok{border-color:rgba(52,211,153,.4);color:var(--green);display:block}
+#toast.err{border-color:rgba(248,113,113,.4);color:var(--red);display:block}
+#toast.inf{border-color:rgba(91,138,240,.4);color:#a5b4fc;display:block}
+
+/* ── SCROLLBAR ── */
+::-webkit-scrollbar{width:5px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:var(--line);border-radius:3px}
+::-webkit-scrollbar-thumb:hover{background:var(--line2)}
+
+input[type=checkbox]{accent-color:var(--accent)}
+</style>
+</head>
+<body>
+<div id="app">
+
+<!-- SIDEBAR -->
+<aside id="sb">
+  <div class="sb-logo">
+    <div class="sb-logo-mark">X</div>
+    <div>
+      <div class="sb-logo-text">Atlas Capture</div>
+      <div class="sb-logo-sub">Labels</div>
+    </div>
+  </div>
+  <nav>
+    <button class="ni active" data-page="annotate">
+      <span class="ni-icon">📋</span> Annotate
+    </button>
+    <button class="ni" data-page="guidelines">
+      <span class="ni-icon">📖</span> Guidelines
+    </button>
+    <button class="ni" data-page="validator">
+      <span class="ni-icon">✅</span> Validator
+    </button>
+    <button class="ni" data-page="history">
+      <span class="ni-icon">🕐</span> History
+    </button>
+  </nav>
+</aside>
+
+<!-- MAIN -->
+<main id="main">
+
+  <!-- ANNOTATE -->
+  <section id="page-annotate" class="page on">
+    <div class="ph">
+      <h1>Label Episode</h1>
+      <span class="ph-desc" id="ep-desc">A person is completing a physical task from an egocentric perspective.</span>
+      <div class="ph-actions">
+        <button class="btn btn-ghost" id="btn-report">⚑ Report</button>
+        <button class="btn btn-primary" id="btn-complete">✓ Complete</button>
+      </div>
+    </div>
+    <div class="ann-layout">
+      <!-- Video Panel -->
+      <div class="vp">
+        <div class="video-area" id="video-area">
+          <div class="drop-zone" id="drop-zone">
+            <div class="drop-icon">🎬</div>
+            <div class="drop-label">Drop a video file here</div>
+            <div class="drop-sub">or click to browse</div>
+            <button class="browse-btn" onclick="document.getElementById('file-in').click()">Browse File</button>
+          </div>
+          <video id="video-player"></video>
+          <input type="file" id="file-in" accept="video/*" style="display:none">
+        </div>
+        <div class="vcontrols" id="vcontrols" style="display:none">
+          <button class="vc-btn on" id="btn-loop">⟳ Loop ON</button>
+          <select class="vc-select" id="speed">
+            <option value="0.25">0.25×</option>
+            <option value="0.5">0.5×</option>
+            <option value="1" selected>1×</option>
+            <option value="1.5">1.5×</option>
+            <option value="2">2×</option>
+          </select>
+          <span class="vc-time" id="vc-time">0:00.0 / 0:00.0</span>
+        </div>
+        <div class="quick-guide">
+          <div class="qg-title">Quick Guide</div>
+          <div class="qg-item"><span class="qg-arrow">→</span> Write in instruction format (e.g., "pick up mug")</div>
+          <div class="qg-item"><span class="qg-arrow">→</span> Capture all major actions in the segment</div>
+          <div class="qg-item"><span class="qg-arrow">→</span> Only label what you can see – don't assume</div>
+          <div class="qg-item"><span class="qg-arrow">→</span> Use at least 2 words per label</div>
+          <div class="qg-item warn"><span class="qg-arrow">⚠</span> AI hints may be wrong — always verify</div>
+        </div>
+      </div>
+
+      <!-- Segments Panel -->
+      <div class="sp">
+        <div class="sp-head">
+          <span class="sp-title">Segments (<span id="seg-count">0</span>)</span>
+          <span class="sp-shortcuts">J/K Nav · E Edit · S Split · D Del · M Merge · U Undo · L Loop</span>
+          <label class="sp-autoscroll"><input type="checkbox" id="autoscroll" checked> Auto-scroll</label>
+        </div>
+        <div id="seg-list"></div>
+        <div class="sp-footer">
+          <button class="btn btn-ghost" id="btn-add">+ Add Segment</button>
+          <button class="btn btn-ghost" id="btn-undo">↩ Undo</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- GUIDELINES -->
+  <section id="page-guidelines" class="page">
+    <div class="ph"><h1>Annotation Guidelines</h1><span class="ph-desc">Atlas Capture Standard Text Annotation Rules</span></div>
+    <div class="g-tabs">
+      <button class="g-tab active" data-gt="core">Core Rules</button>
+      <button class="g-tab" data-gt="verbs">Verb Rules</button>
+      <button class="g-tab" data-gt="format">Format Rules</button>
+      <button class="g-tab" data-gt="segments">Segment Editing</button>
+      <button class="g-tab" data-gt="edge">Edge Cases</button>
+      <button class="g-tab" data-gt="checklist">Checklist</button>
+    </div>
+    <div class="g-content" id="g-content"></div>
+  </section>
+
+  <!-- VALIDATOR -->
+  <section id="page-validator" class="page">
+    <div class="ph"><h1>Label Validator</h1><span class="ph-desc">Check your label against all annotation rules</span></div>
+    <div class="val-layout">
+      <div class="val-input-area">
+        <textarea id="val-input" rows="3" placeholder='Enter a label to validate, e.g. "pick up scissors, cut tape with scissors"'></textarea>
+        <button class="btn btn-primary" id="btn-validate" style="align-self:flex-start">Validate Label</button>
+      </div>
+      <div id="val-results"></div>
+      <div>
+        <div class="val-h3">Common Mistakes Reference</div>
+        <div class="mistake-grid" id="mistake-grid"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- HISTORY -->
+  <section id="page-history" class="page">
+    <div class="ph"><h1>Annotation History</h1><span class="ph-desc">Review and export your completed annotations</span></div>
+    <div class="hist-bar">
+      <button class="btn btn-ghost" id="btn-json">⬇ Export JSON</button>
+      <button class="btn btn-ghost" id="btn-csv">⬇ Export CSV</button>
+      <button class="btn btn-danger" id="btn-clear">🗑 Clear All</button>
+    </div>
+    <div class="hist-list" id="hist-list"></div>
+  </section>
+
+</main>
+</div>
+
+<!-- EDIT MODAL -->
+<div id="modal">
+  <div class="modal-box">
+    <div class="m-head">
+      <h3>Edit Segment Label – #<span id="m-seg-n"></span></h3>
+      <button class="m-close" id="m-x">✕</button>
+    </div>
+    <div class="m-body">
+      <div class="m-label">Label</div>
+      <input type="text" id="m-input" placeholder='e.g. "pick up scissors, cut tape with scissors"'>
+      <div id="m-fb"></div>
+      <div class="m-hint">Imperative voice · comma/and between actions · no numerals · no inspect/check/reach</div>
+    </div>
+    <div class="m-foot">
+      <button class="btn btn-ghost" id="m-cancel">Cancel</button>
+      <button class="btn btn-primary" id="m-save">Save (Enter)</button>
+    </div>
+  </div>
+</div>
+
+<!-- TOAST -->
+<div id="toast"></div>
+
+<script>
+'use strict';
+// ─── STATE ───────────────────────────────────────────────────
+const S = { segs:[], history:[], selId:null, undo:[], vidLoaded:false, looping:true };
+let nextId=1, editId=null, toastT=null;
+const vid = document.getElementById('video-player');
+
+// ─── VALIDATE ────────────────────────────────────────────────
+function validate(lbl){
+  const issues=[],sugg=[];
+  const l=lbl.trim();
+  if(!l){return{issues:[{t:'e',m:'Label cannot be empty'}],sugg,pass:false};}
+  if(l.split(' ').length<2)issues.push({t:'e',m:'Use at least 2 words per label'});
+  ['inspect','check'].forEach(v=>{ if(l.toLowerCase().includes(v))issues.push({t:'e',m:`Forbidden verb "${v}" — use "adjust" instead`}); });
+  if(/\breach\b/.test(l.toLowerCase()))issues.push({t:'e',m:'Forbidden verb "reach" — fix timestamps instead'});
+  ['hands','examine'].forEach(w=>{ if(l.toLowerCase().includes(w))issues.push({t:'w',m:`Avoid "${w}" — don't reference body parts unless unavoidable`}); });
+  [' the ',' a ',' an '].forEach(a=>{ if((' '+l.toLowerCase()+' ').includes(a))issues.push({t:'w',m:`Remove article "${a.trim()}" — avoid a/an/the`}); });
+  const ing=l.match(/\b\w+ing\b/g);
+  if(ing)issues.push({t:'w',m:`Avoid -ing verbs ("${ing.join(', ')}") — use imperative: "cut" not "cutting"`});
+  if(/\b\d+\b/.test(l))issues.push({t:'e',m:'No numerals — use words ("three") or omit quantity'});
+  if(/no action/i.test(l)&&l.toLowerCase()!=='no action')issues.push({t:'e',m:'"No Action" must not be combined with other actions'});
+  if(l[0]&&l[0]!==l[0].toLowerCase())issues.push({t:'w',m:'Labels should start with lowercase imperative verb'});
+  const wc=l.split(/\s+/).length;
+  if(wc>20){issues.push({t:'w',m:`Label is very long (${wc} words) — consider a coarse label`});sugg.push('Long labels increase hallucination risk — prefer coarse goal label');}
+  const verbs=['pick up','place','move','cut','adjust','put','grab','hold','close','open','peel','secure'];
+  const vm=verbs.filter(v=>l.toLowerCase().includes(v));
+  if(vm.length>=2&&!l.includes(',')&&!/\band\b/.test(l))issues.push({t:'e',m:'Multiple actions need separator: comma or "and"'});
+  if(/\bplace\b/.test(l.toLowerCase())&&!/place\s+\w+\s+(on|in|into|onto|at|to)\b/.test(l.toLowerCase()))issues.push({t:'w',m:'"place" needs a location — e.g. "place cup on table"'});
+  if(/\bprepare\b|\bget ready\b|\btry to\b/.test(l.toLowerCase()))issues.push({t:'e',m:'No intent-only language — label the actual physical action'});
+  return{issues,sugg,pass:!issues.some(i=>i.t==='e')};
+}
+
+// ─── SEGMENTS ────────────────────────────────────────────────
+function mkSeg(s=0,e=5,lbl=''){return{id:nextId++,s,e,lbl};}
+function pushUndo(){S.undo.push(JSON.parse(JSON.stringify(S.segs)));if(S.undo.length>50)S.undo.shift();}
+function doUndo(){if(!S.undo.length){toast('Nothing to undo','inf');return;}S.segs=S.undo.pop();S.selId=null;render();}
+function addSeg(){
+  pushUndo();
+  const last=S.segs[S.segs.length-1];
+  const ns=mkSeg(last?last.e:0,(last?last.e:0)+5,'');
+  S.segs.push(ns);sel(ns.id);render();openModal(ns.id);
+}
+function delSeg(id){pushUndo();S.segs=S.segs.filter(x=>x.id!==id);if(S.selId===id)S.selId=null;render();toast('Deleted','inf');}
+function splitSeg(id){
+  const idx=S.segs.findIndex(x=>x.id===id);if(idx<0)return;
+  const sg=S.segs[idx],mid=parseFloat(((sg.s+sg.e)/2).toFixed(1));
+  pushUndo();S.segs.splice(idx+1,0,mkSeg(mid,sg.e,''));sg.e=mid;render();toast('Split','inf');
+}
+function mergeSeg(id){
+  const idx=S.segs.findIndex(x=>x.id===id);
+  if(idx<0||idx>=S.segs.length-1){toast('No next segment','err');return;}
+  pushUndo();const a=S.segs[idx],b=S.segs[idx+1];
+  a.e=b.e;a.lbl=a.lbl&&b.lbl?a.lbl+', '+b.lbl:a.lbl||b.lbl;
+  S.segs.splice(idx+1,1);render();toast('Merged','inf');
+}
+function adj(id,which,delta){
+  const sg=S.segs.find(x=>x.id===id);if(!sg)return;
+  pushUndo();
+  if(which==='s'){sg.s=Math.max(0,parseFloat((sg.s+delta).toFixed(1)));if(sg.s>=sg.e)sg.s=sg.e-.1;}
+  else{const mx=vid.duration||9999;sg.e=Math.min(mx,parseFloat((sg.e+delta).toFixed(1)));if(sg.e<=sg.s)sg.e=sg.s+.1;}
+  render();
+}
+function sel(id){S.selId=id;render();if(vid.duration&&id){const sg=S.segs.find(x=>x.id===id);if(sg)vid.currentTime=sg.s;}}
+function saveLbl(id,lbl){const sg=S.segs.find(x=>x.id===id);if(!sg)return;pushUndo();sg.lbl=lbl.trim();render();toast('Saved','ok');}
+function playSeg(id){
+  const sg=S.segs.find(x=>x.id===id);if(!sg||!S.vidLoaded){toast('Load a video first','inf');return;}
+  vid.currentTime=sg.s;vid.play();
+  const chk=()=>{if(vid.currentTime>=sg.e){vid.pause();vid.removeEventListener('timeupdate',chk);}};
+  vid.addEventListener('timeupdate',chk);
+}
+
+// ─── RENDER ──────────────────────────────────────────────────
+function fmt(t){const m=Math.floor(t/60),s=(t%60).toFixed(1).padStart(4,'0');return`${m}:${s}`;}
+function render(){
+  const list=document.getElementById('seg-list');
+  document.getElementById('seg-count').textContent=S.segs.length;
+  if(!S.segs.length){list.innerHTML='<div class="seg-empty">No segments yet.<br>Click "+ Add Segment" to begin.</div>';return;}
+  list.innerHTML=S.segs.map((sg,i)=>{
+    const dur=(sg.e-sg.s).toFixed(1);
+    const isSel=sg.id===S.selId;
+    const lc=!sg.lbl?'empty':sg.lbl==='No Action'?'noact':'';
+    const lt=sg.lbl||(isSel?'click ✎ to add label…':'(no label)');
+    return`<div class="seg${isSel?' sel':''}" data-id="${sg.id}" onclick="sel(${sg.id})">
+      <div class="seg-num">${i+1}</div>
+      <div class="seg-body">
+        <div class="seg-timing">
+          <button class="t-adj" onclick="event.stopPropagation();adj(${sg.id},'s',-.2)" title="−0.2s">−</button>
+          <span>${fmt(sg.s)}</span>
+          <span style="color:var(--fg3)">→</span>
+          <span>${fmt(sg.e)}</span>
+          <button class="t-adj" onclick="event.stopPropagation();adj(${sg.id},'e',.2)" title="+0.2s">+</button>
+          <span class="seg-dur">(${dur}s)</span>
+        </div>
+        <div class="seg-lbl ${lc}">${lt}</div>
+      </div>
+      <div class="seg-btns">
+        <button class="sb-btn" onclick="event.stopPropagation();openModal(${sg.id})" title="Edit (E)">✎</button>
+        <button class="sb-btn" onclick="event.stopPropagation();splitSeg(${sg.id})" title="Split (S)">✂</button>
+        <button class="sb-btn" onclick="event.stopPropagation();mergeSeg(${sg.id})" title="Merge (M)">⊕</button>
+        <button class="sb-btn" onclick="event.stopPropagation();playSeg(${sg.id})" title="Play (P)">▶</button>
+        <button class="sb-btn red" onclick="event.stopPropagation();delSeg(${sg.id})" title="Delete (D)">🗑</button>
+      </div>
+    </div>`;
+  }).join('');
+  if(S.selId&&document.getElementById('autoscroll').checked){
+    const el=list.querySelector(`[data-id="${S.selId}"]`);
+    if(el)el.scrollIntoView({block:'nearest',behavior:'smooth'});
+  }
+}
+
+// ─── MODAL ───────────────────────────────────────────────────
+function openModal(id){
+  const sg=S.segs.find(x=>x.id===id);if(!sg)return;
+  editId=id;
+  document.getElementById('m-seg-n').textContent=S.segs.indexOf(sg)+1;
+  document.getElementById('m-input').value=sg.lbl;
+  const fb=document.getElementById('m-fb');fb.textContent='';fb.className='';
+  document.getElementById('modal').classList.add('on');
+  setTimeout(()=>document.getElementById('m-input').focus(),60);
+}
+function closeModal(){document.getElementById('modal').classList.remove('on');editId=null;}
+document.getElementById('m-input').addEventListener('input',e=>{
+  const l=e.target.value;const fb=document.getElementById('m-fb');
+  if(!l.trim()){fb.textContent='';fb.className='';return;}
+  const{issues}=validate(l);
+  const errs=issues.filter(i=>i.t==='e'),warns=issues.filter(i=>i.t==='w');
+  if(errs.length){fb.textContent='✗ '+errs[0].m;fb.className='err';}
+  else if(warns.length){fb.textContent='⚠ '+warns[0].m;fb.className='warn';}
+  else{fb.textContent='✓ Looks good';fb.className='ok';}
+});
+document.getElementById('m-save').addEventListener('click',()=>{if(editId!==null){saveLbl(editId,document.getElementById('m-input').value);}closeModal();});
+document.getElementById('m-cancel').addEventListener('click',closeModal);
+document.getElementById('m-x').addEventListener('click',closeModal);
+document.getElementById('m-input').addEventListener('keydown',e=>{if(e.key==='Enter')document.getElementById('m-save').click();if(e.key==='Escape')closeModal();});
+
+// ─── VIDEO ───────────────────────────────────────────────────
+const dz=document.getElementById('drop-zone');
+dz.addEventListener('dragover',e=>{e.preventDefault();dz.classList.add('drag-over');});
+dz.addEventListener('dragleave',()=>dz.classList.remove('drag-over'));
+dz.addEventListener('drop',e=>{e.preventDefault();dz.classList.remove('drag-over');const f=e.dataTransfer.files[0];if(f&&f.type.startsWith('video/'))loadVid(f);});
+dz.addEventListener('click',()=>document.getElementById('file-in').click());
+document.getElementById('file-in').addEventListener('change',e=>{if(e.target.files[0])loadVid(e.target.files[0]);});
+function loadVid(f){
+  vid.src=URL.createObjectURL(f);vid.style.display='block';
+  dz.style.display='none';
+  document.getElementById('vcontrols').style.display='flex';
+  S.vidLoaded=true;vid.loop=S.looping;
+  document.getElementById('ep-desc').textContent=f.name;
+  vid.addEventListener('timeupdate',updateTime);
+  vid.addEventListener('loadedmetadata',()=>{
+    updateTime();
+    if(!S.segs.length){
+      const dur=vid.duration,segDur=Math.min(10,Math.max(2,dur/8));
+      let t=0;
+      while(t<dur){const e=Math.min(t+segDur,dur);S.segs.push(mkSeg(parseFloat(t.toFixed(1)),parseFloat(e.toFixed(1)),''));t=e;}
+      render();toast(`Auto-created ${S.segs.length} segments — review and label each`,'inf');
+    }
+  });
+}
+function updateTime(){const c=fmt(vid.currentTime),d=fmt(vid.duration||0);document.getElementById('vc-time').textContent=`${c} / ${d}`;}
+document.getElementById('btn-loop').addEventListener('click',()=>{
+  S.looping=!S.looping;vid.loop=S.looping;
+  const b=document.getElementById('btn-loop');
+  b.textContent=S.looping?'⟳ Loop ON':'⟳ Loop OFF';
+  b.classList.toggle('on',S.looping);
+});
+document.getElementById('speed').addEventListener('change',e=>{vid.playbackRate=parseFloat(e.target.value);});
+
+// ─── KEYBOARD ────────────────────────────────────────────────
+document.addEventListener('keydown',e=>{
+  if(!document.getElementById('modal').classList.contains('on')){
+    const tg=document.activeElement.tagName;
+    if(tg==='INPUT'||tg==='TEXTAREA'||tg==='SELECT')return;
+    switch(e.key.toLowerCase()){
+      case'e':if(S.selId)openModal(S.selId);break;
+      case's':if(S.selId)splitSeg(S.selId);break;
+      case'd':if(S.selId)delSeg(S.selId);break;
+      case'm':if(S.selId)mergeSeg(S.selId);break;
+      case'u':doUndo();break;
+      case'l':document.getElementById('btn-loop').click();break;
+      case'p':if(S.selId)playSeg(S.selId);break;
+      case' ':e.preventDefault();vid.paused?vid.play():vid.pause();break;
+      case'j':case'arrowup':{const i=S.segs.findIndex(x=>x.id===S.selId);if(i>0)sel(S.segs[i-1].id);break;}
+      case'k':case'arrowdown':{const i=S.segs.findIndex(x=>x.id===S.selId);if(i>=0&&i<S.segs.length-1)sel(S.segs[i+1].id);break;}
+    }
+  }
+});
+
+// ─── COMPLETE / REPORT ───────────────────────────────────────
+document.getElementById('btn-complete').addEventListener('click',()=>{
+  const unl=S.segs.filter(x=>!x.lbl);
+  if(unl.length){toast(`${unl.length} segment(s) still unlabeled!`,'err');return;}
+  let errs=false;S.segs.forEach(sg=>{if(!validate(sg.lbl).pass)errs=true;});
+  if(errs){toast('Some labels have errors — check Validator tab','err');return;}
+  S.history.unshift({id:Date.now(),desc:document.getElementById('ep-desc').textContent,ts:new Date().toLocaleString(),segs:JSON.parse(JSON.stringify(S.segs))});
+  S.segs=[];S.selId=null;S.undo=[];nextId=1;render();renderHistory();
+  toast('Episode completed and saved!','ok');
+});
+document.getElementById('btn-report').addEventListener('click',()=>toast('Report submitted. Thank you!','inf'));
+
+// ─── HISTORY ─────────────────────────────────────────────────
+function renderHistory(){
+  const el=document.getElementById('hist-list');
+  if(!S.history.length){el.innerHTML='<div class="empty-hist">No completed episodes yet.</div>';return;}
+  el.innerHTML=S.history.map(ep=>`<div class="hc">
+    <div class="hc-head"><span>${ep.desc||'Episode'}</span><span class="hc-time">${ep.ts}</span></div>
+    ${ep.segs.map((sg,i)=>`<div class="hc-row"><span class="hc-n">${i+1}</span><span class="hc-t">${fmt(sg.s)} → ${fmt(sg.e)}</span><span class="hc-l">${sg.lbl||'<em style="color:var(--fg3)">unlabeled</em>'}</span></div>`).join('')}
+  </div>`).join('');
+}
+document.getElementById('btn-json').addEventListener('click',()=>{
+  if(!S.history.length){toast('No history to export','inf');return;}
+  dl(new Blob([JSON.stringify(S.history,null,2)],{type:'application/json'}),'atlas_annotations.json');
+});
+document.getElementById('btn-csv').addEventListener('click',()=>{
+  if(!S.history.length){toast('No history to export','inf');return;}
+  const rows=[['episode_id','desc','timestamp','seg_num','start','end','duration','label']];
+  S.history.forEach(ep=>ep.segs.forEach((sg,i)=>rows.push([ep.id,ep.desc,ep.ts,i+1,sg.s,sg.e,(sg.e-sg.s).toFixed(1),sg.lbl])));
+  dl(new Blob([rows.map(r=>r.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n')],{type:'text/csv'}),'atlas_annotations.csv');
+});
+document.getElementById('btn-clear').addEventListener('click',()=>{if(!confirm('Clear all history?'))return;S.history=[];renderHistory();toast('Cleared','inf');});
+function dl(blob,name){const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;a.click();}
+
+// ─── VALIDATOR PAGE ──────────────────────────────────────────
+document.getElementById('btn-validate').addEventListener('click',()=>{
+  const lbl=document.getElementById('val-input').value;
+  const{issues,sugg,pass}=validate(lbl);
+  const ec=issues.filter(i=>i.t==='e').length,wc2=issues.filter(i=>i.t==='w').length;
+  const el=document.getElementById('val-results');el.style.display='block';
+  let sc='',st='';
+  if(pass&&!wc2){sc='pass';st='✓ PASS — Label looks correct';}
+  else if(pass){sc='warn';st=`⚠ PASS WITH WARNINGS — ${wc2} warning(s)`;}
+  else{sc='fail';st=`✗ FAIL — ${ec} error(s), ${wc2} warning(s)`;}
+  el.innerHTML=`<div class="v-score ${sc}">${st}</div>`+
+    (issues.map(i=>`<div class="v-issue vi-${i.t==='e'?'e':i.t==='w'?'w':'ok'}"><span class="vi-icon">${i.t==='e'?'✗':i.t==='w'?'⚠':'✓'}</span><span>${i.m}</span></div>`).join('')||'<div class="v-issue vi-ok"><span class="vi-icon">✓</span><span>No issues found!</span></div>')+
+    (sugg.length?`<div style="margin-top:8px;font-size:11px;color:var(--fg3)">${sugg.map(s=>`• ${s}`).join('<br>')}</div>`:'');
+});
+
+// mistake cards
+const MISTAKES=[
+  {h:'Using "inspect" or "check"',d:'Forbidden verbs. Use "adjust" for small corrective actions.',b:'✗ inspect box',g:'✓ adjust box'},
+  {h:'Using "reach"',d:'Usually means timestamps are wrong. Fix the segment start time.',b:'✗ reach for cup',g:'✓ pick up cup (fix start timestamp)'},
+  {h:'Numerals in labels',d:'Never use numbers. Use words or omit quantity.',b:'✗ pick up 3 knives',g:'✓ pick up three knives'},
+  {h:'Missing separator',d:'Multiple actions need comma or "and".',b:'✗ pick up cup place cup on table',g:'✓ pick up cup, place cup on table'},
+  {h:'"Place" without location',d:'"Place" always needs at least a general location.',b:'✗ place cup',g:'✓ place cup on table'},
+  {h:'Mixing Dense + Coarse',d:'A segment must be Dense OR Coarse — never both.',b:'✗ pick up cup and wash dishes',g:'✓ wash dishes (coarse)'},
+  {h:'Combining "No Action"',d:'"No Action" must never be combined with real actions.',b:'✗ No Action, pick up cup',g:'✓ No Action (separate segment)'},
+  {h:'Intent-only language',d:'Label the physical action, not mental intent.',b:'✗ prepare to cut tape',g:'✓ pick up scissors, cut tape with scissors'},
+  {h:'Verb without object',d:'Every verb must have a clear object.',b:'✗ pick up, place on table',g:'✓ pick up cup, place cup on table'},
+  {h:'Labeling navigation',d:'Do NOT label walking through space.',b:'✗ walk to table',g:'✓ No Action (omit segment)'},
+  {h:'Inconsistent naming',d:'Use the same name for the same object throughout.',b:'✗ pick up box → place cardboard box',g:'✓ pick up box → place box on table'},
+  {h:'Unnecessary adjectives',d:'Only use adjectives to disambiguate two similar items.',b:'✗ pick up blue box (if only one)',g:'✓ pick up box'},
+];
+document.getElementById('mistake-grid').innerHTML=MISTAKES.map(m=>`<div class="mc"><h4>⚠ ${m.h}</h4><p>${m.d}</p><div class="mc-bad">${m.b}</div><div class="mc-good">${m.g}</div></div>`).join('');
+
+// ─── GUIDELINES ──────────────────────────────────────────────
+const GDATA={
+core:`<div class="g-section">
+  <h2>Core Mental Model</h2>
+  <div class="rb info" style="font-size:13px;font-weight:700">A segment represents one continuous interaction with a primary object toward a single goal.</div>
+  <h3>What Requires a Label</h3>
+  <div class="dd">
+    <div class="dd-do"><h4>✓ DO Label</h4><ul><li>Goal-oriented hand–object actions relevant to the task</li><li>Main actions involving hand dexterity</li><li>Main objects being interacted with</li></ul></div>
+    <div class="dd-dont"><h4>✗ DO NOT Label</h4><ul><li>Walking / navigating through space</li><li>Idle gestures</li><li>Looking / visually examining</li><li>Camera adjustments, phone when not important</li><li>"Reach" (see Verb Rules)</li></ul></div>
+  </div>
+  <div class="rb warn">No hand contact → No Action (default)</div>
+  <div class="alert danger"><strong>No numerals:</strong> Do NOT use 1, 2, 5th, 10th. Use words ("three") or omit quantities.</div>
+</div>`,
+verbs:`<div class="g-section">
+  <h2>Action Verb Rules</h2>
+  <h3>Verbs you must NOT use</h3>
+  <div class="rb no">inspect / check</div>
+  <div class="rb no">reach (except only if action is truncated at end of episode and no better verb possible)</div>
+  <p style="color:var(--amber);font-size:12px">If "reach" feels necessary, timestamps are usually wrong. Fix timestamps instead.</p>
+  <h3>Verb Definitions</h3>
+  <table class="vt">
+    <thead><tr><th>Verb</th><th>Meaning</th><th>Notes</th></tr></thead>
+    <tbody>
+      <tr><td>pick up</td><td>Object leaves surface/container resting position</td><td>Required in dense when pickup occurred</td></tr>
+      <tr><td>place</td><td>Object contacts surface and is released/positioned</td><td>Required in dense when placement occurred</td></tr>
+      <tr><td>move</td><td>Coarse relocation (pick up + place as one goal)</td><td>✓ Coarse substitute for pick up and place</td></tr>
+      <tr><td>adjust</td><td>Small corrective change in position/orientation</td><td>Use instead of inspect/check</td></tr>
+      <tr><td>hold</td><td>Maintain grip without relocating</td><td>Only if task-relevant</td></tr>
+      <tr><td>grab</td><td>Grip itself is meaningful</td><td>Rare; use sparingly</td></tr>
+    </tbody>
+  </table>
+  <h3>"Move" Clarification</h3>
+  <div class="rb ok">move mat to table (coarse)</div>
+  <div class="rb ok">move box onto shelf (coarse)</div>
+  <p>If choosing dense, be explicit:</p>
+  <div class="rb ok">pick up mat, place mat on table (dense)</div>
+  <h3>Attach Verbs to Objects</h3>
+  <div class="rb no">pick up, place on table</div>
+  <div class="rb ok">pick up cup, place cup on table</div>
+</div>`,
+format:`<div class="g-section">
+  <h2>Label Format Rules</h2>
+  <h3>Imperative Voice</h3>
+  <div class="rb ok">pick up spoon</div>
+  <div class="rb ok">place box on table</div>
+  <h3>Consistency within an episode</h3>
+  <p>Use consistent verbs and nouns. If you choose "wash," don't alternate with "clean" without reason.</p>
+  <h3>Action Separators</h3>
+  <p>When multiple actions are in one label, separate with <strong>comma</strong> or <strong>and</strong>:</p>
+  <div class="rb ok">pick up cup, place cup on table</div>
+  <div class="rb ok">pick up cup and place cup on table</div>
+  <div class="rb no">pick up cup place cup on table (no separator)</div>
+  <h3>No Numerals</h3>
+  <div class="rb no">pick up 3 knives</div>
+  <div class="rb ok">pick up three knives</div>
+  <div class="rb ok">pick up knives</div>
+  <h3>No Intent-Only Language</h3>
+  <div class="rb no">prepare to cut tape</div>
+  <div class="rb ok">pick up scissors, cut tape with scissors</div>
+  <h3>Dense vs Coarse</h3>
+  <div class="alert danger">A segment is either <strong>Dense OR Coarse</strong> — never mix in one segment.</div>
+  <div class="rb warn">Use Coarse: clear goal exists AND listing steps risks hallucination</div>
+  <div class="rb info">Use Dense: multiple distinct hand actions required (no single goal verb fits)</div>
+  <div class="alert warn">Dense is NOT "better" than coarse. Coarse is often preferred for accuracy. Limit: ~20 words or ~4 atomic actions per label.</div>
+</div>`,
+segments:`<div class="g-section">
+  <h2>Segment Editing Rules</h2>
+  <h3>Timestamps</h3>
+  <div class="rb info">Start: when action begins (hands begin engaging toward contact)</div>
+  <div class="rb info">End: when hands disengage and interaction ends</div>
+  <p>Minor idle time inside a segment is acceptable if it still represents one continuous interaction.</p>
+  <h3>Extend / Shorten</h3>
+  <div class="rb no">Don't extend into a new action</div>
+  <div class="rb no">Don't cut off completion of the action</div>
+  <h3>Merge (when allowed)</h3>
+  <div class="rb ok">Same action/goal, AND</div>
+  <div class="rb ok">Hands <strong>never disengage</strong> between them</div>
+  <h3>Do NOT Merge When</h3>
+  <div class="rb no">Repeated pick up → place cycles with clear disengagement</div>
+  <div class="rb no">Different objects or different goals</div>
+  <h3>Split (when required)</h3>
+  <div class="rb ok">Hands disengage and a new interaction begins</div>
+  <div class="rb ok">A new goal/action begins that must be labeled separately</div>
+  <h3>Decision Tree</h3>
+  <div class="rb info">1. Hands disengage? → Yes: split | No: continue</div>
+  <div class="rb info">2. Same goal? → Yes: merge/keep | No: split</div>
+  <div class="rb info">3. Different object? → Yes: split</div>
+  <div class="alert danger">Never merge: repeated pick→place cycles with disengagement, or different goals "just to reduce count"</div>
+</div>`,
+edge:`<div class="g-section">
+  <h2>Edge Cases & Reference</h2>
+  <h3>No Action Rules</h3>
+  <div class="rb warn">Use No Action only when: hands touch nothing, OR ego is idle/irrelevant</div>
+  <div class="rb no">Do not split solely to isolate "No Action" pauses</div>
+  <div class="rb no">Do not combine "No Action" with real actions</div>
+  <div class="rb no">Do not use "No Action" if ego is holding a task-relevant object</div>
+  <h3>Repeated Actions</h3>
+  <div class="rb info">Disengages and repeats → separate segments</div>
+  <div class="rb info">Never disengages → one segment (often coarse)</div>
+  <h3>Simultaneous Actions</h3>
+  <div class="rb ok">As a coarse goal label, OR</div>
+  <div class="rb ok">As dense enumerated actions</div>
+  <div class="rb warn">…but do not invent steps</div>
+  <h3>Out-of-Frame Actions</h3>
+  <div class="rb no">Do not label actions fully out of frame</div>
+  <div class="rb ok">Partially visible but clearly occurring → label acceptable</div>
+  <div class="rb no">Do not infer or guess actions not confirmed on screen</div>
+  <h3>Object Rules</h3>
+  <div class="rb ok">If unsure → use general noun: "tool", "container", "cloth"</div>
+  <div class="rb ok">Adjectives only to disambiguate two similar items</div>
+  <div class="rb ok">Avoid body parts unless unavoidable</div>
+  <h3>When to Escalate (Discord)</h3>
+  <div class="rb warn">Object cannot be identified after reasonable effort</div>
+  <div class="rb warn">Action cannot be labeled without guessing</div>
+  <div class="rb warn">Segment cannot be made accurate via coarse abstraction</div>
+</div>`,
+checklist:`<div class="g-section">
+  <h2>Audit Fail Conditions</h2>
+  <div class="rb no">Missed major task-relevant hand action</div>
+  <div class="rb no">Hallucinated (non-occurring) action/object</div>
+  <div class="rb no">Timestamps cut off action or include different action</div>
+  <div class="rb no">Forbidden verbs: inspect/check, reach (except truncated-end)</div>
+  <div class="rb no">Dense/coarse mixed in one label</div>
+  <div class="rb no">"No Action" combined with action</div>
+  <h2 style="margin-top:20px">Ideal Segment Checklist</h2>
+  <div class="rb ok">One goal</div>
+  <div class="rb ok">Full action coverage</div>
+  <div class="rb ok">Accurate verbs</div>
+  <div class="rb ok">No hallucinated steps</div>
+  <div class="rb ok">Dense OR coarse (not mixed)</div>
+  <div class="alert info"><strong>Remember:</strong> Quality over quantity. A well-labeled segment accurately captures the main hand-object interaction from start to finish, using clear and consistent language.</div>
+  <h2 style="margin-top:20px">Final Self-Check Before Submitting</h2>
+  <div class="rb info">Did I miss a pick up or place?</div>
+  <div class="rb info">Did I invent anything?</div>
+  <div class="rb info">Did I split without disengagement?</div>
+  <div class="rb info">Did I use a forbidden verb?</div>
+  <div class="rb info">Is this dense OR coarse?</div>
+  <div class="rb warn">If unsure → choose coarse.</div>
+</div>`
+};
+function renderG(tab){
+  document.getElementById('g-content').innerHTML=GDATA[tab]||'';
+  document.querySelectorAll('.g-tab').forEach(b=>b.classList.toggle('active',b.dataset.gt===tab));
+}
+document.querySelectorAll('.g-tab').forEach(b=>b.addEventListener('click',()=>renderG(b.dataset.gt)));
+renderG('core');
+
+// ─── NAVIGATION ──────────────────────────────────────────────
+document.querySelectorAll('.ni').forEach(btn=>{
+  btn.addEventListener('click',()=>{
+    const pg=btn.dataset.page;
+    document.querySelectorAll('.ni').forEach(n=>n.classList.remove('active'));
+    btn.classList.add('active');
+    document.querySelectorAll('.page').forEach(p=>p.classList.remove('on'));
+    document.getElementById(`page-${pg}`).classList.add('on');
+    if(pg==='history')renderHistory();
+  });
+});
+
+// ─── BUTTON HOOKS ────────────────────────────────────────────
+document.getElementById('btn-add').addEventListener('click',addSeg);
+document.getElementById('btn-undo').addEventListener('click',doUndo);
+
+// ─── TOAST ───────────────────────────────────────────────────
+function toast(msg,type='inf'){
+  const t=document.getElementById('toast');
+  t.textContent=msg;t.className=type;
+  if(toastT)clearTimeout(toastT);
+  toastT=setTimeout(()=>{t.className='';t.style.display='';},3000);
+}
+
+// ─── INIT ────────────────────────────────────────────────────
+render();renderHistory();
+</script>
+</body>
+</html>
