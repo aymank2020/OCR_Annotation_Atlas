@@ -1,0 +1,40 @@
+input:
+  episode_id: "f01"
+  candidate_json: "data/f01.json"
+  video_duration_sec: 59.0
+  video_file: ""
+  video_url: ""
+  headers_json: ""
+
+providers:
+  candidate:
+    # file | claude_vision | gemini_video
+    type: "file"
+    model: "gemini-2.5-pro"
+    api_key: ""
+    max_frames: 45
+    skip_object_map: false
+
+  repair:
+    # none | anthropic | openai | gemini
+    type: "none"
+    model: "claude-opus-4-5"
+    api_key: ""
+
+  judge:
+    # none | anthropic | openai | gemini
+    type: "none"
+    model: "gpt-4o"
+    api_key: ""
+
+stages:
+  run_repair: true
+  run_judge: false
+  repair_policy: "major_only"
+  judge_policy: "on_major_or_repair"
+
+output:
+  dir: "outputs"
+  prefix: "atlas_pipeline"
+  # when false, keep only final.json + final_report.html + summary.json
+  save_debug_files: false

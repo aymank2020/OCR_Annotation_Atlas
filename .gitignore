@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+*.log
+
+outputs/
+.state/
+annotations_*.json
+annotations_*.csv
+tier3_review_*.json
+tier3_review_*.csv
+*_reference_*.json
+*_reference_*.csv
+atlas_pipeline_*.json
+
+.idea/

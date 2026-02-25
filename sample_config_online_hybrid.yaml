@@ -1,0 +1,42 @@
+input:
+  episode_id: "f01_online"
+  candidate_json: ""
+  video_duration_sec: 0
+  video_file: "data/f01.mp4"
+  video_url: ""
+  headers_json: ""
+
+providers:
+  candidate:
+    # gemini_video | claude_vision | file
+    type: "gemini_video"
+    model: "gemini-2.5-flash"
+    # Prefer env var GEMINI_API_KEY or GOOGLE_API_KEY
+    api_key: ""
+    max_frames: 45
+    skip_object_map: false
+
+  repair:
+    # codex is aliased to OpenAI API in pipeline_runner
+    type: "codex"
+    model: "gpt-4o"
+    # Prefer env var OPENAI_API_KEY
+    api_key: ""
+
+  judge:
+    type: "codex"
+    model: "gpt-4o"
+    # Prefer env var OPENAI_API_KEY
+    api_key: ""
+
+stages:
+  run_repair: true
+  run_judge: true
+  repair_policy: "major_only"
+  judge_policy: "on_major_or_repair"
+
+output:
+  dir: "outputs"
+  prefix: "atlas_online_hybrid"
+  # when false, keep only final.json + final_report.html + summary.json
+  save_debug_files: false

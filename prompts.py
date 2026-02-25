@@ -1,0 +1,309 @@
+"""
+Prompt and schema assets for Atlas-style annotation pipelines.
+"""
+
+from __future__ import annotations
+
+import json
+from typing import Any, Dict
+
+
+FORBIDDEN_VERBS = ["inspect", "check", "reach"]
+
+
+VIDEO_ANNOTATION_PROMPT = """You are an expert egocentric hand-action annotation assistant for Atlas Capture style labeling.
+
+Analyze the provided video and return segment annotations as strict JSON.
+
+Core objective:
+- one segment = one continuous hand-object interaction toward one goal
+- start when hands engage toward contact
+- end when hands disengage or goal changes
+
+Strict rules:
+- label only task-relevant hand-object interactions
+- do not label walking/navigation/idle gestures/inspection-only behavior
+- imperative voice only
+- forbidden verbs: inspect, check, reach (except truncated-end edge case)
+- no numerals in labels
+- never mix dense/coarse in one segment
+- No Action only when hands touch nothing or ego is idle/irrelevant
+- No Action must be standalone, never mixed with action
+- place should include location
+- if uncertain, use general nouns (tool/container/cloth/item)
+- do not hallucinate hidden actions
+
+Output requirements:
+- JSON only, no markdown
+- use the provided schema shape
+- include start/end in seconds, label, granularity, confidence, rule checks, audit risk
+"""
+
+
+REPAIR_PROMPT = """You are a strict annotation repair assistant for Atlas-style egocentric hand-action labels.
+
+Input includes:
+1) existing annotation JSON
+2) validator_report
+3) optional evidence_notes
+
+Critical behavior:
+- preserve valid fields and segments
+- apply minimal edits needed to satisfy rules
+- do not invent actions or objects
+- do not guess hidden actions
+- if uncertain, prefer general objects and coarse abstraction
+- if repair requires guessing, set escalation_flag=true
+
+Rules to enforce:
+- imperative labels only
+- forbidden verbs: inspect, check, reach
+- no numerals in labels
+- No Action must not be mixed with action
+- each segment has one granularity: dense/coarse/no_action
+- place should include a location
+- verbs must be attached to objects
+- avoid intent-only wording (prepare to, try to, about to)
+
+Timestamp handling:
+- do not change timestamps unless validator reports boundary/timestamp/coverage issues
+- if timestamps change, update duration_sec
+
+Merge/split handling:
+- do not merge/split unless validator explicitly requires merge_split or boundary correction
+- if split is required, keep order and regenerate segment_index sequence
+
+Return repaired annotation JSON only.
+No markdown. No extra text.
+"""
+
+
+AUDIT_JUDGE_PROMPT = """You are an Atlas-style annotation audit judge.
+
+Evaluate the provided annotation JSON against strict egocentric hand-action rules.
+
+Audit each segment for:
+1) one continuous interaction toward one goal
+2) task-relevant hand-object focus
+3) accurate verb/object naming (no guessing)
+4) label format: imperative, no numerals, verbs attached to objects
+5) no forbidden verbs: inspect/check/reach
+6) dense/coarse not mixed
+7) No Action usage and isolation correctness
+8) timestamp alignment to engagement/disengagement boundaries
+9) merge/split logic consistency
+10) no hallucinated or missed major actions
+
+Decision policy:
+- FAIL if major fail conditions exist:
+  missed major action, hallucination, invalid timestamps,
+  forbidden verbs, dense/coarse mix, No Action mixed with action
+- BORDERLINE if no major fail but multiple medium risks
+- PASS only when accurate, defensible, and consistent
+
+Return JSON only:
+{
+  "overall_verdict": "PASS|FAIL|BORDERLINE",
+  "overall_score": 0-100,
+  "segment_results": [],
+  "audit_fail_conditions_triggered": [],
+  "high_priority_fixes": [],
+  "low_priority_fixes": [],
+  "final_notes": ""
+}
+"""
+
+
+NORMALIZATION_PROMPT = """You are a strict label normalization assistant.
+
+Input: already-segmented annotation JSON.
+Task: normalize wording only, with minimal edits.
+
+Rules:
+- imperative labels
+- no numerals
+- no forbidden verbs: inspect/check/reach
+- no intent-only language
+- consistent object naming within episode
+- verbs clearly attached to objects
+- preserve No Action exactly when granularity=no_action
+- keep timestamps unchanged unless explicit rule violation requires it
+- preserve meaning and segment order
+
+Output JSON only. Minimal edits only.
+"""
+
+
+CONSISTENCY_PROMPT = """Review annotation JSON for consistency only.
+
+Do NOT re-segment and do NOT invent actions.
+Normalize only:
+- object naming consistency
+- verb consistency where meaning is unchanged
+- separator consistency (comma / and)
+- pluralization if clearly visible and needed
+- remove unnecessary adjectives unless needed to disambiguate
+
+Preserve timestamps, segment count, and action meaning.
+Return JSON only.
+"""
+
+
+ANNOTATION_SCHEMA: Dict[str, Any] = {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "EgocentricHandActionAnnotationEpisode",
+    "type": "object",
+    "required": ["episode_id", "video_duration_sec", "annotation_version", "segments", "episode_checks"],
+    "properties": {
+        "episode_id": {"type": "string", "minLength": 1},
+        "video_duration_sec": {"type": "number", "minimum": 0},
+        "annotation_version": {"type": "string"},
+        "source_context": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "task_title": {"type": "string"},
+                "task_summary": {"type": "string"},
+                "fps_sampled": {"type": "number", "minimum": 0},
+                "model_name": {"type": "string"},
+            },
+        },
+        "segments": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/segment"}},
+        "episode_checks": {"$ref": "#/$defs/episodeChecks"},
+    },
+    "$defs": {
+        "segment": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": [
+                "segment_index",
+                "start_sec",
+                "end_sec",
+                "duration_sec",
+                "label",
+                "granularity",
+                "primary_goal",
+                "primary_object",
+                "confidence",
+                "rule_checks",
+                "audit_risk",
+            ],
+            "properties": {
+                "segment_index": {"type": "integer", "minimum": 1},
+                "start_sec": {"type": "number", "minimum": 0},
+                "end_sec": {"type": "number", "minimum": 0},
+                "duration_sec": {"type": "number", "exclusiveMinimum": 0},
+                "label": {"type": "string", "minLength": 2},
+                "granularity": {"type": "string", "enum": ["dense", "coarse", "no_action"]},
+                "primary_goal": {"type": "string", "minLength": 1},
+                "primary_object": {"type": "string", "minLength": 1},
+                "secondary_objects": {"type": "array", "items": {"type": "string"}, "default": []},
+                "actions_observed": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["verb", "object"],
+                        "properties": {
+                            "verb": {"type": "string", "minLength": 1},
+                            "object": {"type": "string", "minLength": 1},
+                            "location": {"type": "string"},
+                        },
+                    },
+                },
+                "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                "uncertainty_note": {"type": "string"},
+                "escalation_flag": {"type": "boolean", "default": False},
+                "escalation_reason": {
+                    "type": "string",
+                    "enum": [
+                        "object_unidentifiable",
+                        "action_unclear_without_guessing",
+                        "cannot_be_accurate_even_with_coarse",
+                        "other",
+                    ],
+                },
+                "rule_checks": {"$ref": "#/$defs/ruleChecks"},
+                "audit_risk": {"$ref": "#/$defs/auditRisk"},
+            },
+            "allOf": [
+                {
+                    "if": {"properties": {"granularity": {"const": "no_action"}}, "required": ["granularity"]},
+                    "then": {
+                        "properties": {
+                            "label": {"enum": ["No Action"]},
+                            "primary_goal": {"enum": ["idle", "irrelevant", "no_contact"]},
+                        }
+                    },
+                }
+            ],
+        },
+        "ruleChecks": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": [
+                "imperative_voice",
+                "min_two_words",
+                "no_numerals",
+                "no_forbidden_verbs",
+                "verbs_attached_to_objects",
+                "one_goal",
+                "full_action_coverage",
+                "no_hallucinated_steps",
+                "dense_coarse_not_mixed",
+                "no_action_not_mixed_with_action",
+                "timestamps_aligned",
+            ],
+            "properties": {
+                "imperative_voice": {"type": "boolean"},
+                "min_two_words": {"type": "boolean"},
+                "no_numerals": {"type": "boolean"},
+                "no_forbidden_verbs": {"type": "boolean"},
+                "forbidden_verbs_found": {"type": "array", "items": {"type": "string"}},
+                "verbs_attached_to_objects": {"type": "boolean"},
+                "one_goal": {"type": "boolean"},
+                "full_action_coverage": {"type": "boolean"},
+                "no_hallucinated_steps": {"type": "boolean"},
+                "dense_coarse_not_mixed": {"type": "boolean"},
+                "no_action_not_mixed_with_action": {"type": "boolean"},
+                "timestamps_aligned": {"type": "boolean"},
+                "hands_disengage_boundary_ok": {"type": "boolean"},
+            },
+        },
+        "auditRisk": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["level", "reasons"],
+            "properties": {
+                "level": {"type": "string", "enum": ["low", "medium", "high"]},
+                "reasons": {"type": "array", "items": {"type": "string"}},
+            },
+        },
+        "episodeChecks": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": [
+                "segments_sorted",
+                "no_negative_durations",
+                "no_overlaps",
+                "coverage_within_video_duration",
+                "repeated_action_logic_checked",
+                "merge_split_logic_checked",
+            ],
+            "properties": {
+                "segments_sorted": {"type": "boolean"},
+                "no_negative_durations": {"type": "boolean"},
+                "no_overlaps": {"type": "boolean"},
+                "coverage_within_video_duration": {"type": "boolean"},
+                "gaps_present": {"type": "boolean"},
+                "repeated_action_logic_checked": {"type": "boolean"},
+                "merge_split_logic_checked": {"type": "boolean"},
+                "notes": {"type": "string"},
+            },
+        },
+    },
+}
+
+
+def schema_json(indent: int = 2) -> str:
+    return json.dumps(ANNOTATION_SCHEMA, indent=indent, ensure_ascii=False)

@@ -1,0 +1,74 @@
+[
+  {
+    "step": 1,
+    "start": "0:00.0",
+    "end": "0:03.2",
+    "duration_seconds": 3.2,
+    "workers": 10,
+    "description": "grab picture from pile, flip picture, remove picture on frame"
+  },
+  {
+    "step": 2,
+    "start": "0:03.2",
+    "end": "0:07.4",
+    "duration_seconds": 4.2,
+    "workers": 6,
+    "description": "smooth out picture on the frame"
+  },
+  {
+    "step": 3,
+    "start": "0:07.4",
+    "end": "0:10.0",
+    "duration_seconds": 2.6,
+    "workers": 2,
+    "description": "grab backboard"
+  },
+  {
+    "step": 4,
+    "start": "0:10.0",
+    "end": "0:15.1",
+    "duration_seconds": 5.1,
+    "workers": 4,
+    "description": "place backboard on frame"
+  },
+  {
+    "step": 5,
+    "start": "0:15.1",
+    "end": "0:32.0",
+    "duration_seconds": 16.9,
+    "workers": 9,
+    "description": "pick up tool, secure backboard to frame with tool"
+  },
+  {
+    "step": 6,
+    "start": "0:32.0",
+    "end": "0:33.9",
+    "duration_seconds": 1.9,
+    "workers": 3,
+    "description": "place tool down"
+  },
+  {
+    "step": 7,
+    "start": "0:33.9",
+    "end": "0:37.4",
+    "duration_seconds": 3.5,
+    "workers": 2,
+    "description": "flip frame"
+  },
+  {
+    "step": 8,
+    "start": "0:50.8",
+    "end": "0:54.2",
+    "duration_seconds": 3.4,
+    "workers": 9,
+    "description": "grab cloth, wipe frame with cloth, place cloth down"
+  },
+  {
+    "step": 9,
+    "start": "0:54.2",
+    "end": "0:59.0",
+    "duration_seconds": 4.8,
+    "workers": 2,
+    "description": "flip frame"
+  }
+]

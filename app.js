@@ -27,6 +27,7 @@ const video = document.getElementById('video-player');
 // ============================================================
 const FORBIDDEN_VERBS = ['inspect', 'check', 'reach'];
 const FORBIDDEN_WORDS = ['hands', 'examine'];
+const DISALLOWED_TOOL_TERMS = ['mechanical arm', 'robotic arm', 'robot arm', 'manipulator', 'claw arm'];
 const ARTICLES = [' the ', ' a ', ' an '];
 const ING_PATTERN = /\b\w+ing\b/g;
 const NUMERAL_PATTERN = /\b\d+\b/;
@@ -52,6 +53,16 @@ function validateLabel(label) {
       issues.push({ type: 'warning', msg: `Avoid "${w}" — don't reference body parts unless unavoidable` });
     }
   });
+
+  // Gripper terminology policy
+  DISALLOWED_TOOL_TERMS.forEach(t => {
+    if (l.toLowerCase().includes(t)) {
+      issues.push({ type: 'error', msg: `Use "gripper" only if unavoidable - avoid "${t}"` });
+    }
+  });
+  if (/\bgripper\b/i.test(l)) {
+    issues.push({ type: 'warning', msg: 'Only mention "gripper" when description is unclear without it' });
+  }
 
   // Articles
   ARTICLES.forEach(a => {
@@ -247,6 +258,7 @@ function renderSegments() {
           <span>${fmt(seg.end)}</span>
           <button class="seg-time-btn" onclick="event.stopPropagation();adjustTime(${seg.id},'end',0.2)" title="Increase end">+</button>
           <span class="seg-duration">(${dur}s)</span>
+          ${(seg.end - seg.start) > 60 ? '<span style="color:#ef4444;font-size:11px;margin-left:6px">>60s</span>' : ''}
         </div>
         <div class="seg-label ${labelClass}">${labelText}</div>
       </div>
@@ -453,6 +465,11 @@ document.getElementById('btn-complete').addEventListener('click', () => {
     showToast(`${unlabeled.length} segment(s) still unlabeled!`, 'error');
     return;
   }
+  const overDuration = state.segments.filter(s => (s.end - s.start) > 60);
+  if (overDuration.length) {
+    showToast(`${overDuration.length} segment(s) exceed 60 seconds - split them before completing`, 'error');
+    return;
+  }
   // Run validation on all labels
   let hasErrors = false;
   state.segments.forEach(seg => {
@@ -601,6 +618,18 @@ const COMMON_MISTAKES = [
     good: '✓ pick up three knives / pick up knives',
   },
   {
+    title: 'Wrong gripper wording',
+    desc: 'Treat the tool as hand extension. Do not use robotic/mechanical arm wording.',
+    bad: '? use mechanical arm to grab block',
+    good: '? pick up block',
+  },
+  {
+    title: 'Segment too long',
+    desc: 'Each segment must be 60 seconds or less. Split at disengagement points.',
+    bad: '? one segment from 0.0s to 75.0s',
+    good: '? split into shorter engagement-based segments',
+  },
+  {
     title: 'Missing separator',
     desc: 'Multiple actions need comma or "and" between them.',
     bad: '✗ pick up cup place cup on table',
@@ -672,6 +701,7 @@ const GUIDELINES_DATA = {
     <div class="guideline-section">
       <h2>Core Mental Model (Non-Negotiable)</h2>
       <div class="alert-box info">A segment represents <strong>one continuous interaction with a primary object toward a single goal.</strong></div>
+      <div class="alert-box info">Gripper tasks: treat the gripper as an extension of hand. Usually do not mention the tool in labels.</div>
       <p>A segment typically begins when the hands engage the primary object and ends when that interaction is complete, <strong>when the hands disengage</strong>, or when the interaction focus or goal changes.</p>
       <h3>What Requires a Label</h3>
       <div class="do-dont-grid">
@@ -742,6 +772,7 @@ const GUIDELINES_DATA = {
   segments: `
     <div class="guideline-section">
       <h2>Segment Editing Rules</h2>
+      <div class="alert-box warning">Hard limits: each segment <= 60 seconds and each label <= 20 words.</div>
       <h3>7.1 Timestamps</h3>
       <div class="rule-box info">Start: when the action begins (hands begin engaging toward contact to cover the full interaction)</div>
       <div class="rule-box info">End: when hands disengage and the interaction ends</div>

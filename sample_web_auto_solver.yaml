@@ -1,0 +1,136 @@
+browser:
+  headless: false
+  slow_mo_ms: 120
+  storage_state_path: ".state/atlas_auth.json"
+  force_login: false
+  # If true, Playwright uses your real Chrome profile (recommended when you have multiple profiles).
+  use_chrome_profile: true
+  # If Chrome profile is locked (Chrome already open), auto-fallback to isolated context.
+  fallback_to_isolated_context_on_profile_error: false
+  profile_launch_timeout_ms: 30000
+  # Strongly recommended on Windows when using real profile with Playwright.
+  close_chrome_before_profile_launch: false
+  profile_launch_retry_count: 1
+  profile_launch_retry_delay_sec: 2.0
+  # Use base Chrome profile directly (no clone/copy).
+  clone_chrome_profile_to_temp: false
+  cloned_user_data_dir: ".state/chrome_user_data_clone_v2"
+  reuse_existing_cloned_profile: true
+  prefer_profile_with_atlas_cookies: false
+  chrome_channel: "chrome"
+  # Base Chrome user-data root (main Chrome profile data) via local junction path.
+  chrome_user_data_dir: "E:\\OCR_annotation_Atlas\\.state\\chrome_user_data_link"
+  # Set your target profile folder name exactly as Chrome uses it: Default, Profile 1, Profile 2, ...
+  # Main profile folder in Chrome root user-data.
+  chrome_profile_directory: "Default"
+
+run:
+  # Keep true for safe first run. Use --execute to apply labels.
+  dry_run: true
+  max_segments: 0
+  max_episodes_per_run: 0
+  reserve_cooldown_sec: 120
+  reuse_cached_labels: true
+  skip_unchanged_labels: true
+  resume_from_artifacts: true
+  resume_skip_video_steps_when_cached: true
+  resume_skip_apply_steps_when_done: true
+  use_task_scoped_artifacts: true
+  enable_quality_review_submit: true
+  adjust_timestamps: true
+  play_full_video_before_labeling: true
+  play_full_video_max_wait_sec: 900
+  segment_resolve_attempts: 24
+  segment_resolve_retry_ms: 800
+  segment_resolve_sample_size: 8
+  segment_resolve_row_text_timeout_ms: 350
+  output_dir: "outputs"
+  segments_dump: "atlas_segments_dump.json"
+  labels_dump: "atlas_labels_from_gemini.json"
+  prompt_dump: "atlas_prompt.txt"
+  video_dump: "atlas_task_video.mp4"
+
+atlas:
+  login_url: "https://audit.atlascapture.io/login?redirect=%2F"
+  dashboard_url: "https://audit.atlascapture.io/dashboard"
+  room_url: "https://audit.atlascapture.io/tasks/room/normal"
+  # Keep empty for session-only mode (no fresh login submit). Set ATLAS_LOGIN_EMAIL only when you want to request OTP login.
+  email: ""
+  auth_timeout_sec: 180
+  wait_before_continue_sec: 5
+  timestamp_step_sec: 0.1
+  timestamp_max_clicks_per_segment: 30
+  selectors:
+    # Login / navigation
+    email_input: '#email || input#email || input[type="email"] || input[autocomplete="email"]'
+    start_button: 'button:has-text("Start Earning Today") || button[type="submit"]'
+    otp_input: '#code || input#code || input[inputmode="numeric"] || input[placeholder="000000"]'
+    verify_button: 'button:has-text("Verify") || button[type="submit"]'
+    tasks_nav: 'a[href*="/tasks"] || a:has-text("Tasks") || button:has-text("Tasks") || [data-testid*="tasks"]'
+    enter_workflow_button: 'button:has-text("Enter Standard Workflow") || text=/enter\s+standard\s+workflow/i'
+    continue_room_button: 'button:has-text("Continue to Room") || text=/continue\s+to\s+room/i'
+    label_button: 'button:has-text("Label") || text=/\blabel\b/i'
+    label_task_link: 'a[href*="/tasks/room/normal/label/"]'
+    reserve_episodes_button: 'button:has-text("Reserve 5 Episodes") || button:has-text("Reserve")'
+    confirm_reserve_button: 'button:has-text("I Understand") || button:has-text("Understand") || button:has-text("OK") || button:has-text("Okay") || button:has-text("Confirm")'
+    video_element: 'video'
+    video_source: 'video source'
+    loop_toggle_button: 'button:has-text("Loop OFF") || button:has-text("Loop ON") || button[title*="Toggle segment loop"]'
+    complete_button: 'button:has-text("Complete")'
+    quality_review_modal: 'div[role="dialog"]:has-text("Quality Review") || div:has-text("Quality Review")'
+    quality_review_checkbox: 'input[type="checkbox"] || [role="checkbox"] || label:has-text("I verify that I have reviewed")'
+    quality_review_submit_button: 'button:has-text("Submit")'
+    blocking_side_panel: 'div[class*="fixed"][class*="right-4"][class*="z-50"][class*="slide-in-from-right"] || div[class*="fixed"][class*="right-4"][class*="z-50"][class*="shadow-2xl"]'
+    blocking_side_panel_close: 'button:has-text("Close") || button:has-text("Dismiss") || button:has-text("Done") || button:has-text("Cancel") || [role="button"]:has-text("Close") || button[aria-label*="close" i] || button[title*="close" i]'
+
+    # Segment list extraction
+    segment_rows: 'div.space-y-1.p-2 > div.rounded-lg.border.p-3 || [data-testid*="segment"] || [data-cy*="segment"] || .segment-row || .seg-item || [class*="segment"][class*="row"]'
+    segment_label: 'p[title*="Double-click to edit"] || p.text-sm.font-medium.cursor-text || [data-testid*="label"] || [data-cy*="label"] || .segment-label || .seg-label || [class*="label"]'
+    segment_start: 'span.font-mono.text-xs || [data-testid*="start"] || [data-cy*="start"]'
+    segment_end: 'span.font-mono.text-xs.px-1\\.5.py-0\\.5 || [data-testid*="end"] || [data-cy*="end"]'
+    segment_time_plus_button: 'button:has(svg.lucide-plus)'
+    segment_time_minus_button: 'button:has(svg.lucide-minus)'
+
+    # Label writing
+    edit_button_in_row: 'button[title*="Edit"] || button:has-text("Edit") || [aria-label*="Edit"]'
+    label_input: 'textarea || [contenteditable="true"] || input[type="text"]'
+    save_button: 'button:has-text("Save") || button:has-text("Apply") || button:has-text("Done") || button:has-text("Submit")'
+
+otp:
+  # gmail_imap = fully automatic OTP from Gmail.
+  # manual_browser = you type OTP manually in the opened browser window.
+  provider: "gmail_imap"
+  # Leave empty when using environment variable GMAIL_EMAIL.
+  gmail_email: ""
+  # Leave empty when using environment variable GMAIL_APP_PASSWORD.
+  # IMPORTANT: this must be a Gmail App Password (16 chars), not your normal Gmail password.
+  gmail_app_password: ""
+  mailbox: "[Gmail]/All Mail"
+  imap_host: "imap.gmail.com"
+  imap_port: 993
+  sender_hint: ""
+  subject_hint: ""
+  code_regex: "\\b(\\d{6})\\b"
+  timeout_sec: 120
+  poll_interval_sec: 4
+  max_messages: 25
+  unseen_only: false
+  lookback_sec: 300
+
+gemini:
+  api_key: ""
+  model: "gemini-2.5-flash"
+  temperature: 0.0
+  max_retries: 3
+  retry_base_delay_sec: 2.0
+  connect_timeout_sec: 30
+  request_timeout_sec: 420
+  attach_video: true
+  require_video: false
+  allow_text_only_fallback_on_network_error: true
+  max_inline_video_mb: 20.0
+  video_download_timeout_sec: 180
+  min_video_bytes: 500000
+  extra_instructions: |
+    Keep labels concise and imperative.
+    Use "No Action" only when there is clearly no hand/object interaction.

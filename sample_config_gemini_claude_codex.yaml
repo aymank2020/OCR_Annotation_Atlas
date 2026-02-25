@@ -1,0 +1,48 @@
+input:
+  episode_id: "f01_hybrid"
+  candidate_json: "data/f01.json"
+  video_duration_sec: 0
+  video_file: "data/f01.mp4"
+  video_url: ""
+  headers_json: ""
+
+providers:
+  candidate:
+    type: "gemini_video"
+    # fallback order: gemini -> claude -> file candidate_json
+    fallback_type: "claude_vision"
+    model: "gemini-2.5-flash"
+    # Prefer env var GEMINI_API_KEY or GOOGLE_API_KEY
+    api_key: ""
+    max_frames: 90
+    skip_object_map: false
+    gemini_max_retries: 4
+    gemini_retry_base_delay_sec: 2.0
+
+  repair:
+    # "claude" is alias of anthropic provider
+    type: "claude"
+    model: "claude-opus-4-6"
+    # Prefer env var ANTHROPIC_API_KEY
+    api_key: ""
+
+  judge:
+    # "codex" is alias of OpenAI provider
+    type: "codex"
+    model: "gpt-5.2"
+    # Prefer env var OPENAI_API_KEY
+    api_key: ""
+
+stages:
+  run_repair: true
+  run_judge: true
+  repair_policy: "major_only"
+  judge_policy: "on_major_or_repair"
+  fail_open_on_repair_error: true
+  fail_open_on_judge_error: true
+
+output:
+  dir: "outputs"
+  prefix: "atlas_gemini_claude_codex"
+  # when false, keep only final.json + final_report.html + summary.json
+  save_debug_files: false
