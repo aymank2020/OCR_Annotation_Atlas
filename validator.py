@@ -14,14 +14,26 @@ import prompts
 
 
 NO_ACTION_LABEL = "No Action"
+MAX_ATOMIC_ACTIONS_PER_LABEL = 2
+
+DISALLOWED_TOOL_TERMS = (
+    "mechanical arm",
+    "robotic arm",
+    "robot arm",
+    "manipulator",
+    "robot gripper",
+    "claw arm",
+)
 
 OBJECT_EXPECTING_VERBS = {
     "pick up",
     "place",
     "move",
+    "relocate",
     "adjust",
     "hold",
     "grab",
+    "align",
     "cut",
     "open",
     "close",
@@ -41,6 +53,18 @@ INTENT_PATTERNS = [
 NUMERAL_PATTERN = re.compile(r"\d")
 WHITESPACE_PATTERN = re.compile(r"\s+")
 PLACE_LOCATION_PATTERN = re.compile(r"\bplace\b.*\b(on|in|into|onto|to|inside|at|under|over)\b", re.IGNORECASE)
+CHAINED_VERB_WITHOUT_OBJECT_PATTERN = re.compile(
+    r"\b(pick up|place|move|relocate|adjust|hold|align)\s+and\s+(pick up|place|move|relocate|adjust|hold|align)\b",
+    re.IGNORECASE,
+)
+ORPHAN_SECOND_PLACE_PATTERN = re.compile(
+    r"\band\s+place\s+(on|in|into|onto|to|inside|at|under|over)\b",
+    re.IGNORECASE,
+)
+BODY_PART_REFERENCE_PATTERN = re.compile(
+    r"\b(hand|hands|finger|fingers|thumb|thumbs|palm|palms|wrist|wrists)\b",
+    re.IGNORECASE,
+)
 
 NUMERAL_TO_WORD = {
     "0": "zero",
@@ -146,6 +170,24 @@ def split_actions(label: str) -> List[str]:
     return [p for p in parts if p]
 
 
+def count_atomic_actions(label: str) -> int:
+    l = normalize_spaces(label)
+    if not l:
+        return 0
+    if l == NO_ACTION_LABEL:
+        return 1
+    return len(split_actions(l))
+
+
+def disallowed_tool_terms_found(label: str) -> List[str]:
+    l = lower(label)
+    found: List[str] = []
+    for term in DISALLOWED_TOOL_TERMS:
+        if re.search(rf"\b{re.escape(term)}\b", l):
+            found.append(term)
+    return found
+
+
 def detect_possible_missing_object(action_phrase: str) -> bool:
     l = lower(action_phrase)
     for verb in sorted(OBJECT_EXPECTING_VERBS, key=len, reverse=True):
@@ -155,10 +197,28 @@ def detect_possible_missing_object(action_phrase: str) -> bool:
             tokens = l.split()
             if verb == "pick up" and len(tokens) <= 2:
                 return True
-            if verb in {"place", "move"} and len(tokens) <= 2:
+            if verb in {"place", "move", "relocate"} and len(tokens) <= 2:
                 return True
             return False
     return False
+
+
+def has_unattached_verb_chain(label: str) -> bool:
+    l = normalize_spaces(label)
+    if not l or l == NO_ACTION_LABEL:
+        return False
+    if CHAINED_VERB_WITHOUT_OBJECT_PATTERN.search(l):
+        return True
+    if ORPHAN_SECOND_PLACE_PATTERN.search(l):
+        return True
+    return False
+
+
+def has_body_part_reference(label: str) -> bool:
+    l = normalize_spaces(label)
+    if not l or l == NO_ACTION_LABEL:
+        return False
+    return bool(BODY_PART_REFERENCE_PATTERN.search(l))
 
 
 def place_has_location(label: str) -> bool:
@@ -190,7 +250,9 @@ def classify_audit_risk(reasons: Sequence[str]) -> str:
         return "low"
     high_markers = {
         "forbidden_verbs",
+        "disallowed_tool_terms",
         "no_action_mixed",
+        "too_many_atomic_actions",
         "duration_mismatch",
         "timestamp_overlap",
         "timestamp_order_invalid",
@@ -385,6 +447,13 @@ def validate_segment(seg: Dict[str, Any], video_duration_sec: float) -> Tuple[Di
         forbidden = contains_forbidden_verbs(label)
         if forbidden:
             errors.append("forbidden_verbs")
+        disallowed_terms = disallowed_tool_terms_found(label)
+        if disallowed_terms:
+            errors.append("disallowed_tool_terms")
+        if has_body_part_reference(label):
+            errors.append("body_parts_referenced")
+        if re.search(r"\bgripper\b", lower(label)):
+            warnings.append("gripper_term_used")
 
         if gran == "no_action":
             if label != NO_ACTION_LABEL:
@@ -400,9 +469,13 @@ def validate_segment(seg: Dict[str, Any], video_duration_sec: float) -> Tuple[Di
             errors.append("no_action_mixed")
 
         if label != NO_ACTION_LABEL:
+            if count_atomic_actions(label) > MAX_ATOMIC_ACTIONS_PER_LABEL:
+                errors.append("too_many_atomic_actions")
             missing = [phrase for phrase in split_actions(label) if detect_possible_missing_object(phrase)]
             if missing:
                 warnings.append("possible_missing_object")
+            if has_unattached_verb_chain(label):
+                errors.append("verbs_not_attached_to_objects")
             if not place_has_location(label):
                 warnings.append("place_missing_location")
             if dense_coarse_mixed(seg):
@@ -427,7 +500,10 @@ def validate_segment(seg: Dict[str, Any], video_duration_sec: float) -> Tuple[Di
         "no_numerals": "numerals_present" not in errors,
         "no_forbidden_verbs": "forbidden_verbs" not in errors,
         "forbidden_verbs_found": contains_forbidden_verbs(label),
-        "verbs_attached_to_objects": "possible_missing_object" not in warnings,
+        "no_body_part_references": "body_parts_referenced" not in errors,
+        "verbs_attached_to_objects": (
+            "possible_missing_object" not in warnings and "verbs_not_attached_to_objects" not in errors
+        ),
         "one_goal": True,
         "full_action_coverage": True,
         "no_hallucinated_steps": True,
@@ -440,9 +516,17 @@ def validate_segment(seg: Dict[str, Any], video_duration_sec: float) -> Tuple[Di
     audit_reasons: List[str] = []
     if "forbidden_verbs" in errors:
         audit_reasons.append("verb_choice_ambiguous")
+    if "verbs_not_attached_to_objects" in errors:
+        audit_reasons.append("verb_choice_ambiguous")
+    if "disallowed_tool_terms" in errors:
+        audit_reasons.append("verb_choice_ambiguous")
+    if "body_parts_referenced" in errors:
+        audit_reasons.append("verb_choice_ambiguous")
     if "numerals_present" in errors:
         audit_reasons.append("possible_hallucination")
     if "dense_coarse_mixed" in errors:
+        audit_reasons.append("granularity_choice_ambiguous")
+    if "too_many_atomic_actions" in errors:
         audit_reasons.append("granularity_choice_ambiguous")
     if "no_action_mixed" in errors:
         audit_reasons.append("no_action_rule_risk")
@@ -515,8 +599,16 @@ def validate_episode(annotation: Dict[str, Any]) -> Dict[str, Any]:
         errs = set(report["errors"])
         if "forbidden_verbs" in errs:
             major_fail_triggers.append("forbidden_verbs_used")
+        if "verbs_not_attached_to_objects" in errs:
+            major_fail_triggers.append("verbs_not_attached_to_objects")
+        if "disallowed_tool_terms" in errs:
+            major_fail_triggers.append("disallowed_tool_terms")
+        if "body_parts_referenced" in errs:
+            major_fail_triggers.append("body_parts_referenced")
         if "dense_coarse_mixed" in errs:
             major_fail_triggers.append("dense_coarse_mixed")
+        if "too_many_atomic_actions" in errs:
+            major_fail_triggers.append("too_many_atomic_actions")
         if "no_action_mixed" in errs:
             major_fail_triggers.append("no_action_mixed_with_action")
         if "timestamp_order_invalid" in errs or "duration_mismatch" in errs:

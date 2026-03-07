@@ -113,13 +113,13 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "loop_off_on_episode_open": True,
         "enable_policy_gate": True,
         "block_apply_on_validation_fail": True,
-        "skip_policy_lexical_checks_on_unchanged_labels": True,
+        "skip_policy_lexical_checks_on_unchanged_labels": False,
         "ignore_timestamp_policy_errors_when_adjust_disabled": True,
         "ignore_no_action_standalone_policy_error": True,
         "min_label_words": 2,
         "max_label_words": 20,
         "max_atomic_actions_per_label": 2,
-        "forbidden_label_verbs": ["inspect", "check", "look", "examine", "reach", "rotate", "grab"],
+        "forbidden_label_verbs": ["inspect", "check", "look", "examine", "reach", "rotate", "grab", "relocate"],
         "forbidden_narrative_words": ["another", "then", "next", "continue", "again"],
         "tier3_label_rewrite": True,
         "enable_structural_actions": True,
@@ -3717,13 +3717,20 @@ def build_prompt(
         "Do not exceed 20 words or 2 atomic actions per label (typically one separator: a single comma or one 'and').\n"
         "Do not write narrative filler words like then/another/next/continue/again.\n"
         "For small corrective reorientation/reposition, prefer verb 'adjust'.\n"
-        "Avoid forbidden verbs: rotate, inspect, check, look, examine, reach, grab.\n"
+        "Avoid forbidden verbs: rotate, inspect, check, look, examine, reach, grab, relocate.\n"
         "Use conservative object names that are directly visible.\n"
         "If object identity is unclear after careful inspection, use safe general nouns (tool/container/item).\n"
         "Do not guess hidden object identities and do not keep placeholder/default labels.\n"
         "If surface type/elevation is unclear (floor mat vs table/shelf), do not guess raised furniture.\n"
         "Use neutral location wording (on surface/on mat/on floor) unless elevation is clearly visible.\n"
         "Use 'place' only with explicit location (on/in/into/onto/at/to/inside/under/over).\n"
+        "Attach verbs to objects: do not write 'pick up and place box' or 'pick up box and place under desk'; "
+        "write 'pick up box, place box under desk'.\n"
+        "If the segment clearly includes lift then placement, include both actions (pick up ..., place ...).\n"
+        "Independent rewrite: treat input draft labels as potentially flawed; if a label violates Tier-3 phrasing, "
+        "rewrite from scratch rather than patching shorthand.\n"
+        "No shortcuts: do not merge distinct physical interactions into one invalid phrase to save words.\n"
+        "Avoid body-part wording (hands/fingers/body parts) unless unavoidable.\n"
         "If a segment timestamp is wrong, correct start_sec/end_sec.\n"
         "Label rules: imperative style, concise, minimum 2 words, maximum 20 words.\n"
         "Use \"No Action\" only as standalone label.\n"
@@ -3829,9 +3836,21 @@ def _validate_segment_plan_against_policy(
     forbidden_narrative_raw = _cfg_get(cfg, "run.forbidden_narrative_words", [])
     forbidden_narrative_words = [str(v).strip().lower() for v in forbidden_narrative_raw if str(v).strip()]
     skip_unchanged_lexical = bool(
-        _cfg_get(cfg, "run.skip_policy_lexical_checks_on_unchanged_labels", True)
+        _cfg_get(cfg, "run.skip_policy_lexical_checks_on_unchanged_labels", False)
     )
     place_location_pattern = re.compile(r"\bplace\b.*\b(on|in|into|onto|at|to|inside|under|over)\b", re.IGNORECASE)
+    chained_verb_without_object_pattern = re.compile(
+        r"\b(pick up|place|move|adjust|hold|align|relocate)\s+and\s+(pick up|place|move|adjust|hold|align|relocate)\b",
+        re.IGNORECASE,
+    )
+    orphan_second_place_pattern = re.compile(
+        r"\band\s+place\s+(on|in|into|onto|at|to|inside|under|over)\b",
+        re.IGNORECASE,
+    )
+    body_part_reference_pattern = re.compile(
+        r"\b(hand|hands|finger|fingers|thumb|thumbs|palm|palms|wrist|wrists)\b",
+        re.IGNORECASE,
+    )
 
     source_by_idx: Dict[int, Dict[str, Any]] = {}
     for seg in source_segments:
@@ -3885,8 +3904,16 @@ def _validate_segment_plan_against_policy(
                     warnings.append(f"segment {idx}: label mentions 'gripper' (ensure tool mention is unavoidable)")
                 if re.search(r"\d", label):
                     errors.append(f"segment {idx}: label contains numerals")
+                if body_part_reference_pattern.search(label):
+                    errors.append(f"segment {idx}: avoid body-part wording unless unavoidable")
                 if "place" in label_l and not place_location_pattern.search(label):
                     errors.append(f"segment {idx}: 'place' missing explicit location")
+                if chained_verb_without_object_pattern.search(label):
+                    errors.append(
+                        f"segment {idx}: verbs must attach to objects (avoid '<verb> and <verb>' chaining)"
+                    )
+                if orphan_second_place_pattern.search(label):
+                    errors.append(f"segment {idx}: 'place' missing explicit object after conjunction")
                 if re.search(r"\bno action\b", label_l) and label_l != "no action":
                     errors.append(f"segment {idx}: 'No Action' must be standalone")
                 action_count = _count_atomic_actions_in_label(label)
@@ -4758,6 +4785,42 @@ def _replace_numerals_with_words(text: str) -> str:
     return re.sub(r"\s+", " ", out).strip()
 
 
+def _expand_verb_object_attachment_patterns(text: str) -> str:
+    """
+    Normalize common chained-verb shorthand into explicit object-attached actions.
+    Example: "pick up box and place under desk" -> "pick up box, place box under desk"
+    """
+    out = text or ""
+
+    def _clean(token: str) -> str:
+        return re.sub(r"\s+", " ", (token or "").strip(" ,"))
+
+    def _repl(match: re.Match[str]) -> str:
+        obj = _clean(match.group(1))
+        prep = _clean(match.group(2)).lower()
+        dest = _clean(match.group(3))
+        if not obj or not prep or not dest:
+            return match.group(0)
+        return f"pick up {obj}, place {obj} {prep} {dest}"
+
+    # Case A: object omitted after first verb.
+    out = re.sub(
+        r"\bpick up\s+and\s+place\s+([^,]+?)\s+(on|in|into|onto|at|to|inside|under|over)\s+([^,]+)",
+        _repl,
+        out,
+        flags=re.IGNORECASE,
+    )
+    # Case B: object omitted after second verb.
+    out = re.sub(
+        r"\bpick up\s+([^,]+?)\s+and\s+place\s+(on|in|into|onto|at|to|inside|under|over)\s+([^,]+)",
+        _repl,
+        out,
+        flags=re.IGNORECASE,
+    )
+
+    return re.sub(r"\s+", " ", out).strip(" ,")
+
+
 def _rewrite_label_tier3(label: str) -> str:
     text = re.sub(r"\s+", " ", (label or "").strip())
     if not text:
@@ -4773,9 +4836,11 @@ def _rewrite_label_tier3(label: str) -> str:
     text = re.sub(r"\banother\b\s+", "", text, flags=re.IGNORECASE)
     text = re.sub(r"\brotate(?:d|s|ing)?\b", "adjust", text, flags=re.IGNORECASE)
     text = re.sub(r"\bturn(?:ed|s|ing)?\b", "adjust", text, flags=re.IGNORECASE)
+    text = re.sub(r"\brelocate(?:d|s|ing)?\b", "move", text, flags=re.IGNORECASE)
     text = re.sub(r"\bgrab(?:bed|s|bing)?\b", "pick up", text, flags=re.IGNORECASE)
     text = _normalize_gripper_terms(text)
     text = _replace_numerals_with_words(text)
+    text = _expand_verb_object_attachment_patterns(text)
     text = re.sub(r"\s*,\s*", ", ", text)
     text = re.sub(r"\s+", " ", text).strip(" ,")
 
@@ -4806,8 +4871,10 @@ def _normalize_label_min_safety(label: str) -> str:
     # Always enforce this minimal safety rewrite before policy gate.
     text = re.sub(r"\brotate(?:d|s|ing)?\b", "adjust", text, flags=re.IGNORECASE)
     text = re.sub(r"\bturn(?:ed|s|ing)?\b", "adjust", text, flags=re.IGNORECASE)
+    text = re.sub(r"\brelocate(?:d|s|ing)?\b", "move", text, flags=re.IGNORECASE)
     text = _normalize_gripper_terms(text)
     text = _replace_numerals_with_words(text)
+    text = _expand_verb_object_attachment_patterns(text)
     text = re.sub(r"\s+", " ", text).strip(" ,")
     return text
 
@@ -4854,9 +4921,13 @@ def _normalize_segment_plan(
     for idx, source in source_by_idx.items():
         if idx in out:
             continue
+        source_label = str(source.get("current_label", "")).strip()
+        if bool(_cfg_get(cfg or {}, "run.tier3_label_rewrite", True)):
+            source_label = _rewrite_label_tier3(source_label)
+        source_label = _normalize_label_min_safety(source_label)
         out[idx] = {
             "segment_index": idx,
-            "label": str(source.get("current_label", "")).strip(),
+            "label": source_label,
             "start_sec": round(_safe_float(source.get("start_sec", 0.0), 0.0), 3),
             "end_sec": round(_safe_float(source.get("end_sec", 0.0), 0.0), 3),
         }
