@@ -124,6 +124,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "tier3_label_rewrite": True,
         "enable_structural_actions": True,
         "structural_allow_split": False,
+        "structural_allow_merge": False,
+        "structural_allow_delete": False,
         "requery_after_structural_actions": True,
         "max_structural_operations": 12,
         "structural_skip_if_segments_ge": 40,
@@ -3675,6 +3677,8 @@ def _normalize_operations(payload: Dict[str, Any], cfg: Optional[Dict[str, Any]]
         return []
     max_ops = max(0, int(_cfg_get(cfg or {}, "run.max_structural_operations", 12)))
     structural_allow_split = bool(_cfg_get(cfg or {}, "run.structural_allow_split", False))
+    structural_allow_merge = bool(_cfg_get(cfg or {}, "run.structural_allow_merge", False))
+    structural_allow_delete = bool(_cfg_get(cfg or {}, "run.structural_allow_delete", False))
     out: List[Dict[str, Any]] = []
     for item in raw_ops:
         action = ""
@@ -3701,6 +3705,10 @@ def _normalize_operations(payload: Dict[str, Any], cfg: Optional[Dict[str, Any]]
             continue
         if action == "split" and not structural_allow_split:
             continue
+        if action == "merge" and not structural_allow_merge:
+            continue
+        if action == "delete" and not structural_allow_delete:
+            continue
         out.append({"action": action, "segment_index": idx})
         if max_ops and len(out) >= max_ops:
             break
@@ -3716,12 +3724,14 @@ def build_prompt(
         "You are an Atlas Standard Tier-3 labeling assistant.\n"
         "You may receive the full task video as attached media plus employee segment text.\n"
         "Use the video as source of truth; employee labels may be wrong.\n"
+        "Destroy and rebuild: treat draft phrasing as potentially flawed and rewrite from scratch from video evidence.\n"
         "For each segment index, output corrected label and timestamps when needed.\n"
         "Apply one-mental-model policy: one continuous interaction toward one goal per segment.\n"
         "Gripper rule: treat gripper as an extension of hand.\n"
         "Usually do NOT mention the tool in labels; if unavoidable, use only 'gripper'.\n"
         "Never use tool terms like mechanical arm / robotic arm / robot arm / manipulator / claw arm.\n"
         "Split only when goal changes or hands disengage/restart; do not split only for No Action pauses.\n"
+        "Continuity rule: if same coarse goal continues without disengaging from the object, keep one coarse segment.\n"
         "Use coarse single-goal labels for repetitive actions; use dense labels only when needed.\n"
         "Dense labels may include multiple atomic actions separated by commas/and.\n"
         "Do not exceed 20 words or 2 atomic actions per label (typically one separator: a single comma or one 'and').\n"
@@ -3741,6 +3751,11 @@ def build_prompt(
         "rewrite from scratch rather than patching shorthand.\n"
         "No shortcuts: do not merge distinct physical interactions into one invalid phrase to save words.\n"
         "Avoid body-part wording (hands/fingers/body parts) unless unavoidable.\n"
+        "Examples:\n"
+        "BAD: pick up and place stack of paper\n"
+        "GOOD: pick up stack of paper from desk, place stack of paper into cardboard box\n"
+        "BAD: place bag\n"
+        "GOOD: place bag in cabinet\n"
         "If a segment timestamp is wrong, correct start_sec/end_sec.\n"
         "Label rules: imperative style, concise, minimum 2 words, maximum 20 words.\n"
         "Use \"No Action\" only as standalone label.\n"
