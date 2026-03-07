@@ -123,6 +123,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "forbidden_narrative_words": ["another", "then", "next", "continue", "again"],
         "tier3_label_rewrite": True,
         "enable_structural_actions": True,
+        "structural_allow_split": False,
         "requery_after_structural_actions": True,
         "max_structural_operations": 12,
         "structural_skip_if_segments_ge": 40,
@@ -235,7 +236,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "quota_fallback_max_uses_per_run": 1,
         "model": "gemini-2.5-flash",
         "policy_retry_model": "gemini-2.5-pro",
-        "retry_with_stronger_model_on_policy_fail": False,
+        "retry_with_stronger_model_on_policy_fail": True,
         "policy_retry_only_if_flash": True,
         "system_instruction_file": "",
         "system_instruction_text": "",
@@ -3673,6 +3674,7 @@ def _normalize_operations(payload: Dict[str, Any], cfg: Optional[Dict[str, Any]]
     if not isinstance(raw_ops, list):
         return []
     max_ops = max(0, int(_cfg_get(cfg or {}, "run.max_structural_operations", 12)))
+    structural_allow_split = bool(_cfg_get(cfg or {}, "run.structural_allow_split", False))
     out: List[Dict[str, Any]] = []
     for item in raw_ops:
         action = ""
@@ -3696,6 +3698,8 @@ def _normalize_operations(payload: Dict[str, Any], cfg: Optional[Dict[str, Any]]
             else:
                 action = _normalize_operation_action(token)
         if not action or idx <= 0:
+            continue
+        if action == "split" and not structural_allow_split:
             continue
         out.append({"action": action, "segment_index": idx})
         if max_ops and len(out) >= max_ops:
