@@ -14,6 +14,7 @@ import base64
 import html
 import imaplib
 import json
+import random
 import os
 import re
 import shutil
@@ -40,8 +41,15 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "slow_mo_ms": 120,
         "storage_state_path": ".state/atlas_auth.json",
         "force_login": False,
+        "restore_state_in_profile_mode": False,
         "use_chrome_profile": False,
+        "proxy_server": "",
+        "proxy_username": "",
+        "proxy_password": "",
+        "proxy_bypass": "",
+        "clear_env_proxy_for_backend_requests": True,
         "chrome_channel": "chrome",
+        "executable_path": "",
         "chrome_user_data_dir": "",
         "chrome_profile_directory": "Default",
         "fallback_to_isolated_context_on_profile_error": True,
@@ -57,22 +65,99 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "run": {
         "dry_run": True,
         "max_segments": 0,
-        "max_episodes_per_run": 1,
+        "max_episodes_per_run": 5,
+        "no_task_retry_count": 5,
+        "no_task_retry_delay_sec": 6.0,
+        "no_task_backoff_factor": 1.5,
+        "no_task_max_delay_sec": 120.0,
+        "keep_alive_when_idle": True,
+        "keep_alive_idle_cycle_pause_sec": 120.0,
+        "skip_reserve_when_all_visible_blocked": True,
+        "clear_blocked_tasks_after_all_visible_blocked_hits": 2,
         "reserve_cooldown_sec": 120,
+        "reserve_min_interval_sec": 90,
+        "reserve_wait_only_on_rate_limit": True,
+        "reserve_attempts_per_visit": 3,
+        "reserve_label_wait_timeout_ms": 12000,
+        "reserve_refresh_after_click": True,
+        "reserve_rate_limit_wait_sec": 180,
+        "release_all_on_internal_error": True,
+        "recycle_after_max_episodes": True,
+        "release_all_after_batch": True,
+        "release_all_wait_sec": 180,
+        "goto_retry_count": 3,
+        "goto_retry_delay_sec": 1.2,
+        "skip_duplicate_task_in_run": True,
+        "duplicate_task_retry_count": 3,
+        "duplicate_task_retry_wait_sec": 2.0,
+        "continue_on_episode_error": True,
+        "max_episode_failures_per_run": 3,
+        "episode_failure_retry_delay_sec": 4.0,
+        "max_video_prepare_failures_per_task": 2,
+        "max_gemini_failures_per_task": 1,
+        "workflow_reentry_enter_clicks": 2,
+        "workflow_reentry_second_click_delay_sec": 5.0,
+        "min_delay_between_episodes_sec": 0.0,
+        "max_delay_between_episodes_sec": 0.0,
         "reuse_cached_labels": True,
         "skip_unchanged_labels": True,
         "resume_from_artifacts": True,
         "resume_skip_video_steps_when_cached": True,
-        "resume_skip_apply_steps_when_done": True,
+        "resume_skip_apply_steps_when_done": False,
+        "allow_resume_auto_submit": False,
+        "execute_force_fresh_gemini": True,
+        "execute_force_live_segments": True,
+        "execute_require_video_context": True,
         "use_task_scoped_artifacts": True,
         "enable_quality_review_submit": True,
-        "adjust_timestamps": True,
+        "loop_off_on_episode_open": True,
+        "enable_policy_gate": True,
+        "block_apply_on_validation_fail": True,
+        "skip_policy_lexical_checks_on_unchanged_labels": True,
+        "ignore_timestamp_policy_errors_when_adjust_disabled": True,
+        "ignore_no_action_standalone_policy_error": True,
+        "min_label_words": 2,
+        "max_label_words": 20,
+        "max_atomic_actions_per_label": 2,
+        "forbidden_label_verbs": ["inspect", "check", "look", "examine", "reach", "rotate", "grab"],
+        "forbidden_narrative_words": ["another", "then", "next", "continue", "again"],
+        "tier3_label_rewrite": True,
+        "enable_structural_actions": True,
+        "requery_after_structural_actions": True,
+        "max_structural_operations": 12,
+        "structural_skip_if_segments_ge": 40,
+        "structural_max_failures_per_episode": 4,
+        "structural_wait_rows_delta_timeout_ms": 1800,
+        "adjust_timestamps": False,
+        "timestamp_adjust_mode": "off",
+        "timestamp_skip_if_segments_ge": 24,
+        "timestamp_click_timeout_ms": 350,
+        "timestamp_click_pause_ms": 15,
+        "timestamp_max_failures_per_episode": 10,
+        "timestamp_max_total_clicks": 80,
+        "timestamp_abort_on_first_failure": False,
+        "timestamp_skip_disabled_buttons": True,
+        "label_apply_progress_every": 5,
+        "label_apply_max_total_sec": 600,
+        "label_apply_max_failures": 18,
+        "label_apply_input_timeout_ms": 3000,
+        "label_apply_save_timeout_ms": 1800,
+        "label_apply_edit_click_timeout_ms": 900,
+        "submit_guard_enabled": True,
+        "submit_guard_max_failure_ratio": 0.25,
+        "submit_guard_min_applied_ratio": 0.9,
+        "submit_guard_block_on_budget_exceeded": True,
         "play_full_video_before_labeling": False,
         "play_full_video_max_wait_sec": 900,
         "segment_resolve_attempts": 24,
         "segment_resolve_retry_ms": 800,
         "segment_resolve_sample_size": 8,
         "segment_resolve_row_text_timeout_ms": 350,
+        "label_open_loading_max_checks": 5,
+        "label_open_loading_wait_ms": 600,
+        "modal_dismiss_passes": 2,
+        "modal_dismiss_timeout_ms": 120,
+        "modal_dismiss_post_click_wait_ms": 180,
         "output_dir": "outputs",
         "segments_dump": "atlas_segments_dump.json",
         "labels_dump": "atlas_labels_from_gemini.json",
@@ -96,8 +181,11 @@ DEFAULT_CONFIG: Dict[str, Any] = {
             "continue_room_button": 'button:has-text("Continue to Room") || text=/continue\\s+to\\s+room/i',
             "label_button": 'button:has-text("Label") || text=/\\blabel\\b/i',
             "label_task_link": 'a[href*="/tasks/room/normal/label/"]',
-            "reserve_episodes_button": 'button:has-text("Reserve 5 Episodes") || button:has-text("Reserve")',
+            "reserve_episodes_button": 'button:has-text("Reserve 5 Episodes") || button:has-text("Reserve 4 Episodes") || button:has-text("Reserve 3 Episodes") || button:has-text("Reserve 2 Episodes") || button:has-text("Reserve 1 Episode") || button:has-text("Reserve 1 Episodes") || button:has-text("Reserve New Episode") || button:has-text("Reserve")',
             "confirm_reserve_button": 'button:has-text("I Understand") || button:has-text("Understand") || button:has-text("OK") || button:has-text("Okay") || button:has-text("Confirm")',
+            "release_all_button": 'button:has-text("Release All") || button:has-text("Release all") || button:has-text("Release Episodes") || button:has-text("Release")',
+            "confirm_release_button": 'div[role="dialog"] button:has-text("Release All") || div[role="dialog"] [role="button"]:has-text("Release All") || button:has-text("Release All") || button:has-text("Release all") || button:has-text("I Understand") || button:has-text("Understand") || button:has-text("Confirm") || button:has-text("Yes") || button:has-text("OK") || button:has-text("Okay") || text=/\\bRelease\\s*All\\b/i',
+            "error_go_back_button": 'button:has-text("Go Back") || a:has-text("Go Back") || [role="button"]:has-text("Go Back")',
             "video_element": "video",
             "video_source": "video source",
             "loop_toggle_button": 'button:has-text("Loop OFF") || button:has-text("Loop ON") || button[title*="Toggle segment loop"]',
@@ -114,6 +202,10 @@ DEFAULT_CONFIG: Dict[str, Any] = {
             "segment_time_plus_button": 'button:has(svg.lucide-plus)',
             "segment_time_minus_button": 'button:has(svg.lucide-minus)',
             "edit_button_in_row": 'button[title*="Edit"] || button:has-text("Edit") || [aria-label*="Edit"]',
+            "split_button_in_row": 'button[title*="Split"] || [aria-label*="Split"] || button:has(svg.lucide-scissors)',
+            "delete_button_in_row": 'button[title*="Delete"] || [aria-label*="Delete"] || button:has(svg.lucide-trash) || button:has(svg.lucide-trash-2)',
+            "merge_button_in_row": 'button[title*="Merge"] || [aria-label*="Merge"] || button:has(svg.lucide-git-merge)',
+            "action_confirm_button": 'button:has-text("Confirm") || button:has-text("Yes") || button:has-text("Delete") || button:has-text("Merge") || button:has-text("Apply") || button:has-text("Continue")',
             "label_input": 'textarea || [contenteditable="true"] || input[type="text"]',
             "save_button": 'button:has-text("Save") || button:has-text("Apply") || button:has-text("Done") || button:has-text("Submit")',
         },
@@ -138,23 +230,75 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     },
     "gemini": {
         "api_key": "",
+        "fallback_api_key": "",
+        "quota_fallback_enabled": False,
+        "quota_fallback_max_uses_per_run": 1,
         "model": "gemini-2.5-flash",
+        "system_instruction_file": "",
+        "system_instruction_text": "",
         "temperature": 0.0,
+        "candidate_count": 1,
         "max_retries": 3,
         "retry_base_delay_sec": 2.0,
+        "retry_jitter_sec": 0.8,
+        "max_backoff_sec": 30.0,
+        "price_input_per_million": 0.30,
+        "price_output_per_million": 2.50,
+        "usage_log_file": "gemini_usage.jsonl",
+        "rate_limit_enabled": True,
+        "rate_limit_requests_per_minute": 9,
+        "rate_limit_window_sec": 60.0,
+        "rate_limit_min_interval_sec": 6.8,
         "connect_timeout_sec": 30,
         "request_timeout_sec": 420,
         "attach_video": True,
         "require_video": False,
         "allow_text_only_fallback_on_network_error": True,
+        "skip_video_when_segments_le": 0,
+        "video_transport": "auto",
+        "files_api_fallback_to_inline": True,
+        "file_ready_timeout_sec": 120,
+        "file_ready_poll_sec": 2.0,
+        "upload_request_timeout_sec": 180,
+        "upload_chunk_bytes": 8388608,
+        "upload_chunk_granularity_bytes": 8388608,
+        "upload_chunk_max_retries": 5,
+        "optimize_video_for_upload": True,
+        "optimize_video_only_if_larger_mb": 8.0,
+        "optimize_video_target_mb": 4.0,
+        "optimize_video_target_fps": 10.0,
+        "optimize_video_min_fps": 8.0,
+        "optimize_video_min_width": 320,
+        "optimize_video_min_short_side": 320,
+        "optimize_video_scale_candidates": [0.75, 0.6, 0.5, 0.4, 0.33, 0.25, 0.2],
+        "inline_retry_target_mb": [4.0, 2.5, 1.5, 1.0],
         "max_inline_video_mb": 20.0,
+        "reference_frames_enabled": True,
+        "reference_frames_always": False,
+        "reference_frame_attach_when_video_mb_le": 2.5,
+        "reference_frame_count": 2,
+        "reference_frame_positions": [0.2, 0.55, 0.85],
+        "reference_frame_max_side": 960,
+        "reference_frame_jpeg_quality": 82,
+        "reference_frame_max_total_kb": 420,
         "video_download_timeout_sec": 180,
+        "video_download_retries": 5,
+        "video_download_chunk_bytes": 1048576,
+        "video_download_retry_base_sec": 1.2,
+        "video_download_use_playwright_fallback": True,
+        "video_candidate_scan_attempts": 4,
+        "video_candidate_scan_wait_ms": 1200,
+        "validate_video_decode": True,
         "min_video_bytes": 500000,
         "extra_instructions": "",
     },
 }
 
 _LAST_RESERVE_REQUEST_TS = 0.0
+_LAST_GEMINI_REQUEST_TS = 0.0
+_GEMINI_REQUEST_TIMESTAMPS: List[float] = []
+_GEMINI_FALLBACK_USES = 0
+_SCRIPT_BUILD = "2026-02-27.0905"
 
 
 def _deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
@@ -188,6 +332,18 @@ def _resolve_secret(explicit: str, env_names: List[str]) -> str:
 
 def _resolve_gemini_key(explicit: str) -> str:
     return _resolve_secret(explicit, ["GEMINI_API_KEY", "GOOGLE_API_KEY"])
+
+
+def _resolve_gemini_fallback_key(explicit: str) -> str:
+    return _resolve_secret(
+        explicit,
+        [
+            "GEMINI_API_KEY_FALLBACK",
+            "GOOGLE_API_KEY_FALLBACK",
+            "GEMINI_API_KEY_SECONDARY",
+            "GOOGLE_API_KEY_SECONDARY",
+        ],
+    )
 
 
 def _default_chrome_user_data_dir() -> str:
@@ -365,6 +521,38 @@ def _restore_storage_state(context: Any, page: Page, state_path: Path) -> bool:
     return restored_any
 
 
+def _is_too_many_redirects_error(exc: Exception) -> bool:
+    return "ERR_TOO_MANY_REDIRECTS" in str(exc or "")
+
+
+def _clear_atlas_site_session(page: Page) -> None:
+    try:
+        ctx = page.context
+    except Exception:
+        ctx = None
+    if ctx is not None:
+        for domain in ("atlascapture.io", ".atlascapture.io", "audit.atlascapture.io"):
+            try:
+                ctx.clear_cookies(domain=domain)
+            except Exception:
+                continue
+    for origin in ("https://audit.atlascapture.io", "https://atlascapture.io"):
+        try:
+            page.goto(origin, wait_until="domcontentloaded", timeout=20000)
+            page.evaluate(
+                """() => {
+                    try { localStorage.clear(); } catch (e) {}
+                    try { sessionStorage.clear(); } catch (e) {}
+                }"""
+            )
+        except Exception:
+            continue
+    try:
+        page.goto("about:blank", wait_until="commit", timeout=8000)
+    except Exception:
+        pass
+
+
 def _close_chrome_processes() -> None:
     if os.name == "nt":
         subprocess.run(
@@ -453,6 +641,45 @@ def _selector_variants(selector: str) -> List[str]:
     return [selector.strip()]
 
 
+def _goto_with_retry(
+    page: Page,
+    url: str,
+    wait_until: str = "domcontentloaded",
+    timeout_ms: int = 45000,
+    cfg: Optional[Dict[str, Any]] = None,
+    reason: str = "",
+) -> bool:
+    retry_count = max(0, int(_cfg_get(cfg, "run.goto_retry_count", 3) if cfg else 3))
+    retry_delay_sec = max(0.2, float(_cfg_get(cfg, "run.goto_retry_delay_sec", 1.2) if cfg else 1.2))
+    for attempt in range(retry_count + 1):
+        try:
+            page.goto(url, wait_until=wait_until, timeout=timeout_ms)
+            return True
+        except Exception as exc:
+            msg = str(exc)
+            transient = any(
+                key in msg
+                for key in (
+                    "ERR_NETWORK_CHANGED",
+                    "ERR_INTERNET_DISCONNECTED",
+                    "ERR_CONNECTION_RESET",
+                    "ERR_TIMED_OUT",
+                    "ERR_ABORTED",
+                )
+            )
+            if transient and attempt < retry_count:
+                tag = f" ({reason})" if reason else ""
+                short = msg.splitlines()[0][:200]
+                print(
+                    f"[nav] transient goto error{tag}; retry {attempt + 1}/{retry_count} "
+                    f"in {retry_delay_sec:.1f}s: {short}"
+                )
+                time.sleep(retry_delay_sec)
+                continue
+            raise
+    return False
+
+
 def _any_locator_exists(page: Page, selector: str) -> bool:
     for candidate in _selector_variants(selector):
         try:
@@ -491,7 +718,8 @@ def _safe_locator_click(page: Page, selector: str, timeout_ms: int = 4000) -> bo
     if locator is None:
         return False
     try:
-        locator.click()
+        click_timeout_ms = max(300, min(timeout_ms, 2000))
+        locator.click(timeout=click_timeout_ms, no_wait_after=True)
         return True
     except Exception:
         return False
@@ -535,25 +763,168 @@ def _first_href_from_selector(page: Page, selector: str, max_scan: int = 40) -> 
     return ""
 
 
-def _first_task_label_href_from_html(page: Page) -> str:
+def _all_task_label_hrefs_from_page(page: Page) -> List[str]:
+    base_url = page.url or "https://audit.atlascapture.io/tasks/room/normal"
+    seen: set[str] = set()
+    out: List[str] = []
+
+    def _add(raw: str) -> None:
+        raw = (raw or "").strip()
+        if not raw:
+            return
+        if raw.startswith("/"):
+            raw = urljoin(base_url, raw)
+        if "/tasks/room/normal/label/" not in raw:
+            return
+        if raw in seen:
+            return
+        seen.add(raw)
+        out.append(raw)
+
+    # Fast-path: scan visible anchors first.
+    for candidate in _selector_variants('a[href*="/tasks/room/normal/label/"]'):
+        try:
+            loc = page.locator(candidate)
+            count = min(loc.count(), 80)
+            for i in range(count):
+                href = loc.nth(i).get_attribute("href")
+                _add(str(href or ""))
+        except Exception:
+            continue
+
+    try:
+        hrefs_eval = page.evaluate(
+            """() => {
+                return Array.from(document.querySelectorAll('a[href*="/tasks/room/normal/label/"]'))
+                    .map(a => (a.getAttribute('href') || a.href || '').trim())
+                    .filter(Boolean);
+            }"""
+        )
+        if isinstance(hrefs_eval, list):
+            for item in hrefs_eval:
+                if isinstance(item, str):
+                    _add(item)
+    except Exception:
+        pass
+
     try:
         html_doc = page.content()
     except Exception:
-        return ""
-    m = re.search(r'(/tasks/room/normal/label/[A-Za-z0-9]+)', html_doc or "")
-    if not m:
-        return ""
-    return m.group(1).strip()
+        html_doc = ""
+    for m in re.findall(r'(/tasks/room/normal/label/[A-Za-z0-9]+)', html_doc or ""):
+        _add(m)
+    return out
+
+
+def _first_task_label_href_from_html(page: Page, skip_task_ids: Optional[set[str]] = None) -> str:
+    blocked = skip_task_ids if skip_task_ids is not None else set()
+    for href in _all_task_label_hrefs_from_page(page):
+        tid = _task_id_from_url(href)
+        if tid and tid in blocked:
+            continue
+        return href
+    return ""
+
+
+def _is_label_page_not_found(page: Page) -> bool:
+    try:
+        body = (page.inner_text("body") or "").lower()
+    except Exception:
+        body = ""
+    if not body:
+        return False
+    markers = [
+        "this page could not be found",
+        "404: this page could not be found",
+        "next-error-h1",
+    ]
+    return any(marker in body for marker in markers)
+
+
+def _is_label_page_internal_error(page: Page) -> bool:
+    try:
+        body = (page.inner_text("body") or "").lower()
+    except Exception:
+        body = ""
+    if not body:
+        return False
+    has_error = (
+        "error loading episode" in body
+        or "an internal error occurred" in body
+        or "internal error occurred" in body
+    )
+    if not has_error:
+        return False
+    return "go back" in body or "/tasks/room/normal/label/" in (page.url or "").lower()
+
+
+def _try_go_back_from_label_error(page: Page, cfg: Dict[str, Any], timeout_ms: int = 2500) -> bool:
+    go_back_sel = str(_cfg_get(cfg, "atlas.selectors.error_go_back_button", "")).strip()
+    if go_back_sel and _safe_locator_click(page, go_back_sel, timeout_ms=timeout_ms):
+        page.wait_for_timeout(650)
+        return True
+    clicked = _safe_locator_click(page, 'button:has-text("Go Back") || a:has-text("Go Back")', timeout_ms=timeout_ms)
+    if clicked:
+        page.wait_for_timeout(650)
+    return clicked
+
+
+def _is_label_page_actionable(page: Page, cfg: Dict[str, Any], timeout_ms: int = 4500) -> bool:
+    url_l = (page.url or "").lower()
+    if "/tasks/room/normal/label/" not in url_l:
+        return False
+
+    selectors = _cfg_get(cfg, "atlas.selectors", {})
+    rows_sel = str(selectors.get("segment_rows", "")).strip()
+    video_sel = str(selectors.get("video_element", "video")).strip() or "video"
+
+    deadline = time.time() + max(300, timeout_ms) / 1000.0
+    while time.time() < deadline:
+        _dismiss_blocking_modals(page, cfg)
+        if _is_label_page_not_found(page):
+            return False
+        if _is_label_page_internal_error(page):
+            _try_go_back_from_label_error(page, cfg, timeout_ms=800)
+            return False
+
+        if video_sel:
+            if _first_visible_locator(page, video_sel, timeout_ms=250) is not None:
+                return True
+
+        if rows_sel:
+            for candidate in _selector_variants(rows_sel):
+                try:
+                    if page.locator(candidate).count() > 0:
+                        return True
+                except Exception:
+                    continue
+
+        try:
+            body = (page.inner_text("body") or "").lower()
+        except Exception:
+            body = ""
+        if "label episode" in body and "segments" in body:
+            return True
+
+        page.wait_for_timeout(180)
+
+    return False
 
 
 def _looks_like_video_url(url: str) -> bool:
-    u = (url or "").lower()
-    if not u:
+    raw = html.unescape((url or "").strip())
+    if not raw:
         return False
+    u = raw.lower()
     if u.startswith("blob:"):
         return False
-    markers = [".mp4", ".webm", ".mov", ".m4v", ".m3u8", "video", "/media/"]
-    return any(m in u for m in markers)
+    parsed = urlparse(u)
+    path = parsed.path or ""
+    if re.search(r"\.(mp4|webm|mov|m4v|m3u8)$", path, flags=re.I):
+        return True
+    if re.search(r"\.(woff2?|ttf|otf|css|js|map|png|jpe?g|gif|svg|ico)$", path, flags=re.I):
+        return False
+    return ("video" in path) or ("video" in parsed.query)
 
 
 def _collect_video_url_candidates(page: Page, cfg: Dict[str, Any]) -> List[str]:
@@ -566,7 +937,7 @@ def _collect_video_url_candidates(page: Page, cfg: Dict[str, Any]) -> List[str]:
     out: List[str] = []
 
     def add(raw: str) -> None:
-        raw = (raw or "").strip()
+        raw = html.unescape((raw or "").strip())
         if not raw:
             return
         if raw.startswith("blob:"):
@@ -578,7 +949,9 @@ def _collect_video_url_candidates(page: Page, cfg: Dict[str, Any]) -> List[str]:
         parsed = urlparse(raw)
         if parsed.scheme not in {"http", "https"}:
             return
-        norm = raw.strip()
+        norm = parsed._replace(fragment="").geturl().strip()
+        if not _looks_like_video_url(norm):
+            return
         if norm in seen:
             return
         seen.add(norm)
@@ -642,12 +1015,73 @@ def _collect_video_url_candidates(page: Page, cfg: Dict[str, Any]) -> List[str]:
     return out
 
 
+def _download_video_via_playwright_request(
+    page: Page,
+    context: Any,
+    video_url: str,
+    out_path: Path,
+    timeout_sec: int,
+) -> Path:
+    headers = {
+        "Accept": "*/*",
+        "Referer": page.url,
+    }
+    try:
+        ua = page.evaluate("() => navigator.userAgent")
+        if isinstance(ua, str) and ua.strip():
+            headers["User-Agent"] = ua.strip()
+    except Exception:
+        pass
+
+    req_ctx = getattr(context, "request", None)
+    if req_ctx is None:
+        raise RuntimeError("playwright request context is unavailable")
+
+    resp = req_ctx.get(
+        video_url,
+        headers=headers,
+        timeout=max(15000, int(timeout_sec * 1000)),
+        fail_on_status_code=False,
+    )
+    status = int(resp.status)
+    if status not in {200, 206}:
+        raise RuntimeError(f"playwright fallback status={status}")
+
+    body = resp.body() or b""
+    if not body:
+        raise RuntimeError("playwright fallback returned empty body")
+
+    if status == 206:
+        cr = str((resp.headers or {}).get("content-range", "")).strip()
+        m = re.search(r"/(\d+)$", cr)
+        if m:
+            try:
+                total = int(m.group(1))
+            except Exception:
+                total = 0
+            if total > 0 and len(body) < total:
+                raise RuntimeError(
+                    f"playwright fallback returned partial body ({len(body)}/{total})"
+                )
+
+    _ensure_parent(out_path)
+    part_path = out_path.with_suffix(out_path.suffix + ".part")
+    part_path.write_bytes(body)
+    try:
+        out_path.unlink(missing_ok=True)
+    except Exception:
+        pass
+    part_path.replace(out_path)
+    return out_path
+
+
 def _download_video_from_page_context(
     page: Page,
     context: Any,
     video_url: str,
     out_path: Path,
     timeout_sec: int,
+    cfg: Optional[Dict[str, Any]] = None,
 ) -> Path:
     sess = requests.Session()
     headers = {
@@ -676,19 +1110,124 @@ def _download_video_from_page_context(
         except Exception:
             continue
 
-    resp = sess.get(video_url, headers=headers, timeout=timeout_sec, stream=True, allow_redirects=True)
-    resp.raise_for_status()
     _ensure_parent(out_path)
-    written = 0
-    with out_path.open("wb") as f:
-        for chunk in resp.iter_content(chunk_size=1024 * 1024):
-            if not chunk:
+    part_path = out_path.with_suffix(out_path.suffix + ".part")
+    max_retries = max(0, int(_cfg_get(cfg or {}, "gemini.video_download_retries", 5)))
+    chunk_bytes = max(64 * 1024, int(_cfg_get(cfg or {}, "gemini.video_download_chunk_bytes", 1024 * 1024)))
+    retry_base = max(0.2, float(_cfg_get(cfg or {}, "gemini.video_download_retry_base_sec", 1.2)))
+    use_playwright_fallback = bool(
+        _cfg_get(cfg or {}, "gemini.video_download_use_playwright_fallback", True)
+    )
+    last_err: Optional[Exception] = None
+
+    def _content_range_total(content_range: str) -> int:
+        m = re.search(r"/(\d+)$", content_range or "")
+        if not m:
+            return 0
+        try:
+            return int(m.group(1))
+        except Exception:
+            return 0
+
+    for attempt in range(max_retries + 1):
+        resume_from = 0
+        try:
+            if part_path.exists():
+                resume_from = int(part_path.stat().st_size)
+        except Exception:
+            resume_from = 0
+
+        req_headers = dict(headers)
+        if resume_from > 0:
+            req_headers["Range"] = f"bytes={resume_from}-"
+
+        try:
+            with sess.get(
+                video_url,
+                headers=req_headers,
+                timeout=(20, timeout_sec),
+                stream=True,
+                allow_redirects=True,
+            ) as resp:
+                status = int(resp.status_code)
+                if status not in {200, 206}:
+                    resp.raise_for_status()
+
+                if resume_from > 0 and status == 200:
+                    # Server ignored Range; restart clean download.
+                    try:
+                        part_path.unlink(missing_ok=True)
+                    except Exception:
+                        pass
+                    resume_from = 0
+
+                expected_total = 0
+                cr = resp.headers.get("Content-Range", "")
+                if cr:
+                    expected_total = _content_range_total(cr)
+                if expected_total <= 0:
+                    cl = resp.headers.get("Content-Length", "")
+                    try:
+                        content_len = int(cl)
+                    except Exception:
+                        content_len = 0
+                    if content_len > 0:
+                        expected_total = resume_from + content_len
+
+                mode = "ab" if (resume_from > 0 and status == 206 and part_path.exists()) else "wb"
+                written_this_attempt = 0
+                with part_path.open(mode) as f:
+                    for chunk in resp.iter_content(chunk_size=chunk_bytes):
+                        if not chunk:
+                            continue
+                        f.write(chunk)
+                        written_this_attempt += len(chunk)
+
+                current_size = int(part_path.stat().st_size) if part_path.exists() else 0
+                if current_size <= 0:
+                    raise RuntimeError("Downloaded video file is empty.")
+                if expected_total > 0 and current_size < expected_total:
+                    raise RuntimeError(
+                        f"Incomplete download ({current_size}/{expected_total} bytes)"
+                    )
+
+                try:
+                    out_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
+                part_path.replace(out_path)
+                return out_path
+        except Exception as exc:
+            last_err = exc
+            if attempt < max_retries:
+                delay = retry_base * (2**attempt)
+                try:
+                    partial = int(part_path.stat().st_size) if part_path.exists() else 0
+                except Exception:
+                    partial = 0
+                print(
+                    f"[video] download retry {attempt + 1}/{max_retries} "
+                    f"(partial={partial} bytes) in {delay:.1f}s"
+                )
+                time.sleep(delay)
                 continue
-            f.write(chunk)
-            written += len(chunk)
-    if written <= 0:
-        raise RuntimeError("Downloaded video file is empty.")
-    return out_path
+            break
+
+    if use_playwright_fallback:
+        try:
+            return _download_video_via_playwright_request(
+                page=page,
+                context=context,
+                video_url=video_url,
+                out_path=out_path,
+                timeout_sec=timeout_sec,
+            )
+        except Exception as exc:
+            if last_err is not None:
+                raise RuntimeError(f"{last_err}; playwright fallback failed: {exc}") from exc
+            raise RuntimeError(f"playwright fallback failed: {exc}") from exc
+
+    raise RuntimeError(str(last_err) if last_err else "video download failed")
 
 
 def _is_probably_mp4(path: Path) -> bool:
@@ -701,6 +1240,543 @@ def _is_probably_mp4(path: Path) -> bool:
         return False
     # Common MP4 signature: box size then 'ftyp' within first 12 bytes.
     return b"ftyp" in head[:16]
+
+
+def _is_video_decodable(path: Path) -> bool:
+    if not path.exists():
+        return False
+    try:
+        import cv2  # type: ignore
+    except Exception:
+        # If OpenCV is unavailable, do not block on decode probing.
+        return True
+
+    cap = cv2.VideoCapture(str(path))
+    if not cap.isOpened():
+        return False
+    try:
+        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        probe_positions = [0]
+        if frame_count > 2:
+            probe_positions.append(max(0, frame_count // 2))
+            probe_positions.append(max(0, frame_count - 2))
+        for pos in probe_positions:
+            try:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, float(pos))
+            except Exception:
+                pass
+            ok, _ = cap.read()
+            if not ok:
+                return False
+        return True
+    finally:
+        cap.release()
+
+
+def _probe_video_stream_meta(path: Path) -> Tuple[int, int, float, int]:
+    try:
+        import cv2  # type: ignore
+    except Exception:
+        return 0, 0, 0.0, 0
+
+    cap = cv2.VideoCapture(str(path))
+    if not cap.isOpened():
+        return 0, 0, 0.0, 0
+    try:
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+        fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
+        frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        return width, height, fps, frames
+    finally:
+        cap.release()
+
+
+def _quality_preserving_scale_candidates(
+    scales: List[float],
+    src_w: int,
+    src_h: int,
+    min_width: int,
+    min_short_side: int,
+) -> List[float]:
+    if src_w <= 0 or src_h <= 0:
+        return scales
+
+    min_width = max(2, int(min_width))
+    min_short_side = max(2, int(min_short_side))
+    short_side = min(src_w, src_h)
+
+    width_floor = min_width / float(src_w)
+    short_floor = min_short_side / float(short_side) if short_side > 0 else 0.0
+    scale_floor = max(0.1, min(1.0, max(width_floor, short_floor)))
+
+    filtered: List[float] = []
+    for raw in scales:
+        s = max(0.1, min(1.0, float(raw)))
+        if s + 1e-6 >= scale_floor:
+            filtered.append(s)
+
+    if not filtered:
+        filtered = [scale_floor]
+    elif all(abs(s - scale_floor) > 1e-3 for s in filtered):
+        filtered.append(scale_floor)
+
+    # Keep largest scales first to preserve detail while meeting size target.
+    uniq = sorted({round(s, 4) for s in filtered}, reverse=True)
+    return [float(s) for s in uniq]
+
+
+def _extract_reference_frame_inline_parts(
+    video_file: Path,
+    cfg: Dict[str, Any],
+    trigger_video_mb: float,
+) -> Tuple[List[Dict[str, Any]], int]:
+    enabled = bool(_cfg_get(cfg, "gemini.reference_frames_enabled", True))
+    if not enabled or video_file is None or not video_file.exists():
+        return [], 0
+
+    always = bool(_cfg_get(cfg, "gemini.reference_frames_always", False))
+    trigger_mb = max(0.1, float(_cfg_get(cfg, "gemini.reference_frame_attach_when_video_mb_le", 2.5)))
+    if not always and trigger_video_mb > trigger_mb:
+        return [], 0
+
+    try:
+        import cv2  # type: ignore
+    except Exception:
+        return [], 0
+
+    frame_count = max(1, int(_cfg_get(cfg, "gemini.reference_frame_count", 2)))
+    max_side = max(240, int(_cfg_get(cfg, "gemini.reference_frame_max_side", 960)))
+    jpeg_quality = max(50, min(95, int(_cfg_get(cfg, "gemini.reference_frame_jpeg_quality", 82))))
+    max_total_bytes = max(64 * 1024, int(float(_cfg_get(cfg, "gemini.reference_frame_max_total_kb", 420)) * 1024))
+
+    raw_positions = _cfg_get(cfg, "gemini.reference_frame_positions", [0.2, 0.55, 0.85])
+    pos_list: List[float] = []
+    if isinstance(raw_positions, list):
+        for raw in raw_positions:
+            try:
+                v = float(raw)
+            except Exception:
+                continue
+            if 0.0 <= v <= 1.0:
+                pos_list.append(v)
+    if not pos_list:
+        step = 1.0 / float(frame_count + 1)
+        pos_list = [step * (i + 1) for i in range(frame_count)]
+
+    cap = cv2.VideoCapture(str(video_file))
+    if not cap.isOpened():
+        return [], 0
+
+    try:
+        frames_total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        if frames_total <= 0:
+            return [], 0
+
+        indices: List[int] = []
+        for p in pos_list:
+            idx = int(round((frames_total - 1) * max(0.0, min(1.0, p))))
+            if idx not in indices:
+                indices.append(idx)
+            if len(indices) >= frame_count:
+                break
+        if not indices:
+            return [], 0
+
+        parts: List[Dict[str, Any]] = []
+        total_bytes = 0
+        for idx in indices:
+            try:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, float(idx))
+            except Exception:
+                pass
+            ok, frame = cap.read()
+            if not ok or frame is None:
+                continue
+            h, w = frame.shape[:2]
+            if h <= 0 or w <= 0:
+                continue
+            largest = max(h, w)
+            if largest > max_side:
+                scale = max_side / float(largest)
+                nw = max(2, int(round(w * scale)))
+                nh = max(2, int(round(h * scale)))
+                frame = cv2.resize(frame, (nw, nh), interpolation=cv2.INTER_AREA)
+            ok_enc, enc = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), jpeg_quality])
+            if not ok_enc:
+                continue
+            data = bytes(enc.tobytes())
+            if not data:
+                continue
+            if total_bytes + len(data) > max_total_bytes:
+                break
+            total_bytes += len(data)
+            parts.append(
+                {
+                    "inline_data": {
+                        "mime_type": "image/jpeg",
+                        "data": base64.b64encode(data).decode("ascii"),
+                    }
+                }
+            )
+        return parts, total_bytes
+    finally:
+        cap.release()
+
+
+def _ensure_even(value: int, minimum: int = 2) -> int:
+    v = max(int(minimum), int(value))
+    return v if v % 2 == 0 else v - 1
+
+
+def _parse_float_list(value: Any, fallback: List[float]) -> List[float]:
+    if isinstance(value, list):
+        out: List[float] = []
+        for item in value:
+            try:
+                n = float(item)
+                if n > 0:
+                    out.append(n)
+            except Exception:
+                continue
+        if out:
+            return out
+        return list(fallback)
+    if isinstance(value, str):
+        out = []
+        for raw in value.split(","):
+            raw = raw.strip()
+            if not raw:
+                continue
+            try:
+                n = float(raw)
+                if n > 0:
+                    out.append(n)
+            except Exception:
+                continue
+        if out:
+            return out
+    return list(fallback)
+
+
+def _opencv_available() -> bool:
+    try:
+        import cv2  # type: ignore  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
+def _resolve_ffmpeg_binary() -> Optional[str]:
+    candidates = [
+        "ffmpeg",
+        "ffmpeg.exe",
+        "/usr/bin/ffmpeg",
+        "/usr/local/bin/ffmpeg",
+        "C:\\ffmpeg\\bin\\ffmpeg.exe",
+    ]
+    for candidate in candidates:
+        resolved = shutil.which(candidate)
+        if resolved:
+            return resolved
+        try:
+            p = Path(candidate)
+            if p.exists() and p.is_file():
+                return str(p)
+        except Exception:
+            continue
+    return None
+
+
+def _transcode_video_ffmpeg(
+    src: Path,
+    dst: Path,
+    scale: float,
+    target_fps: float,
+    min_width: int,
+    ffmpeg_bin: Optional[str] = None,
+) -> Tuple[bool, str]:
+    ffmpeg_path = ffmpeg_bin or _resolve_ffmpeg_binary()
+    if not ffmpeg_path:
+        return False, "ffmpeg binary not found"
+
+    # Keep width even and avoid going below min_width to keep decoder compatibility.
+    vf = (
+        f"scale=max({min_width}\\,trunc(iw*{float(scale):.4f}/2)*2):-2,"
+        f"fps={max(1.0, float(target_fps)):.2f}"
+    )
+    codec_attempts: List[List[str]] = [
+        ["-c:v", "libx264", "-preset", "veryfast", "-crf", "30"],
+        ["-c:v", "mpeg4", "-q:v", "10"],
+    ]
+    last_err = ""
+    for codec_opts in codec_attempts:
+        try:
+            _ensure_parent(dst)
+            if dst.exists():
+                dst.unlink()
+        except Exception:
+            pass
+        cmd = [
+            ffmpeg_path,
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-i",
+            str(src),
+            "-vf",
+            vf,
+            "-an",
+            "-sn",
+            "-dn",
+            *codec_opts,
+            "-movflags",
+            "+faststart",
+            str(dst),
+        ]
+        try:
+            proc = subprocess.run(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+                text=True,
+                timeout=420,
+            )
+        except Exception as exc:
+            last_err = str(exc)
+            continue
+        if proc.returncode == 0 and dst.exists() and dst.stat().st_size > 0 and _is_probably_mp4(dst):
+            return True, ""
+        stderr_snippet = (proc.stderr or "").strip()
+        if stderr_snippet:
+            stderr_snippet = stderr_snippet.splitlines()[-1]
+        last_err = stderr_snippet or f"ffmpeg exit code {proc.returncode}"
+    return False, last_err
+
+
+def _transcode_video_cv2(
+    src: Path,
+    dst: Path,
+    scale: float,
+    target_fps: float,
+    min_width: int,
+) -> bool:
+    try:
+        import cv2  # type: ignore
+    except Exception:
+        return False
+
+    cap = cv2.VideoCapture(str(src))
+    if not cap.isOpened():
+        return False
+    try:
+        src_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+        src_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+        src_fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
+        if src_w <= 0 or src_h <= 0:
+            return False
+        if src_fps <= 0.1 or src_fps > 240:
+            src_fps = 24.0
+
+        scaled_w = max(min_width, int(round(src_w * float(scale))))
+        scaled_w = _ensure_even(scaled_w, minimum=min_width)
+        scaled_h = int(round(src_h * (scaled_w / float(src_w))))
+        scaled_h = _ensure_even(scaled_h, minimum=2)
+
+        target_fps = max(1.0, min(float(target_fps), src_fps))
+        frame_interval = max(1, int(round(src_fps / target_fps)))
+        out_fps = max(1.0, src_fps / frame_interval)
+
+        _ensure_parent(dst)
+        if dst.exists():
+            dst.unlink()
+
+        writer = None
+        for codec in ("mp4v", "avc1", "H264", "XVID"):
+            try:
+                fourcc = cv2.VideoWriter_fourcc(*codec)
+                candidate = cv2.VideoWriter(str(dst), fourcc, out_fps, (scaled_w, scaled_h))
+                if candidate.isOpened():
+                    writer = candidate
+                    break
+                candidate.release()
+            except Exception:
+                continue
+        if writer is None:
+            return False
+
+        frame_idx = 0
+        written = 0
+        while True:
+            ok, frame = cap.read()
+            if not ok:
+                break
+            if frame_interval > 1 and (frame_idx % frame_interval) != 0:
+                frame_idx += 1
+                continue
+            if frame.shape[1] != scaled_w or frame.shape[0] != scaled_h:
+                frame = cv2.resize(frame, (scaled_w, scaled_h), interpolation=cv2.INTER_AREA)
+            writer.write(frame)
+            written += 1
+            frame_idx += 1
+        writer.release()
+        if written <= 0:
+            return False
+    finally:
+        cap.release()
+
+    return dst.exists() and dst.stat().st_size > 0 and _is_probably_mp4(dst)
+
+
+def _maybe_optimize_video_for_upload(video_file: Path, cfg: Dict[str, Any]) -> Path:
+    if video_file is None or not video_file.exists():
+        return video_file
+
+    enabled = bool(_cfg_get(cfg, "gemini.optimize_video_for_upload", True))
+    if not enabled:
+        return video_file
+
+    size_bytes = int(video_file.stat().st_size)
+    size_mb = size_bytes / (1024 * 1024)
+    trigger_mb = max(1.0, float(_cfg_get(cfg, "gemini.optimize_video_only_if_larger_mb", 8.0)))
+    if size_mb <= trigger_mb:
+        return video_file
+
+    target_mb = max(1.0, float(_cfg_get(cfg, "gemini.optimize_video_target_mb", 4.0)))
+    target_bytes = int(target_mb * 1024 * 1024)
+    target_fps = max(1.0, float(_cfg_get(cfg, "gemini.optimize_video_target_fps", 10.0)))
+    min_fps = max(1.0, float(_cfg_get(cfg, "gemini.optimize_video_min_fps", 8.0)))
+    target_fps = max(min_fps, target_fps)
+    min_width = max(160, int(_cfg_get(cfg, "gemini.optimize_video_min_width", 320)))
+    min_short_side = max(160, int(_cfg_get(cfg, "gemini.optimize_video_min_short_side", 320)))
+    scales = _parse_float_list(
+        _cfg_get(cfg, "gemini.optimize_video_scale_candidates", [0.75, 0.6, 0.5, 0.4, 0.33, 0.25, 0.2]),
+        [0.75, 0.6, 0.5, 0.4, 0.33, 0.25, 0.2],
+    )
+    src_w, src_h, src_fps, _ = _probe_video_stream_meta(video_file)
+    scales = _quality_preserving_scale_candidates(
+        scales=scales,
+        src_w=src_w,
+        src_h=src_h,
+        min_width=min_width,
+        min_short_side=min_short_side,
+    )
+
+    out_file = video_file.with_name(f"{video_file.stem}_upload_opt.mp4")
+    if out_file.exists():
+        try:
+            out_size = int(out_file.stat().st_size)
+            if out_size > 0 and _is_probably_mp4(out_file) and out_size <= target_bytes:
+                print(
+                    f"[video] using cached optimized upload file: {out_file} "
+                    f"({out_size / (1024 * 1024):.1f} MB)"
+                )
+                return out_file
+        except Exception:
+            pass
+
+    src_meta_note = ""
+    if src_w > 0 and src_h > 0:
+        fps_note = f", {src_fps:.1f}fps" if src_fps > 0 else ""
+        src_meta_note = f", source={src_w}x{src_h}{fps_note}"
+    print(
+        f"[video] optimizing video for upload: {video_file.name} "
+        f"({size_mb:.1f} MB -> target <= {target_mb:.1f} MB{src_meta_note})"
+    )
+    cv2_available = _opencv_available()
+    ffmpeg_bin = _resolve_ffmpeg_binary()
+    if not cv2_available and ffmpeg_bin:
+        print(f"[video] OpenCV unavailable; using ffmpeg optimizer backend: {ffmpeg_bin}")
+    elif not cv2_available and not ffmpeg_bin:
+        print("[video] OpenCV and ffmpeg are unavailable; cannot optimize upload video.")
+    candidates: List[Path] = []
+    best_path: Optional[Path] = None
+    best_size = size_bytes
+    backend_used: Optional[str] = None
+    ffmpeg_last_error = ""
+
+    for scale in scales:
+        scale = max(0.1, min(1.0, float(scale)))
+        suffix = int(round(scale * 100))
+        cand = video_file.with_name(f"{video_file.stem}_upload_opt_s{suffix}.mp4")
+        ok = False
+        if cv2_available:
+            try:
+                ok = _transcode_video_cv2(
+                    src=video_file,
+                    dst=cand,
+                    scale=scale,
+                    target_fps=target_fps,
+                    min_width=min_width,
+                )
+                if ok:
+                    backend_used = "cv2"
+            except Exception:
+                ok = False
+        if not ok and ffmpeg_bin:
+            try:
+                ok, ffmpeg_err = _transcode_video_ffmpeg(
+                    src=video_file,
+                    dst=cand,
+                    scale=scale,
+                    target_fps=target_fps,
+                    min_width=min_width,
+                    ffmpeg_bin=ffmpeg_bin,
+                )
+                if ok:
+                    backend_used = "ffmpeg"
+                elif ffmpeg_err:
+                    ffmpeg_last_error = ffmpeg_err
+            except Exception as exc:
+                ffmpeg_last_error = str(exc)
+                ok = False
+        if not ok:
+            continue
+        candidates.append(cand)
+        try:
+            cand_size = int(cand.stat().st_size)
+        except Exception:
+            continue
+        backend_note = f" ({backend_used})" if backend_used else ""
+        print(f"[video] optimized candidate scale={scale:.2f}: {cand_size / (1024 * 1024):.1f} MB{backend_note}")
+        if cand_size < best_size:
+            best_size = cand_size
+            best_path = cand
+        if cand_size <= target_bytes:
+            break
+
+    if best_path is None:
+        if ffmpeg_last_error:
+            print(f"[video] ffmpeg optimizer failed: {ffmpeg_last_error}")
+        print("[video] upload optimization not available; using original video.")
+        return video_file
+
+    try:
+        if out_file.exists():
+            out_file.unlink()
+        best_path.replace(out_file)
+    except Exception:
+        out_file = best_path
+
+    for cand in candidates:
+        if cand == out_file:
+            continue
+        try:
+            cand.unlink(missing_ok=True)
+        except Exception:
+            continue
+
+    out_size = int(out_file.stat().st_size) if out_file.exists() else size_bytes
+    if out_size >= size_bytes:
+        print("[video] optimization did not reduce size enough; using original video.")
+        return video_file
+    print(
+        f"[video] optimized upload video ready: {out_file} "
+        f"({out_size / (1024 * 1024):.1f} MB)"
+    )
+    return out_file
 
 
 def _prepare_video_for_gemini(
@@ -723,6 +1799,9 @@ def _prepare_video_for_gemini(
     timeout_sec = int(_cfg_get(cfg, "gemini.video_download_timeout_sec", 180))
     require_video = bool(_cfg_get(cfg, "gemini.require_video", False))
     min_video_bytes = int(_cfg_get(cfg, "gemini.min_video_bytes", 500000))
+    validate_video_decode = bool(_cfg_get(cfg, "gemini.validate_video_decode", True))
+    scan_attempts = max(1, int(_cfg_get(cfg, "gemini.video_candidate_scan_attempts", 4)))
+    scan_wait_ms = max(200, int(_cfg_get(cfg, "gemini.video_candidate_scan_wait_ms", 1200)))
     resume_from_artifacts = bool(_cfg_get(cfg, "run.resume_from_artifacts", True))
 
     primary_target = out_dir / video_name
@@ -730,35 +1809,116 @@ def _prepare_video_for_gemini(
         try:
             size_bytes = primary_target.stat().st_size
             if size_bytes >= min_video_bytes and _is_probably_mp4(primary_target):
-                size_mb = size_bytes / (1024 * 1024)
-                print(f"[video] reusing existing file: {primary_target} ({size_mb:.1f} MB)")
-                return primary_target
+                if validate_video_decode and not _is_video_decodable(primary_target):
+                    print(f"[video] cached file looks corrupted; re-downloading: {primary_target}")
+                    try:
+                        primary_target.unlink(missing_ok=True)
+                    except Exception:
+                        pass
+                else:
+                    size_mb = size_bytes / (1024 * 1024)
+                    print(f"[video] reusing existing file: {primary_target} ({size_mb:.1f} MB)")
+                    return primary_target
         except Exception:
             pass
 
-    # Let the player/network settle a bit.
+    def _nudge_video_network() -> None:
+        try:
+            page.evaluate(
+                """() => {
+                    const v = document.querySelector('video');
+                    if (!v) return;
+                    try { v.muted = true; v.play(); } catch (e) {}
+                }"""
+            )
+            page.wait_for_timeout(900)
+            page.evaluate(
+                """() => {
+                    const v = document.querySelector('video');
+                    if (!v) return;
+                    try {
+                        if (Number.isFinite(v.currentTime)) {
+                            v.currentTime = Math.max(0, Number(v.currentTime || 0) + 0.05);
+                        }
+                        v.pause();
+                    } catch (e) {}
+                }"""
+            )
+        except Exception:
+            pass
+
+    network_seen: set[str] = set()
+    network_candidates: List[str] = []
+
+    def _remember_network_video_url(raw_url: str, content_type: str = "") -> None:
+        try:
+            raw = html.unescape((raw_url or "").strip())
+            if not raw:
+                return
+            low_ct = (content_type or "").lower()
+            if "video" not in low_ct and not _looks_like_video_url(raw):
+                return
+            if raw in network_seen:
+                return
+            network_seen.add(raw)
+            network_candidates.append(raw)
+        except Exception:
+            return
+
+    response_listener = None
+    try:
+        def _on_response(resp: Any) -> None:
+            try:
+                headers = resp.headers or {}
+            except Exception:
+                headers = {}
+            try:
+                content_type = str(headers.get("content-type", "") or "")
+            except Exception:
+                content_type = ""
+            try:
+                _remember_network_video_url(str(resp.url or ""), content_type=content_type)
+            except Exception:
+                return
+        response_listener = _on_response
+        page.on("response", response_listener)
+    except Exception:
+        response_listener = None
+
+    def _rank_video_url(url: str) -> Tuple[int, int, int]:
+        low = (url or "").lower()
+        return (
+            0 if re.search(r"\.(mp4|webm|mov|m4v|m3u8)(\?|$)", low, flags=re.I) else 1,
+            0 if "atlascapture" in low or "cloudflarestorage.com" in low else 1,
+            len(url or ""),
+        )
+
     page.wait_for_timeout(1500)
     _dismiss_blocking_modals(page)
-    try:
-        # Nudge playback to trigger actual media requests if lazy-loaded.
-        page.evaluate(
-            """() => {
-                const v = document.querySelector('video');
-                if (!v) return;
-                try { v.muted = true; v.play(); } catch (e) {}
-            }"""
-        )
-        page.wait_for_timeout(1200)
-        page.evaluate(
-            """() => {
-                const v = document.querySelector('video');
-                if (!v) return;
-                try { v.pause(); } catch (e) {}
-            }"""
-        )
-    except Exception:
-        pass
-    candidates = _collect_video_url_candidates(page, cfg)
+    candidates: List[str] = []
+    for scan_idx in range(scan_attempts):
+        if scan_idx > 0:
+            page.wait_for_timeout(scan_wait_ms)
+            _dismiss_blocking_modals(page)
+        _nudge_video_network()
+        candidates = _collect_video_url_candidates(page, cfg)
+        for from_net in network_candidates:
+            if from_net not in candidates:
+                candidates.append(from_net)
+        candidates.sort(key=_rank_video_url)
+        if candidates:
+            if scan_idx > 0:
+                print(f"[video] candidate urls resolved after retry {scan_idx + 1}/{scan_attempts}.")
+            break
+        if scan_idx < scan_attempts - 1:
+            print(f"[video] no candidate urls yet ({scan_idx + 1}/{scan_attempts}); retrying...")
+
+    if response_listener is not None:
+        try:
+            page.remove_listener("response", response_listener)
+        except Exception:
+            pass
+
     print(f"[video] candidate urls found: {len(candidates)}")
     for u in candidates[:5]:
         print(f"[video] candidate: {u}")
@@ -771,7 +1931,14 @@ def _prepare_video_for_gemini(
             suffix = Path(video_name).suffix or ".mp4"
             target = out_dir / f"{stem}_{idx}{suffix}"
         try:
-            _download_video_from_page_context(page=page, context=context, video_url=url, out_path=target, timeout_sec=timeout_sec)
+            _download_video_from_page_context(
+                page=page,
+                context=context,
+                video_url=url,
+                out_path=target,
+                timeout_sec=timeout_sec,
+                cfg=cfg,
+            )
             size_bytes = target.stat().st_size
             size_mb = size_bytes / (1024 * 1024)
             if size_bytes < min_video_bytes:
@@ -780,6 +1947,9 @@ def _prepare_video_for_gemini(
             if not _is_probably_mp4(target):
                 print(f"[video] skip candidate (not mp4 signature): {url}")
                 continue
+            if validate_video_decode and not _is_video_decodable(target):
+                print(f"[video] skip candidate (decode check failed): {url}")
+                continue
             print(f"[video] downloaded: {target} ({size_mb:.1f} MB)")
             return target
         except Exception as exc:
@@ -787,6 +1957,8 @@ def _prepare_video_for_gemini(
             continue
 
     if require_video:
+        if last_err is None:
+            last_err = RuntimeError("no candidate video URLs discovered")
         raise RuntimeError(f"Could not download task video from page. Last error: {last_err}")
     print("[video] no downloadable video found; proceeding with text-only prompt.")
     return None
@@ -801,7 +1973,7 @@ def _wait_for_any(page: Page, selector: str, timeout_ms: int = 8000) -> bool:
     return False
 
 
-def _dismiss_blocking_modals(page: Page) -> None:
+def _dismiss_blocking_modals(page: Page, cfg: Optional[Dict[str, Any]] = None) -> None:
     modal_buttons = [
         'button:has-text("I Understand")',
         'button:has-text("Understand")',
@@ -825,11 +1997,29 @@ def _dismiss_blocking_modals(page: Page) -> None:
         'button:has-text("Continue")',
         'text=/\\bContinue\\b/i',
     ]
-    for _ in range(5):
+    passes = max(1, int(_cfg_get(cfg, "run.modal_dismiss_passes", 2) if cfg else 2))
+    click_timeout_ms = max(
+        50,
+        int(_cfg_get(cfg, "run.modal_dismiss_timeout_ms", 120) if cfg else 120),
+    )
+    post_click_wait_ms = max(
+        0,
+        int(_cfg_get(cfg, "run.modal_dismiss_post_click_wait_ms", 180) if cfg else 180),
+    )
+
+    for _ in range(passes):
         clicked_any = False
+        seen_any = False
         for sel in modal_buttons:
-            if _safe_locator_click(page, sel, timeout_ms=1200):
+            loc = _first_visible_locator(page, sel, timeout_ms=click_timeout_ms)
+            if loc is None:
+                continue
+            seen_any = True
+            try:
+                loc.click(timeout=click_timeout_ms)
                 clicked_any = True
+            except Exception:
+                continue
         if not clicked_any:
             # Fallback JS click by visible text content.
             try:
@@ -861,8 +2051,11 @@ def _dismiss_blocking_modals(page: Page) -> None:
             except Exception:
                 clicked_any = False
         if clicked_any:
-            page.wait_for_timeout(600)
+            if post_click_wait_ms > 0:
+                page.wait_for_timeout(post_click_wait_ms)
         else:
+            if not seen_any:
+                break
             break
 
 
@@ -977,8 +2170,9 @@ def _click_segment_row_with_recovery(page: Page, rows: Locator, idx: int, cfg: D
     for attempt in range(4):
         row = rows.nth(idx - 1)
         try:
+            _dismiss_blocking_side_panel(page, cfg, aggressive=True)
             row.scroll_into_view_if_needed()
-            row.click(timeout=2200)
+            row.click(timeout=2200, no_wait_after=True)
             return
         except Exception as exc:
             last_exc = exc
@@ -986,10 +2180,25 @@ def _click_segment_row_with_recovery(page: Page, rows: Locator, idx: int, cfg: D
             _dismiss_blocking_side_panel(page, cfg, aggressive=(attempt >= 1))
             try:
                 row = rows.nth(idx - 1)
-                row.click(timeout=1200, force=True)
+                row.click(timeout=1200, force=True, no_wait_after=True)
                 return
             except Exception as force_exc:
                 last_exc = force_exc
+                try:
+                    row.evaluate(
+                        """(el) => {
+                            if (!el) return false;
+                            const evt = { bubbles: true, cancelable: true, view: window };
+                            el.dispatchEvent(new MouseEvent('mousedown', evt));
+                            el.dispatchEvent(new MouseEvent('mouseup', evt));
+                            el.dispatchEvent(new MouseEvent('click', evt));
+                            if (typeof el.click === 'function') el.click();
+                            return true;
+                        }"""
+                    )
+                    return
+                except Exception as js_exc:
+                    last_exc = js_exc
                 page.wait_for_timeout(120 + attempt * 120)
     raise RuntimeError(str(last_exc) if last_exc else "failed to focus segment row")
 
@@ -1008,9 +2217,254 @@ def _respect_reserve_cooldown(cfg: Dict[str, Any]) -> None:
         time.sleep(remaining)
 
 
+def _respect_reserve_min_interval(cfg: Dict[str, Any]) -> None:
+    global _LAST_RESERVE_REQUEST_TS
+    min_interval_sec = max(0, int(_cfg_get(cfg, "run.reserve_min_interval_sec", 90)))
+    if min_interval_sec <= 0:
+        return
+    if _LAST_RESERVE_REQUEST_TS <= 0:
+        return
+    elapsed = time.time() - _LAST_RESERVE_REQUEST_TS
+    remaining = min_interval_sec - elapsed
+    if remaining > 0:
+        print(f"[atlas] waiting {int(remaining)}s before next reserve attempt (min-interval).")
+        time.sleep(remaining)
+
+
 def _mark_reserve_request() -> None:
     global _LAST_RESERVE_REQUEST_TS
     _LAST_RESERVE_REQUEST_TS = time.time()
+
+
+def _click_reserve_button_dynamic(page: Page, cfg: Dict[str, Any], timeout_ms: int = 2500) -> Tuple[bool, str]:
+    reserve_btn = str(_cfg_get(cfg, "atlas.selectors.reserve_episodes_button", "")).strip()
+    reserve_loc = _first_visible_locator(page, reserve_btn, timeout_ms=timeout_ms) if reserve_btn else None
+    if reserve_loc is not None:
+        try:
+            txt = (_safe_locator_text(reserve_loc, timeout_ms=600) or "").strip()
+            reserve_loc.click(timeout=2000)
+            return True, txt
+        except Exception:
+            pass
+
+    try:
+        result = page.evaluate(
+            """() => {
+                const items = Array.from(document.querySelectorAll('button, [role="button"], a'));
+                const isVisible = (el) => {
+                    const st = window.getComputedStyle(el);
+                    const r = el.getBoundingClientRect();
+                    return st && st.visibility !== 'hidden' && st.display !== 'none' && r.width > 0 && r.height > 0;
+                };
+                const pickScore = (text) => {
+                    const t = (text || '').toLowerCase().replace(/\\s+/g, ' ').trim();
+                    if (!t.includes('reserve')) return -1;
+                    const m = t.match(/reserve\\s*(\\d+)\\s*episodes?/i);
+                    if (m) return 100 + parseInt(m[1] || '0', 10);
+                    if (t.includes('reserve new episode')) return 60;
+                    if (t.includes('reserve') && t.includes('episode')) return 50;
+                    return 10;
+                };
+
+                let best = null;
+                for (const el of items) {
+                    if (!isVisible(el)) continue;
+                    const text = (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim();
+                    const score = pickScore(text);
+                    if (score < 0) continue;
+                    if (!best || score > best.score) best = { el, text, score };
+                }
+                if (!best) return { clicked: false, text: '' };
+                best.el.click();
+                return { clicked: true, text: best.text || '' };
+            }"""
+        )
+        if isinstance(result, dict) and bool(result.get("clicked")):
+            return True, str(result.get("text", "") or "")
+    except Exception:
+        pass
+    return False, ""
+
+
+def _extract_wait_seconds_from_page(page: Page, default_wait_sec: int = 180) -> int:
+    try:
+        body = (page.inner_text("body") or "").lower()
+    except Exception:
+        body = ""
+    if not body:
+        return default_wait_sec
+    if not re.search(
+        r"(too many requests|rate[\s-]?limit|try again in|please wait|temporarily unavailable)",
+        body,
+    ):
+        return default_wait_sec
+    m = re.search(r"(?:try again in|wait|after)\s*(\d+)\s*(seconds?|minutes?|mins?)", body)
+    if m:
+        try:
+            amount = int(m.group(1))
+            unit = (m.group(2) or "").lower()
+            if amount <= 0:
+                return default_wait_sec
+            if unit.startswith("second"):
+                return max(5, amount)
+            return amount * 60
+        except Exception:
+            pass
+    return default_wait_sec
+
+
+def _reserve_rate_limited(page: Page) -> bool:
+    try:
+        body = (page.inner_text("body") or "").lower()
+    except Exception:
+        body = ""
+    if not body:
+        return False
+    if "reserve" not in body and "episode" not in body:
+        return False
+    explicit_patterns = [
+        r"try again in\s*\d+\s*(?:second|seconds|minute|minutes|min)?",
+        r"too many requests",
+        r"rate[\s-]?limit",
+        r"temporarily unavailable",
+        r"please wait",
+    ]
+    for pat in explicit_patterns:
+        try:
+            if re.search(pat, body):
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _release_all_reserved_episodes(page: Page, cfg: Dict[str, Any]) -> bool:
+    room_url = str(_cfg_get(cfg, "atlas.room_url", "")).strip()
+    release_btn = str(_cfg_get(cfg, "atlas.selectors.release_all_button", "")).strip()
+    confirm_release_btn = str(_cfg_get(cfg, "atlas.selectors.confirm_release_button", "")).strip()
+    if not release_btn:
+        return False
+
+    if room_url:
+        try:
+            _goto_with_retry(
+                page,
+                room_url,
+                wait_until="domcontentloaded",
+                timeout_ms=45000,
+                cfg=cfg,
+                reason="room-before-release-all",
+            )
+        except Exception:
+            pass
+    _dismiss_blocking_modals(page, cfg)
+    if not _safe_locator_click(page, release_btn, timeout_ms=3500):
+        print("[atlas] release-all button not found; skipping release cycle.")
+        return False
+    page.wait_for_timeout(450)
+
+    confirm_clicks = 0
+    release_dialog_sel = (
+        'div[role="dialog"]:has-text("Release all episodes") '
+        '|| div[role="dialog"]:has-text("Release All") '
+        '|| [role="dialog"]:has-text("Release all episodes")'
+    )
+    modal_release_btn = (
+        'div[role="dialog"] button:has-text("Release All") '
+        '|| div[role="dialog"] [role="button"]:has-text("Release All")'
+    )
+    try:
+        if _wait_for_any(page, release_dialog_sel, timeout_ms=2200):
+            if _safe_locator_click(page, modal_release_btn, timeout_ms=2600):
+                confirm_clicks += 1
+                page.wait_for_timeout(500)
+    except Exception:
+        pass
+
+    if confirm_clicks == 0 and confirm_release_btn:
+        for _ in range(2):
+            if _safe_locator_click(page, confirm_release_btn, timeout_ms=2200):
+                confirm_clicks += 1
+                page.wait_for_timeout(450)
+            else:
+                break
+
+    page.wait_for_timeout(850)
+    total_clicks = 1 + confirm_clicks
+    print(f"[atlas] release-all requested for current reserved episodes (clicks={total_clicks}).")
+    return True
+
+
+def _respect_episode_delay(cfg: Dict[str, Any]) -> None:
+    min_delay = float(_cfg_get(cfg, "run.min_delay_between_episodes_sec", 0.0) or 0.0)
+    max_delay = float(_cfg_get(cfg, "run.max_delay_between_episodes_sec", 0.0) or 0.0)
+    if max_delay < min_delay:
+        min_delay, max_delay = max_delay, min_delay
+    min_delay = max(0.0, min_delay)
+    max_delay = max(0.0, max_delay)
+    if max_delay <= 0:
+        return
+    delay = min_delay if max_delay == min_delay else random.uniform(min_delay, max_delay)
+    print(f"[run] waiting {delay:.1f}s before next episode.")
+    time.sleep(delay)
+
+
+def _compute_backoff_delay(cfg: Dict[str, Any], attempt: int) -> float:
+    base_delay = max(0.2, float(_cfg_get(cfg, "gemini.retry_base_delay_sec", 2.0)))
+    jitter_max = max(0.0, float(_cfg_get(cfg, "gemini.retry_jitter_sec", 0.8)))
+    max_backoff = max(base_delay, float(_cfg_get(cfg, "gemini.max_backoff_sec", 30.0)))
+    delay = min(max_backoff, base_delay * (2**attempt))
+    if jitter_max > 0:
+        delay += random.uniform(0.0, jitter_max)
+    return delay
+
+
+def _respect_gemini_rate_limit(cfg: Dict[str, Any]) -> None:
+    global _LAST_GEMINI_REQUEST_TS, _GEMINI_REQUEST_TIMESTAMPS
+    if not bool(_cfg_get(cfg, "gemini.rate_limit_enabled", True)):
+        return
+    rpm = max(1, int(_cfg_get(cfg, "gemini.rate_limit_requests_per_minute", 9)))
+    window_sec = max(5.0, float(_cfg_get(cfg, "gemini.rate_limit_window_sec", 60.0)))
+    min_interval_sec = max(0.0, float(_cfg_get(cfg, "gemini.rate_limit_min_interval_sec", 0.0)))
+
+    now = time.time()
+    cutoff = now - window_sec
+    _GEMINI_REQUEST_TIMESTAMPS = [ts for ts in _GEMINI_REQUEST_TIMESTAMPS if ts >= cutoff]
+
+    wait_sec = 0.0
+    if len(_GEMINI_REQUEST_TIMESTAMPS) >= rpm:
+        earliest = min(_GEMINI_REQUEST_TIMESTAMPS)
+        wait_sec = max(wait_sec, (earliest + window_sec) - now + 0.01)
+    if min_interval_sec > 0 and _LAST_GEMINI_REQUEST_TS > 0:
+        wait_sec = max(wait_sec, (_LAST_GEMINI_REQUEST_TS + min_interval_sec) - now)
+
+    if wait_sec > 0:
+        print(
+            f"[gemini] rate limiter: sleeping {wait_sec:.1f}s "
+            f"(limit={rpm}/{int(window_sec)}s)."
+        )
+        time.sleep(wait_sec)
+        now = time.time()
+        cutoff = now - window_sec
+        _GEMINI_REQUEST_TIMESTAMPS = [ts for ts in _GEMINI_REQUEST_TIMESTAMPS if ts >= cutoff]
+
+    sent_at = time.time()
+    _GEMINI_REQUEST_TIMESTAMPS.append(sent_at)
+    _LAST_GEMINI_REQUEST_TS = sent_at
+
+
+def _is_non_retriable_gemini_error(exc: Exception) -> bool:
+    msg = str(exc or "").lower()
+    if not msg:
+        return False
+    fatal_markers = [
+        "missing gemini api key",
+        "api key not valid",
+        "permission denied",
+        "unauthorized",
+        "forbidden",
+    ]
+    return any(marker in msg for marker in fatal_markers)
 
 
 def _ensure_loop_off(page: Page, cfg: Dict[str, Any]) -> None:
@@ -1266,6 +2720,17 @@ def _save_cached_labels(cfg: Dict[str, Any], task_id: str, payload: Dict[str, An
     try:
         cache_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         print(f"[gemini] cached labels: {cache_path}")
+    except Exception:
+        pass
+
+
+def _invalidate_cached_labels(cfg: Dict[str, Any], task_id: str) -> None:
+    cache_path = _labels_cache_path(cfg, task_id)
+    if cache_path is None or not cache_path.exists():
+        return
+    try:
+        cache_path.unlink()
+        print(f"[gemini] invalidated cached labels for task {task_id}: {cache_path}")
     except Exception:
         pass
 
@@ -1601,7 +3066,15 @@ def ensure_logged_in(page: Page, cfg: Dict[str, Any]) -> None:
     verify_sel = str(_cfg_get(cfg, "atlas.selectors.verify_button", ""))
 
     print(f"[auth] open login page: {login_url}")
-    page.goto(login_url, wait_until="domcontentloaded")
+    try:
+        page.goto(login_url, wait_until="domcontentloaded")
+    except Exception as exc:
+        if _is_too_many_redirects_error(exc):
+            print("[auth] login redirect loop detected; clearing Atlas session and retrying login page once.")
+            _clear_atlas_site_session(page)
+            page.goto(login_url, wait_until="domcontentloaded")
+        else:
+            raise
     if "/dashboard" in page.url.lower() or "/tasks" in page.url.lower():
         print("[auth] already logged in via existing session.")
         return
@@ -1650,7 +3123,12 @@ def ensure_logged_in(page: Page, cfg: Dict[str, Any]) -> None:
     _wait_until_authenticated(page, cfg, timeout_sec=timeout_sec)
 
 
-def goto_task_room(page: Page, cfg: Dict[str, Any]) -> bool:
+def goto_task_room(
+    page: Page,
+    cfg: Dict[str, Any],
+    skip_task_ids: Optional[set[str]] = None,
+    status_out: Optional[Dict[str, Any]] = None,
+) -> bool:
     room_url = str(_cfg_get(cfg, "atlas.room_url", "")).strip()
     dashboard_url = str(_cfg_get(cfg, "atlas.dashboard_url", "")).strip()
     wait_sec = float(_cfg_get(cfg, "atlas.wait_before_continue_sec", 5))
@@ -1662,18 +3140,140 @@ def goto_task_room(page: Page, cfg: Dict[str, Any]) -> bool:
     label_task_link = str(_cfg_get(cfg, "atlas.selectors.label_task_link", ""))
     reserve_btn = str(_cfg_get(cfg, "atlas.selectors.reserve_episodes_button", ""))
     confirm_reserve_btn = str(_cfg_get(cfg, "atlas.selectors.confirm_reserve_button", ""))
+    blocked_task_ids = skip_task_ids if skip_task_ids is not None else set()
+    if isinstance(status_out, dict):
+        status_out["all_visible_blocked"] = False
+    release_all_on_internal_error = bool(_cfg_get(cfg, "run.release_all_on_internal_error", True))
+    reserve_rate_limit_wait_sec = max(30, int(_cfg_get(cfg, "run.reserve_rate_limit_wait_sec", 180)))
+    release_requested_by_internal_error = False
+    current_url = (page.url or "").strip()
+    current_l = current_url.lower()
 
     if "/tasks/room/normal/label/" in page.url:
         return True
 
     if room_url:
         print(f"[atlas] goto room url: {room_url}")
-        page.goto(room_url, wait_until="domcontentloaded")
+        room_norm = room_url.rstrip("/").lower()
+        current_norm = current_url.rstrip("/").lower()
+        if current_norm == room_norm or "/tasks/room/normal" in current_l:
+            print("[atlas] already on room page; skipping duplicate room navigation.")
+        else:
+            _goto_with_retry(page, room_url, wait_until="domcontentloaded", timeout_ms=45000, cfg=cfg, reason="goto-room")
     elif dashboard_url:
         print(f"[atlas] goto dashboard url: {dashboard_url}")
         page.goto(dashboard_url, wait_until="domcontentloaded")
 
-    _safe_locator_click(page, tasks_nav, timeout_ms=3000)
+    def _recover_standard_workflow_entry() -> None:
+        url_l = (page.url or "").lower()
+        if "/tasks" not in url_l:
+            return
+        if "/tasks/room/normal" in url_l or "/tasks/room/normal/label/" in url_l:
+            return
+        enter_clicks = max(1, int(_cfg_get(cfg, "run.workflow_reentry_enter_clicks", 2)))
+        second_click_delay_sec = max(0.0, float(_cfg_get(cfg, "run.workflow_reentry_second_click_delay_sec", 5.0)))
+        clicked_any = False
+        for i in range(enter_clicks):
+            clicked = _safe_locator_click(page, enter_workflow, timeout_ms=5000)
+            if clicked:
+                clicked_any = True
+                print(f"[atlas] workflow recovery: clicked Enter Standard Workflow ({i + 1}/{enter_clicks}).")
+            if i == 0 and enter_clicks > 1 and second_click_delay_sec > 0:
+                print(f"[atlas] workflow recovery: waiting {second_click_delay_sec:.1f}s before second Enter click.")
+                time.sleep(second_click_delay_sec)
+            page.wait_for_timeout(700)
+        if not clicked_any:
+            return
+        _safe_locator_click(page, continue_room, timeout_ms=4500)
+        _safe_locator_click(page, label_button, timeout_ms=4500)
+        page.wait_for_timeout(700)
+
+    def _wait_label_page_ready() -> None:
+        checks = max(1, int(_cfg_get(cfg, "run.label_open_loading_max_checks", 5)))
+        wait_ms = max(120, int(_cfg_get(cfg, "run.label_open_loading_wait_ms", 600)))
+        for _ in range(checks):
+            _dismiss_blocking_modals(page)
+            try:
+                body = (page.inner_text("body") or "").lower()
+            except Exception:
+                body = ""
+            if "loading..." not in body:
+                break
+            page.wait_for_timeout(wait_ms)
+
+    def _handle_internal_error_release_cycle() -> None:
+        nonlocal release_requested_by_internal_error
+        if not release_requested_by_internal_error:
+            return
+        _release_all_reserved_episodes(page, cfg)
+        release_requested_by_internal_error = False
+        if room_url:
+            try:
+                _goto_with_retry(
+                    page,
+                    room_url,
+                    wait_until="domcontentloaded",
+                    timeout_ms=45000,
+                    cfg=cfg,
+                    reason="room-after-release-internal-error",
+                )
+            except Exception:
+                pass
+        page.wait_for_timeout(900)
+
+    def _open_label_target(target: str, reason: str, log_label: str) -> bool:
+        nonlocal release_requested_by_internal_error
+        _goto_with_retry(page, target, wait_until="commit", timeout_ms=45000, cfg=cfg, reason=reason)
+        print(f"[atlas] opened label task by {log_label}: {target}")
+        _wait_label_page_ready()
+        if _is_label_page_actionable(page, cfg, timeout_ms=5000):
+            return True
+        bad_task_id = _task_id_from_url(page.url) or _task_id_from_url(target)
+        if bad_task_id:
+            blocked_task_ids.add(bad_task_id)
+            print(f"[atlas] label page unavailable; task blocked for this run: {bad_task_id}")
+        if _is_label_page_internal_error(page):
+            _try_go_back_from_label_error(page, cfg)
+            print("[atlas] label page failed with internal error; clicked Go Back.")
+            if release_all_on_internal_error:
+                release_requested_by_internal_error = True
+                print("[atlas] internal error detected; release-all cycle requested.")
+        elif _is_label_page_not_found(page):
+            print("[atlas] label URL returned not-found page; trying another task.")
+        else:
+            print("[atlas] label page opened but video/segments are unavailable; trying another task.")
+        if room_url:
+            try:
+                _goto_with_retry(
+                    page,
+                    room_url,
+                    wait_until="domcontentloaded",
+                    timeout_ms=45000,
+                    cfg=cfg,
+                    reason="room-after-invalid-label",
+                )
+            except Exception:
+                pass
+        return False
+
+    _recover_standard_workflow_entry()
+
+    # Fast-path: room page already has direct label links.
+    if label_task_link:
+        for href_from_html in _all_task_label_hrefs_from_page(page):
+            tid = _task_id_from_url(href_from_html)
+            if tid and tid in blocked_task_ids:
+                continue
+            target = href_from_html if href_from_html.startswith("http") else f"https://audit.atlascapture.io{href_from_html}"
+            if _open_label_target(target, reason="open-label-fast", log_label="html href (fast-path)"):
+                return True
+            if release_requested_by_internal_error:
+                _handle_internal_error_release_cycle()
+                break
+
+    current_l = (page.url or "").lower()
+    if tasks_nav and "/tasks/room/normal" not in current_l and "/tasks/room/normal/label/" not in current_l:
+        _safe_locator_click(page, tasks_nav, timeout_ms=3000)
     _safe_locator_click(page, enter_workflow, timeout_ms=4000)
     if wait_sec > 0:
         time.sleep(wait_sec)
@@ -1683,83 +3283,152 @@ def goto_task_room(page: Page, cfg: Dict[str, Any]) -> bool:
     # In room view, reserve episodes if needed, then open first concrete label task URL.
     if label_task_link:
         page.wait_for_timeout(1000)
-        href_from_html = _first_task_label_href_from_html(page)
-        if href_from_html:
-            target = href_from_html if href_from_html.startswith("http") else f"https://audit.atlascapture.io{href_from_html}"
-            page.goto(target, wait_until="domcontentloaded")
-            print(f"[atlas] opened label task by html href: {target}")
-            for _ in range(8):
-                _dismiss_blocking_modals(page)
-                body = (page.inner_text("body") or "").lower()
-                if "loading..." not in body:
-                    break
-                page.wait_for_timeout(1200)
-            return True
+        reserve_attempts = max(1, int(_cfg_get(cfg, "run.reserve_attempts_per_visit", 3)))
+        label_wait_timeout_ms = max(1500, int(_cfg_get(cfg, "run.reserve_label_wait_timeout_ms", 12000)))
+        reserve_refresh_after_click = bool(_cfg_get(cfg, "run.reserve_refresh_after_click", True))
+        reserve_wait_only_on_rate_limit = bool(_cfg_get(cfg, "run.reserve_wait_only_on_rate_limit", True))
+        skip_reserve_when_all_visible_blocked = bool(
+            _cfg_get(cfg, "run.skip_reserve_when_all_visible_blocked", True)
+        )
 
-        link_loc = _first_visible_locator(page, label_task_link, timeout_ms=2500)
-        if link_loc is None:
-            reserved = False
-            if reserve_btn:
-                reserve_loc = _first_visible_locator(page, reserve_btn, timeout_ms=2500)
-                if reserve_loc is not None:
-                    _respect_reserve_cooldown(cfg)
-                    try:
-                        reserve_loc.click()
-                        reserved = True
-                        _mark_reserve_request()
-                        print("[atlas] reserve requested.")
-                    except Exception:
-                        reserved = False
-            if reserved:
-                _safe_locator_click(page, confirm_reserve_btn, timeout_ms=3500)
-                _wait_for_any(page, label_task_link, timeout_ms=12000)
-                page.wait_for_timeout(800)
-                href_from_html = _first_task_label_href_from_html(page)
-                if href_from_html:
-                    target = href_from_html if href_from_html.startswith("http") else f"https://audit.atlascapture.io{href_from_html}"
-                    page.goto(target, wait_until="domcontentloaded")
-                    print(f"[atlas] opened label task by html href: {target}")
-                    for _ in range(8):
-                        _dismiss_blocking_modals(page)
-                        body = (page.inner_text("body") or "").lower()
-                        if "loading..." not in body:
-                            break
-                        page.wait_for_timeout(1200)
+        def _open_first_label_from_page(reason: str) -> bool:
+            nonlocal release_requested_by_internal_error
+            href_candidates = _all_task_label_hrefs_from_page(page)
+            for href_from_html in href_candidates:
+                tid = _task_id_from_url(href_from_html)
+                if tid and tid in blocked_task_ids:
+                    continue
+                target = href_from_html if href_from_html.startswith("http") else f"https://audit.atlascapture.io{href_from_html}"
+                if _open_label_target(target, reason=reason, log_label="html href"):
                     return True
-                _safe_locator_click(page, label_button, timeout_ms=4000)
-                _wait_for_any(page, label_task_link, timeout_ms=12000)
-            link_loc = _first_visible_locator(page, label_task_link, timeout_ms=5000)
+                if release_requested_by_internal_error:
+                    return False
 
-        if link_loc is None:
-            href = _first_href_from_selector(page, label_task_link)
-            if href:
-                target = href if href.startswith("http") else f"https://audit.atlascapture.io{href}"
-                page.goto(target, wait_until="domcontentloaded")
-                print(f"[atlas] opened label task by href: {target}")
-                return True
+            if blocked_task_ids:
+                print(f"[atlas] all visible label tasks are blocked in this run ({len(blocked_task_ids)} blocked).")
+                if isinstance(status_out, dict):
+                    status_out["all_visible_blocked"] = True
+                return False
 
-        if link_loc is not None:
+            link_loc = _first_visible_locator(page, label_task_link, timeout_ms=2500)
+            if link_loc is None:
+                href = _first_href_from_selector(page, label_task_link)
+                if href:
+                    target = href if href.startswith("http") else f"https://audit.atlascapture.io{href}"
+                    return _open_label_target(target, reason=f"{reason}-href", log_label="href")
+                return False
+
             try:
                 href = link_loc.get_attribute("href")
                 link_loc.click()
                 if href:
                     print(f"[atlas] opened label task: {href}")
-                for _ in range(8):
-                    _dismiss_blocking_modals(page)
-                    body = (page.inner_text("body") or "").lower()
-                    if "loading..." not in body:
-                        break
-                    page.wait_for_timeout(1200)
+                _wait_label_page_ready()
             except Exception:
-                pass
+                return False
             if "/tasks/room/normal/label/" in page.url:
-                return True
+                if _is_label_page_actionable(page, cfg, timeout_ms=5000):
+                    return True
+                bad_task_id = _task_id_from_url(page.url) or _task_id_from_url(href or "")
+                if bad_task_id:
+                    blocked_task_ids.add(bad_task_id)
+                    print(f"[atlas] label page unavailable; task blocked for this run: {bad_task_id}")
+                if _is_label_page_internal_error(page):
+                    _try_go_back_from_label_error(page, cfg)
+                    if release_all_on_internal_error:
+                        release_requested_by_internal_error = True
+                if room_url:
+                    try:
+                        _goto_with_retry(
+                            page,
+                            room_url,
+                            wait_until="domcontentloaded",
+                            timeout_ms=45000,
+                            cfg=cfg,
+                            reason="room-after-click-invalid-label",
+                        )
+                    except Exception:
+                        pass
+                return False
             href = _first_href_from_selector(page, label_task_link)
             if href:
                 target = href if href.startswith("http") else f"https://audit.atlascapture.io{href}"
-                page.goto(target, wait_until="domcontentloaded")
-                print(f"[atlas] opened label task by href fallback: {target}")
+                return _open_label_target(target, reason=f"{reason}-href-fallback", log_label="href fallback")
+            return False
+
+        if _open_first_label_from_page("open-label-html"):
+            return True
+        if (
+            isinstance(status_out, dict)
+            and bool(status_out.get("all_visible_blocked"))
+            and skip_reserve_when_all_visible_blocked
+        ):
+            print("[atlas] skipping reserve: all visible tasks are blocked in this run.")
+            return False
+        if release_requested_by_internal_error:
+            _handle_internal_error_release_cycle()
+
+        for reserve_attempt in range(1, reserve_attempts + 1):
+            reserved = False
+            reserve_label = ""
+            _respect_reserve_min_interval(cfg)
+            if not reserve_wait_only_on_rate_limit:
+                _respect_reserve_cooldown(cfg)
+            clicked, reserve_label = _click_reserve_button_dynamic(page, cfg, timeout_ms=2500)
+            if clicked:
+                try:
+                    reserved = True
+                    _mark_reserve_request()
+                    if reserve_label:
+                        print(f"[atlas] reserve requested: '{reserve_label}' ({reserve_attempt}/{reserve_attempts}).")
+                    else:
+                        print(f"[atlas] reserve requested ({reserve_attempt}/{reserve_attempts}).")
+                except Exception:
+                    reserved = False
+
+            if reserved:
+                _safe_locator_click(page, confirm_reserve_btn, timeout_ms=4500)
+                if _reserve_rate_limited(page):
+                    wait_sec = _extract_wait_seconds_from_page(page, default_wait_sec=reserve_rate_limit_wait_sec)
+                    print(f"[atlas] reserve is rate-limited; waiting {wait_sec}s then retrying reserve.")
+                    time.sleep(wait_sec)
+                    if room_url:
+                        try:
+                            _goto_with_retry(
+                                page,
+                                room_url,
+                                wait_until="domcontentloaded",
+                                timeout_ms=45000,
+                                cfg=cfg,
+                                reason="room-after-reserve-rate-limit",
+                            )
+                        except Exception:
+                            pass
+                    continue
+                if reserve_refresh_after_click and room_url:
+                    try:
+                        _goto_with_retry(
+                            page,
+                            room_url,
+                            wait_until="domcontentloaded",
+                            timeout_ms=45000,
+                            cfg=cfg,
+                            reason="room-refresh-after-reserve",
+                        )
+                    except Exception:
+                        pass
+
+            _safe_locator_click(page, label_button, timeout_ms=3500)
+            _wait_for_any(page, label_task_link, timeout_ms=label_wait_timeout_ms)
+            page.wait_for_timeout(700)
+            if _open_first_label_from_page("open-label-after-reserve"):
                 return True
+            if release_requested_by_internal_error:
+                _handle_internal_error_release_cycle()
+                continue
+
+            if reserve_attempt < reserve_attempts:
+                page.wait_for_timeout(900)
 
     return "/tasks/room/normal/label/" in page.url
 
@@ -1781,9 +3450,21 @@ def _parse_mmss_to_seconds(token: str) -> float:
 
 
 def _extract_start_end_from_text(text: str) -> Tuple[float, float]:
-    matches = re.findall(r"\b\d+:\d{2}(?:\.\d+)?\b", text or "")
+    text = (text or "").replace("\u2192", "->").replace("\u2013", "-")
+    matches = re.findall(r"\b\d+:\d{2}(?:\.\d+)?\b", text)
     if len(matches) >= 2:
         return _parse_mmss_to_seconds(matches[0]), _parse_mmss_to_seconds(matches[1])
+    if len(matches) == 1:
+        start = _parse_mmss_to_seconds(matches[0])
+        # Atlas may show "(6.0s)" duration while end timestamp isn't directly extracted.
+        dur_match = re.search(r"\((\d+(?:\.\d+)?)\s*s\)", text, flags=re.IGNORECASE)
+        if dur_match:
+            try:
+                dur_sec = float(dur_match.group(1))
+                if dur_sec > 0:
+                    return start, start + dur_sec
+            except ValueError:
+                pass
     return 0.0, 0.0
 
 
@@ -1897,8 +3578,12 @@ def extract_segments(page: Page, cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
         start_sec = _parse_mmss_to_seconds(_first_text_from_row(row, start_sel))
         end_sec = _parse_mmss_to_seconds(_first_text_from_row(row, end_sel))
 
-        if not start_sec and not end_sec:
-            start_sec, end_sec = _extract_start_end_from_text(raw_text)
+        # Fallback extraction from row text when either timestamp is missing.
+        fb_start, fb_end = _extract_start_end_from_text(raw_text)
+        if start_sec <= 0 and fb_start > 0:
+            start_sec = fb_start
+        if end_sec <= 0 and fb_end > 0:
+            end_sec = fb_end
 
         if not label and raw_text:
             lines = [ln.strip() for ln in raw_text.splitlines() if ln.strip()]
@@ -1926,12 +3611,26 @@ def _clean_json_text(text: str) -> str:
     return clean
 
 
+def _enforce_gemini_output_contract(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Normalize Gemini output to the expected contract:
+    {"operations": [...], "segments": [...]}
+    """
+    normalized = dict(payload or {})
+    operations = normalized.get("operations", [])
+    normalized["operations"] = operations if isinstance(operations, list) else []
+    segments = normalized.get("segments")
+    if not isinstance(segments, list):
+        raise ValueError("Gemini payload must contain list at 'segments'")
+    return normalized
+
+
 def _parse_json_text(text: str) -> Dict[str, Any]:
     payload = json.loads(_clean_json_text(text))
     if isinstance(payload, dict):
-        return payload
+        return _enforce_gemini_output_contract(payload)
     if isinstance(payload, list):
-        return {"segments": payload}
+        return _enforce_gemini_output_contract({"operations": [], "segments": payload})
     raise ValueError("Gemini response is not JSON object/list")
 
 
@@ -1947,19 +3646,104 @@ def _parse_gemini_response(data: Dict[str, Any]) -> Dict[str, Any]:
     raise RuntimeError(f"Could not parse JSON from Gemini response: {data}")
 
 
-def build_prompt(segments: List[Dict[str, Any]], extra_instructions: str) -> str:
+def _normalize_operation_action(action: str) -> str:
+    a = str(action or "").strip().lower()
+    aliases = {
+        "e": "edit",
+        "edit": "edit",
+        "s": "split",
+        "split": "split",
+        "d": "delete",
+        "delete": "delete",
+        "remove": "delete",
+        "m": "merge",
+        "merge": "merge",
+    }
+    return aliases.get(a, "")
+
+
+def _normalize_operations(payload: Dict[str, Any], cfg: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+    raw_ops = payload.get("operations", [])
+    if not isinstance(raw_ops, list):
+        return []
+    max_ops = max(0, int(_cfg_get(cfg or {}, "run.max_structural_operations", 12)))
+    out: List[Dict[str, Any]] = []
+    for item in raw_ops:
+        action = ""
+        idx = 0
+        if isinstance(item, dict):
+            action = _normalize_operation_action(
+                str(item.get("action") or item.get("op") or item.get("type") or "")
+            )
+            idx_raw = item.get("segment_index", item.get("index", item.get("segment", 0)))
+            try:
+                idx = int(idx_raw)
+            except Exception:
+                idx = 0
+        elif isinstance(item, str):
+            token = item.strip().lower()
+            # Examples: "split 3", "d 5"
+            m = re.match(r"([a-z]+)\s+(\d+)$", token)
+            if m:
+                action = _normalize_operation_action(m.group(1))
+                idx = int(m.group(2))
+            else:
+                action = _normalize_operation_action(token)
+        if not action or idx <= 0:
+            continue
+        out.append({"action": action, "segment_index": idx})
+        if max_ops and len(out) >= max_ops:
+            break
+    return out
+
+
+def build_prompt(
+    segments: List[Dict[str, Any]],
+    extra_instructions: str,
+    allow_operations: bool = True,
+) -> str:
     header = (
-        "You are an Atlas labeling assistant.\n"
+        "You are an Atlas Standard Tier-3 labeling assistant.\n"
         "You may receive the full task video as attached media plus employee segment text.\n"
         "Use the video as source of truth; employee labels may be wrong.\n"
-        "For each segment index, output corrected label.\n"
+        "For each segment index, output corrected label and timestamps when needed.\n"
+        "Apply one-mental-model policy: one continuous interaction toward one goal per segment.\n"
+        "Gripper rule: treat gripper as an extension of hand.\n"
+        "Usually do NOT mention the tool in labels; if unavoidable, use only 'gripper'.\n"
+        "Never use tool terms like mechanical arm / robotic arm / robot arm / manipulator / claw arm.\n"
+        "Split only when goal changes or hands disengage/restart; do not split only for No Action pauses.\n"
+        "Use coarse single-goal labels for repetitive actions; use dense labels only when needed.\n"
+        "Dense labels may include multiple atomic actions separated by commas/and.\n"
+        "Do not exceed 20 words or 2 atomic actions per label (typically one separator: a single comma or one 'and').\n"
+        "Do not write narrative filler words like then/another/next/continue/again.\n"
+        "For small corrective reorientation/reposition, prefer verb 'adjust'.\n"
+        "Avoid forbidden verbs: rotate, inspect, check, look, examine, reach, grab.\n"
+        "Use conservative object names that are directly visible.\n"
+        "If object identity is unclear after careful inspection, use safe general nouns (tool/container/item).\n"
+        "Do not guess hidden object identities and do not keep placeholder/default labels.\n"
+        "If surface type/elevation is unclear (floor mat vs table/shelf), do not guess raised furniture.\n"
+        "Use neutral location wording (on surface/on mat/on floor) unless elevation is clearly visible.\n"
+        "Use 'place' only with explicit location (on/in/into/onto/at/to/inside/under/over).\n"
         "If a segment timestamp is wrong, correct start_sec/end_sec.\n"
-        "Label rules: imperative style, concise, no forbidden verbs (inspect/check/reach/examine/continue).\n"
+        "Label rules: imperative style, concise, minimum 2 words, maximum 20 words.\n"
         "Use \"No Action\" only as standalone label.\n"
+        "If boundaries are fundamentally wrong, you may request structural operations before final labels.\n"
+        "Allowed operations: edit, split, delete, merge.\n"
+        "Operation segment_index refers to the row index at execution time.\n"
+        "Operations must be ordered exactly as they should be executed.\n"
         "Return strict JSON object only:\n"
-        "{\"segments\":[{\"segment_index\":1,\"start_sec\":0.0,\"end_sec\":1.2,\"label\":\"...\"}]}\n"
+        "Response must start with '{' and end with '}'.\n"
+        "Do not wrap JSON in markdown code fences.\n"
+        "{\"operations\":[{\"action\":\"split\",\"segment_index\":3}],"
+        "\"segments\":[{\"segment_index\":1,\"start_sec\":0.0,\"end_sec\":1.2,\"label\":\"...\"}]}\n"
+        "If no structural change is needed, return \"operations\":[]\n"
         "Keep segment count and indices unchanged; timestamps must stay monotonic.\n"
     )
+    if not allow_operations:
+        header += (
+            "Structural operations are disabled for this pass.\n"
+            "Return operations as an empty list.\n"
+        )
     lines = ["Segments input:"]
     for seg in segments:
         lines.append(
@@ -1974,58 +3758,766 @@ def build_prompt(segments: List[Dict[str, Any]], extra_instructions: str) -> str
     return header + "\n".join(lines)
 
 
-def call_gemini_labels(cfg: Dict[str, Any], prompt: str, video_file: Optional[Path] = None) -> Dict[str, Any]:
-    model = str(_cfg_get(cfg, "gemini.model", "gemini-2.5-flash"))
-    api_key = _resolve_gemini_key(str(_cfg_get(cfg, "gemini.api_key", "")))
-    if not api_key:
-        raise RuntimeError("Missing Gemini API key (gemini.api_key or GEMINI_API_KEY/GOOGLE_API_KEY).")
+def _read_optional_text_file(path_text: str) -> str:
+    path_raw = (path_text or "").strip()
+    if not path_raw:
+        return ""
+    try:
+        p = Path(path_raw)
+        if not p.is_absolute():
+            p = (Path.cwd() / p).resolve()
+        if not p.exists():
+            return ""
+        return p.read_text(encoding="utf-8").strip()
+    except Exception:
+        return ""
 
+
+def _resolve_system_instruction(cfg: Dict[str, Any]) -> str:
+    file_text = _read_optional_text_file(str(_cfg_get(cfg, "gemini.system_instruction_file", "")))
+    inline_text = str(_cfg_get(cfg, "gemini.system_instruction_text", "")).strip()
+    chunks = [txt for txt in [file_text, inline_text] if txt]
+    return "\n\n".join(chunks).strip()
+
+
+def _count_atomic_actions_in_label(label: str) -> int:
+    text = (label or "").strip()
+    if not text:
+        return 0
+    if text.lower() == "no action":
+        return 1
+    count = 0
+    for part in re.split(r"\s*,\s*", text):
+        chunk = part.strip()
+        if not chunk:
+            continue
+        subparts = [p.strip() for p in re.split(r"\band\b", chunk, flags=re.IGNORECASE) if p.strip()]
+        if subparts:
+            count += len(subparts)
+        else:
+            count += 1
+    return max(1, count)
+
+
+_DISALLOWED_TOOL_TERMS = (
+    "mechanical arm",
+    "robotic arm",
+    "robot arm",
+    "manipulator",
+    "robot gripper",
+    "claw arm",
+)
+
+
+def _normalize_gripper_terms(text: str) -> str:
+    out = text or ""
+    for term in _DISALLOWED_TOOL_TERMS:
+        out = re.sub(rf"\b{re.escape(term)}\b", "gripper", out, flags=re.IGNORECASE)
+    return re.sub(r"\s+", " ", out).strip()
+
+
+def _validate_segment_plan_against_policy(
+    cfg: Dict[str, Any],
+    source_segments: List[Dict[str, Any]],
+    segment_plan: Dict[int, Dict[str, Any]],
+) -> Dict[str, Any]:
+    min_words = max(1, int(_cfg_get(cfg, "run.min_label_words", 2)))
+    max_words = max(min_words, int(_cfg_get(cfg, "run.max_label_words", 20)))
+    max_atomic_actions = max(1, int(_cfg_get(cfg, "run.max_atomic_actions_per_label", 2)))
+    forbidden_verbs_raw = _cfg_get(cfg, "run.forbidden_label_verbs", [])
+    forbidden_verbs = [str(v).strip().lower() for v in forbidden_verbs_raw if str(v).strip()]
+    forbidden_narrative_raw = _cfg_get(cfg, "run.forbidden_narrative_words", [])
+    forbidden_narrative_words = [str(v).strip().lower() for v in forbidden_narrative_raw if str(v).strip()]
+    skip_unchanged_lexical = bool(
+        _cfg_get(cfg, "run.skip_policy_lexical_checks_on_unchanged_labels", True)
+    )
+    place_location_pattern = re.compile(r"\bplace\b.*\b(on|in|into|onto|at|to|inside|under|over)\b", re.IGNORECASE)
+
+    source_by_idx: Dict[int, Dict[str, Any]] = {}
+    for seg in source_segments:
+        try:
+            source_by_idx[int(seg.get("segment_index", 0))] = seg
+        except Exception:
+            continue
+
+    errors: List[str] = []
+    warnings: List[str] = []
+    prev_start = -1.0
+    prev_end = -1.0
+
+    for idx in sorted(segment_plan):
+        item = segment_plan[idx]
+        label = str(item.get("label", "")).strip()
+        label_l = label.lower()
+        start = _safe_float(item.get("start_sec"), -1.0)
+        end = _safe_float(item.get("end_sec"), -1.0)
+        source = source_by_idx.get(idx)
+        source_label = str(source.get("current_label", "")).strip() if source is not None else ""
+        label_unchanged_from_source = (
+            bool(source_label)
+            and _normalize_label_for_compare(source_label) == _normalize_label_for_compare(label)
+        )
+
+        if not label:
+            errors.append(f"segment {idx}: empty label")
+        else:
+            words = [w for w in re.split(r"\s+", label) if w]
+            if label_unchanged_from_source and skip_unchanged_lexical:
+                # Avoid blocking whole episodes on legacy/source labels that were not edited now.
+                pass
+            elif label != "No Action":
+                if len(words) < min_words:
+                    errors.append(f"segment {idx}: label has fewer than {min_words} words")
+                if len(words) > max_words:
+                    errors.append(f"segment {idx}: label has more than {max_words} words")
+                for v in forbidden_verbs:
+                    if re.search(rf"\b{re.escape(v)}\b", label_l):
+                        errors.append(f"segment {idx}: forbidden verb '{v}' found")
+                for token in forbidden_narrative_words:
+                    if re.search(rf"\b{re.escape(token)}\b", label_l):
+                        errors.append(f"segment {idx}: narrative token '{token}' found")
+                for term in _DISALLOWED_TOOL_TERMS:
+                    if re.search(rf"\b{re.escape(term)}\b", label_l):
+                        errors.append(
+                            f"segment {idx}: disallowed tool term '{term}' found (use 'gripper' only if unavoidable)"
+                        )
+                if re.search(r"\bgripper\b", label_l):
+                    warnings.append(f"segment {idx}: label mentions 'gripper' (ensure tool mention is unavoidable)")
+                if re.search(r"\d", label):
+                    errors.append(f"segment {idx}: label contains numerals")
+                if "place" in label_l and not place_location_pattern.search(label):
+                    errors.append(f"segment {idx}: 'place' missing explicit location")
+                if re.search(r"\bno action\b", label_l) and label_l != "no action":
+                    errors.append(f"segment {idx}: 'No Action' must be standalone")
+                action_count = _count_atomic_actions_in_label(label)
+                if action_count > max_atomic_actions:
+                    errors.append(
+                        f"segment {idx}: label has more than {max_atomic_actions} atomic actions"
+                    )
+            else:
+                if "," in label or " and " in label_l:
+                    errors.append(f"segment {idx}: 'No Action' must be standalone")
+
+        if start < 0 or end < 0:
+            errors.append(f"segment {idx}: invalid timestamp values")
+        elif end <= start:
+            errors.append(f"segment {idx}: end_sec must be greater than start_sec")
+
+        if prev_start >= 0 and start < prev_start - 0.001:
+            errors.append(f"segment {idx}: start_sec is not monotonic")
+        if prev_end >= 0 and start < prev_end - 0.001:
+            errors.append(f"segment {idx}: overlaps previous segment")
+        prev_start = max(prev_start, start)
+        prev_end = max(prev_end, end)
+
+        if source is not None:
+            src_start = _safe_float(source.get("start_sec"), start)
+            src_end = _safe_float(source.get("end_sec"), end)
+            if abs(start - src_start) > 12 or abs(end - src_end) > 12:
+                warnings.append(f"segment {idx}: large timestamp drift from source")
+
+    return {
+        "ok": len(errors) == 0,
+        "errors": errors,
+        "warnings": warnings,
+        "segment_count": len(segment_plan),
+    }
+
+
+def _save_validation_report(cfg: Dict[str, Any], task_id: str, report: Dict[str, Any]) -> Optional[Path]:
+    out_dir = Path(str(_cfg_get(cfg, "run.output_dir", "outputs")))
+    out_dir.mkdir(parents=True, exist_ok=True)
+    filename = f"validation_{task_id}.json" if task_id else "validation_report.json"
+    path = out_dir / filename
+    try:
+        path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+        return path
+    except Exception:
+        return None
+
+
+def _is_timestamp_policy_error(message: str) -> bool:
+    m = str(message or "").strip().lower()
+    if not m:
+        return False
+    markers = (
+        "invalid timestamp values",
+        "end_sec must be greater than start_sec",
+        "start_sec is not monotonic",
+        "overlaps previous segment",
+    )
+    return any(token in m for token in markers)
+
+
+def _is_no_action_policy_error(message: str) -> bool:
+    m = str(message or "").strip().lower()
+    if not m:
+        return False
+    return "'no action' must be standalone" in m
+
+
+def _gemini_file_state(payload: Dict[str, Any]) -> str:
+    if not isinstance(payload, dict):
+        return ""
+    state_obj: Any = payload.get("state", "")
+    if isinstance(state_obj, dict):
+        for key in ("name", "state"):
+            val = state_obj.get(key)
+            if isinstance(val, str) and val.strip():
+                return val.strip().upper()
+        return ""
+    if isinstance(state_obj, str):
+        return state_obj.strip().upper()
+    return ""
+
+
+def _wait_for_gemini_file_ready(
+    api_key: str,
+    file_name: str,
+    cfg: Dict[str, Any],
+    connect_timeout_sec: int,
+    request_timeout_sec: int,
+) -> None:
+    file_name = (file_name or "").strip()
+    if not file_name:
+        return
+    if not file_name.startswith("files/"):
+        return
+
+    timeout_sec = max(5, int(_cfg_get(cfg, "gemini.file_ready_timeout_sec", 120)))
+    poll_sec = max(0.5, float(_cfg_get(cfg, "gemini.file_ready_poll_sec", 2.0)))
+    deadline = time.time() + timeout_sec
+    url = f"https://generativelanguage.googleapis.com/v1beta/{file_name}"
+
+    while True:
+        try:
+            resp = requests.get(
+                url,
+                params={"key": api_key},
+                timeout=(connect_timeout_sec, request_timeout_sec),
+            )
+            if resp.status_code == 200:
+                payload = resp.json()
+                state = _gemini_file_state(payload)
+                if not state or state in {"ACTIVE", "READY", "SUCCEEDED"}:
+                    return
+                if state in {"FAILED", "ERROR", "CANCELLED"}:
+                    raise RuntimeError(f"Gemini file processing failed: state={state}")
+            elif resp.status_code in {404, 429, 500, 502, 503, 504}:
+                pass
+            else:
+                snippet = (resp.text or "")[:200]
+                raise RuntimeError(f"Gemini file state check failed HTTP {resp.status_code}: {snippet}")
+        except requests.exceptions.RequestException:
+            pass
+
+        if time.time() >= deadline:
+            raise TimeoutError(f"Gemini file was not ready within {timeout_sec}s: {file_name}")
+        time.sleep(poll_sec)
+
+
+def _normalize_upload_chunk_size(
+    requested_chunk_bytes: int,
+    size_bytes: int,
+    chunk_granularity: int,
+) -> int:
+    requested = max(64 * 1024, int(requested_chunk_bytes))
+    size = max(0, int(size_bytes))
+    granularity = max(1, int(chunk_granularity))
+
+    if size <= granularity:
+        # Single finalize chunk can be smaller than granularity.
+        return size
+
+    # Gemini Files API requires non-final chunk sizes to be multiples of granularity.
+    chunk = max(requested, granularity)
+    if chunk % granularity != 0:
+        chunk = (chunk // granularity) * granularity
+        if chunk <= 0:
+            chunk = granularity
+    return chunk
+
+
+def _upload_video_via_gemini_files_api(
+    api_key: str,
+    video_file: Path,
+    cfg: Dict[str, Any],
+    connect_timeout_sec: int,
+    request_timeout_sec: int,
+) -> Tuple[str, str]:
+    if video_file is None or not video_file.exists():
+        raise RuntimeError("Video file is missing for Gemini Files API upload.")
+
+    size_bytes = int(video_file.stat().st_size)
+    upload_timeout_sec = max(
+        request_timeout_sec,
+        int(_cfg_get(cfg, "gemini.upload_request_timeout_sec", 180)),
+    )
+    requested_chunk_bytes = max(
+        64 * 1024,
+        int(_cfg_get(cfg, "gemini.upload_chunk_bytes", 8 * 1024 * 1024)),
+    )
+    chunk_granularity = max(
+        1,
+        int(_cfg_get(cfg, "gemini.upload_chunk_granularity_bytes", 8 * 1024 * 1024)),
+    )
+    chunk_bytes = _normalize_upload_chunk_size(
+        requested_chunk_bytes=requested_chunk_bytes,
+        size_bytes=size_bytes,
+        chunk_granularity=chunk_granularity,
+    )
+    if chunk_bytes != requested_chunk_bytes:
+        print(
+            "[gemini] adjusted upload_chunk_bytes "
+            f"from {requested_chunk_bytes} to {chunk_bytes} "
+            f"(granularity={chunk_granularity})."
+        )
+    chunk_retries = max(0, int(_cfg_get(cfg, "gemini.upload_chunk_max_retries", 5)))
+
+    start_url = "https://generativelanguage.googleapis.com/upload/v1beta/files"
+    start_headers = {
+        "X-Goog-Upload-Protocol": "resumable",
+        "X-Goog-Upload-Command": "start",
+        "X-Goog-Upload-Header-Content-Length": str(size_bytes),
+        "X-Goog-Upload-Header-Content-Type": "video/mp4",
+        "Content-Type": "application/json",
+    }
+    start_payload = {"file": {"display_name": video_file.name}}
+    start_resp: Optional[requests.Response] = None
+    last_start_err = ""
+    for attempt in range(chunk_retries + 1):
+        try:
+            start_resp = requests.post(
+                start_url,
+                params={"key": api_key},
+                headers=start_headers,
+                json=start_payload,
+                timeout=(connect_timeout_sec, upload_timeout_sec),
+            )
+            if start_resp.status_code // 100 == 2:
+                break
+            snippet = (start_resp.text or "")[:300]
+            last_start_err = f"HTTP {start_resp.status_code}: {snippet}"
+        except requests.exceptions.RequestException as exc:
+            last_start_err = str(exc)
+        if attempt < chunk_retries:
+            delay = _compute_backoff_delay(cfg, attempt)
+            print(f"[gemini] files API start retry {attempt + 1}/{chunk_retries} in {delay:.1f}s")
+            time.sleep(delay)
+    if start_resp is None or start_resp.status_code // 100 != 2:
+        raise RuntimeError(f"Gemini file upload start failed: {last_start_err}")
+
+    upload_url = (
+        start_resp.headers.get("X-Goog-Upload-URL")
+        or start_resp.headers.get("x-goog-upload-url")
+        or ""
+    ).strip()
+    if not upload_url:
+        raise RuntimeError("Gemini file upload start succeeded but upload URL is missing.")
+
+    def _query_uploaded_offset() -> Optional[int]:
+        try:
+            resp = requests.post(
+                upload_url,
+                headers={"X-Goog-Upload-Command": "query"},
+                timeout=(connect_timeout_sec, upload_timeout_sec),
+            )
+        except requests.exceptions.RequestException:
+            return None
+        if resp.status_code // 100 != 2:
+            return None
+        raw = (
+            resp.headers.get("X-Goog-Upload-Size-Received")
+            or resp.headers.get("x-goog-upload-size-received")
+            or ""
+        ).strip()
+        if not raw:
+            return None
+        try:
+            return int(raw)
+        except ValueError:
+            return None
+
+    data = video_file.read_bytes()
+    offset = 0
+    upload_resp: Optional[requests.Response] = None
+    while offset < size_bytes:
+        next_offset = min(size_bytes, offset + chunk_bytes)
+        chunk = data[offset:next_offset]
+        is_final = next_offset >= size_bytes
+        command = "upload, finalize" if is_final else "upload"
+        sent = False
+        resynced = False
+        last_chunk_err = ""
+
+        for attempt in range(chunk_retries + 1):
+            try:
+                resp = requests.post(
+                    upload_url,
+                    headers={
+                        "X-Goog-Upload-Offset": str(offset),
+                        "X-Goog-Upload-Command": command,
+                        "Content-Type": "video/mp4",
+                    },
+                    data=chunk,
+                    timeout=(connect_timeout_sec, upload_timeout_sec),
+                )
+                if resp.status_code // 100 == 2:
+                    upload_resp = resp if is_final else upload_resp
+                    offset = next_offset
+                    sent = True
+                    break
+                snippet = (resp.text or "")[:220]
+                last_chunk_err = f"HTTP {resp.status_code}: {snippet}"
+            except requests.exceptions.RequestException as exc:
+                last_chunk_err = str(exc)
+
+            if attempt < chunk_retries:
+                remote_offset = _query_uploaded_offset()
+                if remote_offset is not None and remote_offset > offset:
+                    offset = min(remote_offset, size_bytes)
+                    resynced = True
+                    print(f"[gemini] files upload resumed at offset {offset}/{size_bytes}.")
+                    break
+                delay = _compute_backoff_delay(cfg, attempt)
+                print(
+                    f"[gemini] files chunk upload retry {attempt + 1}/{chunk_retries} "
+                    f"at offset {offset} in {delay:.1f}s"
+                )
+                time.sleep(delay)
+
+        if sent:
+            continue
+        if resynced:
+            continue
+        raise RuntimeError(f"Gemini file chunk upload failed at offset {offset}: {last_chunk_err}")
+
+    if upload_resp is None:
+        raise RuntimeError("Gemini file upload finalize response missing.")
+
+    try:
+        upload_payload = upload_resp.json()
+    except Exception as exc:
+        raise RuntimeError("Gemini file upload finalize returned non-JSON response.") from exc
+
+    file_info: Dict[str, Any]
+    if isinstance(upload_payload, dict) and isinstance(upload_payload.get("file"), dict):
+        file_info = upload_payload["file"]
+    elif isinstance(upload_payload, dict):
+        file_info = upload_payload
+    else:
+        raise RuntimeError("Gemini file upload finalize returned unexpected payload shape.")
+
+    file_uri = str(file_info.get("uri", "")).strip()
+    file_name = str(file_info.get("name", "")).strip()
+    if not file_uri:
+        raise RuntimeError("Gemini file upload succeeded but file URI is missing.")
+
+    _wait_for_gemini_file_ready(
+        api_key=api_key,
+        file_name=file_name,
+        cfg=cfg,
+        connect_timeout_sec=connect_timeout_sec,
+        request_timeout_sec=request_timeout_sec,
+    )
+    return file_uri, file_name
+
+
+def _is_gemini_quota_exceeded_429(resp: requests.Response) -> bool:
+    if resp.status_code != 429:
+        return False
+    body = (resp.text or "").lower()
+    quota_markers = (
+        "quota exceeded",
+        "exceeded your current quota",
+        "free_tier",
+        "resource_exhausted",
+        "generate_content_free_tier_requests",
+    )
+    return any(marker in body for marker in quota_markers)
+
+
+def call_gemini_labels(
+    cfg: Dict[str, Any],
+    prompt: str,
+    video_file: Optional[Path] = None,
+    segment_count: int = 0,
+) -> Dict[str, Any]:
+    model = str(_cfg_get(cfg, "gemini.model", "gemini-2.5-flash"))
+    primary_api_key = _resolve_gemini_key(str(_cfg_get(cfg, "gemini.api_key", "")))
+    if not primary_api_key:
+        raise RuntimeError("Missing Gemini API key (gemini.api_key or GEMINI_API_KEY/GOOGLE_API_KEY).")
+    fallback_api_key = _resolve_gemini_fallback_key(str(_cfg_get(cfg, "gemini.fallback_api_key", "")))
+    quota_fallback_enabled = bool(_cfg_get(cfg, "gemini.quota_fallback_enabled", False))
+    quota_fallback_max_uses_per_run = max(
+        0,
+        int(_cfg_get(cfg, "gemini.quota_fallback_max_uses_per_run", 1)),
+    )
+    if fallback_api_key and fallback_api_key == primary_api_key:
+        fallback_api_key = ""
+    if not quota_fallback_enabled:
+        fallback_api_key = ""
+
+    system_instruction = _resolve_system_instruction(cfg)
     max_retries = max(0, int(_cfg_get(cfg, "gemini.max_retries", 3)))
-    base_delay = max(0.5, float(_cfg_get(cfg, "gemini.retry_base_delay_sec", 2.0)))
     temperature = float(_cfg_get(cfg, "gemini.temperature", 0.0))
+    candidate_count = max(1, int(_cfg_get(cfg, "gemini.candidate_count", 1)))
     connect_timeout_sec = max(5, int(_cfg_get(cfg, "gemini.connect_timeout_sec", 30)))
     request_timeout_sec = max(30, int(_cfg_get(cfg, "gemini.request_timeout_sec", 420)))
     require_video = bool(_cfg_get(cfg, "gemini.require_video", False))
+    attach_video = bool(_cfg_get(cfg, "gemini.attach_video", True))
+    video_attach_block_reason = ""
+    skip_video_when_segments_le = max(0, int(_cfg_get(cfg, "gemini.skip_video_when_segments_le", 0)))
     allow_text_fallback = bool(
         _cfg_get(cfg, "gemini.allow_text_only_fallback_on_network_error", True)
     )
+    video_transport = str(_cfg_get(cfg, "gemini.video_transport", "auto")).strip().lower() or "auto"
+    files_api_fallback_to_inline = bool(_cfg_get(cfg, "gemini.files_api_fallback_to_inline", True))
     max_inline_video_mb = float(_cfg_get(cfg, "gemini.max_inline_video_mb", 20.0))
+    inline_retry_targets_mb = _parse_float_list(
+        _cfg_get(cfg, "gemini.inline_retry_target_mb", [4.0, 2.5, 1.5, 1.0]),
+        [4.0, 2.5, 1.5, 1.0],
+    )
+    if require_video and not attach_video:
+        raise RuntimeError("Invalid config: gemini.require_video=true but gemini.attach_video=false.")
+
+    if (
+        attach_video
+        and not require_video
+        and skip_video_when_segments_le > 0
+        and segment_count > 0
+        and segment_count <= skip_video_when_segments_le
+    ):
+        attach_video = False
+        video_attach_block_reason = "short_episode_threshold"
+        print(
+            "[gemini] skipping video attachment for short episode: "
+            f"segment_count={segment_count} <= {skip_video_when_segments_le}."
+        )
+    elif not attach_video:
+        video_attach_block_reason = "disabled_by_config"
+
+    active_api_key = primary_api_key
+    active_key_name = "primary"
+    can_use_secondary = bool(fallback_api_key) and quota_fallback_max_uses_per_run > 0
 
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-    headers = {"Content-Type": "application/json", "X-goog-api-key": api_key}
     parts: List[Dict[str, Any]] = [{"text": prompt}]
     video_part: Optional[Dict[str, Any]] = None
+    frame_parts: List[Dict[str, Any]] = []
+    reference_frame_bytes = 0
+    reference_frame_count_used = 0
+    video_transport_used = "none"
+    if system_instruction:
+        print(f"[gemini] using system instruction ({len(system_instruction)} chars).")
 
-    if video_file is not None and video_file.exists():
-        size_mb = video_file.stat().st_size / (1024 * 1024)
-        if size_mb > max_inline_video_mb:
-            msg = (
-                f"Video is {size_mb:.1f} MB which exceeds max_inline_video_mb={max_inline_video_mb:.1f}. "
-                "Increase gemini.max_inline_video_mb or provide smaller video."
+    def _rebuild_parts() -> None:
+        nonlocal parts
+        parts = [{"text": prompt}]
+        if video_part is not None:
+            parts.append(video_part)
+            if frame_parts:
+                parts.extend(frame_parts)
+
+    prepared_video_file = video_file
+    if attach_video and prepared_video_file is not None and prepared_video_file.exists():
+        prepared_video_file = _maybe_optimize_video_for_upload(prepared_video_file, cfg)
+    source_video_for_retry = video_file if (video_file is not None and video_file.exists()) else prepared_video_file
+    inline_retry_target_idx = 0
+
+    def _switch_to_smaller_inline_video() -> bool:
+        nonlocal prepared_video_file, video_part, include_video, fallback_used, inline_retry_target_idx
+        nonlocal frame_parts, reference_frame_bytes, reference_frame_count_used
+        if source_video_for_retry is None or not source_video_for_retry.exists():
+            return False
+        if prepared_video_file is None or not prepared_video_file.exists():
+            return False
+
+        current_size = int(prepared_video_file.stat().st_size)
+        while inline_retry_target_idx < len(inline_retry_targets_mb):
+            target_mb = float(inline_retry_targets_mb[inline_retry_target_idx])
+            inline_retry_target_idx += 1
+            current_mb = current_size / (1024 * 1024)
+            # If current file is already at or below this target, move to the next stricter target.
+            if current_mb <= target_mb + 0.05:
+                continue
+            cfg_retry = _deep_merge(
+                cfg,
+                {
+                    "gemini": {
+                        "optimize_video_only_if_larger_mb": 0.0,
+                        "optimize_video_target_mb": target_mb,
+                    }
+                },
             )
-            if require_video:
-                raise RuntimeError(msg)
-            print(f"[video] {msg} Proceeding without attachment.")
-        else:
-            b64_video = base64.b64encode(video_file.read_bytes()).decode("ascii")
+            candidate = _maybe_optimize_video_for_upload(source_video_for_retry, cfg_retry)
+            if candidate is None or not candidate.exists():
+                continue
+            try:
+                candidate_size = int(candidate.stat().st_size)
+            except Exception:
+                continue
+            if candidate_size <= 0 or candidate_size >= current_size:
+                continue
+            prepared_video_file = candidate
+            b64_video = base64.b64encode(prepared_video_file.read_bytes()).decode("ascii")
             video_part = {"inline_data": {"mime_type": "video/mp4", "data": b64_video}}
-            print(f"[gemini] attached video to request ({size_mb:.1f} MB).")
+            include_video = True
+            fallback_used = True
+            frame_source = source_video_for_retry if source_video_for_retry.exists() else prepared_video_file
+            frame_parts, reference_frame_bytes = _extract_reference_frame_inline_parts(
+                frame_source,
+                cfg,
+                trigger_video_mb=(candidate_size / (1024 * 1024)),
+            )
+            reference_frame_count_used = len(frame_parts)
+            _rebuild_parts()
+            print(
+                f"[gemini] retrying with smaller inline video "
+                f"({candidate_size / (1024 * 1024):.1f} MB, target<={target_mb:.1f} MB)."
+            )
+            return True
+        return False
+
+    if attach_video and prepared_video_file is not None and prepared_video_file.exists():
+        size_mb = prepared_video_file.stat().st_size / (1024 * 1024)
+        wants_files_api = video_transport in {"auto", "files_api", "files"}
+        inline_allowed = video_transport in {"auto", "inline"} or (
+            wants_files_api and files_api_fallback_to_inline
+        )
+
+        if wants_files_api:
+            try:
+                file_uri, file_name = _upload_video_via_gemini_files_api(
+                    api_key=active_api_key,
+                    video_file=prepared_video_file,
+                    cfg=cfg,
+                    connect_timeout_sec=connect_timeout_sec,
+                    request_timeout_sec=request_timeout_sec,
+                )
+                video_part = {"file_data": {"mime_type": "video/mp4", "file_uri": file_uri}}
+                video_transport_used = "files_api"
+                print(f"[gemini] attached video via Files API: {file_name or file_uri}")
+            except Exception as exc:
+                print(f"[gemini] files API upload failed: {exc}")
+                if not inline_allowed or not files_api_fallback_to_inline:
+                    if require_video:
+                        raise
+                    print("[gemini] continuing without video after Files API failure.")
+                else:
+                    print("[gemini] falling back to inline video attachment after Files API failure.")
+
+        if video_part is None and inline_allowed:
+            if size_mb > max_inline_video_mb:
+                msg = (
+                    f"Video is {size_mb:.1f} MB which exceeds max_inline_video_mb={max_inline_video_mb:.1f}. "
+                    "Increase gemini.max_inline_video_mb or provide smaller video."
+                )
+                if require_video:
+                    raise RuntimeError(msg)
+                    print(f"[video] {msg} Proceeding without attachment.")
+            else:
+                b64_video = base64.b64encode(prepared_video_file.read_bytes()).decode("ascii")
+                video_part = {"inline_data": {"mime_type": "video/mp4", "data": b64_video}}
+                video_transport_used = "inline"
+                print(f"[gemini] attached video inline ({size_mb:.1f} MB).")
     else:
-        if require_video:
+        if not attach_video and video_file is not None:
+            if video_attach_block_reason == "short_episode_threshold":
+                print("[gemini] video attachment skipped for this request due to short-episode threshold.")
+            else:
+                print("[gemini] video attachment disabled by config (gemini.attach_video=false).")
+        elif require_video:
             raise RuntimeError("gemini.require_video=true but no downloadable video file was prepared.")
     include_video = video_part is not None
     if include_video:
-        parts.append(video_part)
+        try:
+            trigger_mb = (
+                (prepared_video_file.stat().st_size / (1024 * 1024))
+                if (prepared_video_file is not None and prepared_video_file.exists())
+                else 0.0
+            )
+        except Exception:
+            trigger_mb = 0.0
+        frame_source = source_video_for_retry if (source_video_for_retry is not None and source_video_for_retry.exists()) else prepared_video_file
+        if frame_source is not None and frame_source.exists():
+            frame_parts, reference_frame_bytes = _extract_reference_frame_inline_parts(
+                frame_source,
+                cfg,
+                trigger_video_mb=trigger_mb,
+            )
+            reference_frame_count_used = len(frame_parts)
+            if reference_frame_count_used > 0:
+                print(
+                    f"[gemini] attached {reference_frame_count_used} reference frame(s) "
+                    f"({reference_frame_bytes / 1024:.0f} KB total)."
+                )
+    _rebuild_parts()
 
     last_error = ""
+    used_video_in_success = False
+    fallback_used = False
+
+    def _switch_to_secondary_key_for_quota() -> bool:
+        nonlocal active_api_key, active_key_name
+        nonlocal include_video, video_part, video_transport_used, fallback_used
+        nonlocal frame_parts, reference_frame_bytes, reference_frame_count_used
+        global _GEMINI_FALLBACK_USES
+        if not quota_fallback_enabled or not can_use_secondary:
+            return False
+        if active_key_name != "primary":
+            return False
+        if _GEMINI_FALLBACK_USES >= quota_fallback_max_uses_per_run:
+            return False
+        active_api_key = fallback_api_key
+        active_key_name = "secondary"
+        _GEMINI_FALLBACK_USES += 1
+        fallback_used = True
+        print(
+            "[gemini] primary key quota exhausted; switching to secondary key "
+            f"({ _GEMINI_FALLBACK_USES }/{quota_fallback_max_uses_per_run}) for this request."
+        )
+
+        # Files API uploads are scoped to the key/project. Rebuild attachment for secondary key.
+        if include_video and video_transport_used == "files_api":
+            if prepared_video_file is not None and prepared_video_file.exists():
+                size_mb = prepared_video_file.stat().st_size / (1024 * 1024)
+                if size_mb <= max_inline_video_mb:
+                    b64_video = base64.b64encode(prepared_video_file.read_bytes()).decode("ascii")
+                    video_part = {"inline_data": {"mime_type": "video/mp4", "data": b64_video}}
+                    include_video = True
+                    video_transport_used = "inline"
+                    _rebuild_parts()
+                    print("[gemini] switched to inline video payload after secondary-key fallback.")
+                elif not require_video and allow_text_fallback:
+                    include_video = False
+                    video_part = None
+                    frame_parts = []
+                    reference_frame_bytes = 0
+                    reference_frame_count_used = 0
+                    _rebuild_parts()
+                    print("[gemini] secondary-key fallback continuing in text-only mode (video too large for inline).")
+        return True
+
     for attempt in range(max_retries + 1):
         mode = "with-video" if include_video else "text-only"
-        print(f"[gemini] request attempt {attempt + 1}/{max_retries + 1} (model={model}, mode={mode})")
+        print(
+            f"[gemini] request attempt {attempt + 1}/{max_retries + 1} "
+            f"(model={model}, mode={mode}, key={active_key_name})"
+        )
         payload = {
             "contents": [{"role": "user", "parts": parts}],
-            "generationConfig": {"temperature": temperature, "responseMimeType": "application/json"},
+            "generationConfig": {
+                "temperature": temperature,
+                "responseMimeType": "application/json",
+                "candidateCount": candidate_count,
+            },
         }
+        if system_instruction:
+            payload["systemInstruction"] = {"parts": [{"text": system_instruction}]}
         try:
+            _respect_gemini_rate_limit(cfg)
+            headers = {"Content-Type": "application/json", "X-goog-api-key": active_api_key}
             resp = requests.post(
                 url,
                 headers=headers,
@@ -2034,13 +4526,19 @@ def call_gemini_labels(cfg: Dict[str, Any], prompt: str, video_file: Optional[Pa
             )
         except requests.exceptions.RequestException as exc:
             last_error = f"Gemini network error: {exc}"
+            if include_video and video_transport_used == "inline" and _switch_to_smaller_inline_video():
+                continue
             if include_video and not require_video and allow_text_fallback:
                 include_video = False
-                parts = [{"text": prompt}]
+                frame_parts = []
+                reference_frame_bytes = 0
+                reference_frame_count_used = 0
+                _rebuild_parts()
+                fallback_used = True
                 print("[gemini] network error while sending video; switching to text-only fallback.")
                 continue
             if attempt < max_retries:
-                delay = base_delay * (2**attempt)
+                delay = _compute_backoff_delay(cfg, attempt)
                 print(f"[gemini] network error, retrying in {delay:.1f}s")
                 time.sleep(delay)
                 continue
@@ -2048,9 +4546,36 @@ def call_gemini_labels(cfg: Dict[str, Any], prompt: str, video_file: Optional[Pa
 
         if resp.status_code == 200:
             print("[gemini] response received (HTTP 200).")
-            return _parse_gemini_response(resp.json())
+            used_video_in_success = include_video
+            raw_json = resp.json()
+            parsed = _parse_gemini_response(raw_json)
+            usage_meta = raw_json.get("usageMetadata", {}) if isinstance(raw_json, dict) else {}
+            mode_name = "with-video" if include_video else "text-only"
+            _log_gemini_usage(
+                cfg,
+                model=model,
+                mode=mode_name,
+                usage_meta=usage_meta,
+                key_source=active_key_name,
+            )
+            if isinstance(parsed, dict):
+                parsed["_meta"] = {
+                    "video_attached": bool(used_video_in_success),
+                    "mode": "with-video" if used_video_in_success else "text-only",
+                    "fallback_used": bool(fallback_used),
+                    "video_transport": video_transport_used,
+                    "reference_frames_attached": int(reference_frame_count_used),
+                    "reference_frames_total_kb": round(reference_frame_bytes / 1024, 1),
+                    "api_key_source": active_key_name,
+                    "model": model,
+                    "usage": usage_meta if isinstance(usage_meta, dict) else {},
+                }
+            return parsed
 
         last_error = f"Gemini HTTP {resp.status_code}: {resp.text[:800]}"
+        if _is_gemini_quota_exceeded_429(resp):
+            if _switch_to_secondary_key_for_quota():
+                continue
         if (
             include_video
             and not require_video
@@ -2058,13 +4583,20 @@ def call_gemini_labels(cfg: Dict[str, Any], prompt: str, video_file: Optional[Pa
             and resp.status_code in {400, 408, 413, 422}
         ):
             include_video = False
-            parts = [{"text": prompt}]
+            frame_parts = []
+            reference_frame_bytes = 0
+            reference_frame_count_used = 0
+            _rebuild_parts()
+            fallback_used = True
             print(
                 f"[gemini] HTTP {resp.status_code} while using video; switching to text-only fallback."
             )
             continue
+        if include_video and video_transport_used == "inline" and resp.status_code in {400, 408, 413, 422}:
+            if _switch_to_smaller_inline_video():
+                continue
         if resp.status_code in {429, 500, 502, 503, 504} and attempt < max_retries:
-            delay = base_delay * (2**attempt)
+            delay = _compute_backoff_delay(cfg, attempt)
             print(f"[gemini] temporary error {resp.status_code}, retrying in {delay:.1f}s")
             time.sleep(delay)
             continue
@@ -2079,9 +4611,211 @@ def _safe_float(value: Any, default: float) -> float:
         return default
 
 
+def _short_error_text(exc: Exception, max_len: int = 180) -> str:
+    raw = str(exc or "").strip()
+    if not raw:
+        return exc.__class__.__name__
+    first = raw.splitlines()[0].strip()
+    if len(first) > max_len:
+        return first[:max_len] + "..."
+    return first
+
+
+def _log_gemini_usage(
+    cfg: Dict[str, Any],
+    model: str,
+    mode: str,
+    usage_meta: Dict[str, Any],
+    key_source: str = "primary",
+) -> None:
+    if not isinstance(usage_meta, dict):
+        return
+    try:
+        prompt_tokens = int(usage_meta.get("promptTokenCount", 0) or 0)
+    except Exception:
+        prompt_tokens = 0
+    try:
+        output_tokens = int(usage_meta.get("candidatesTokenCount", 0) or 0)
+    except Exception:
+        output_tokens = 0
+    try:
+        total_tokens = int(usage_meta.get("totalTokenCount", 0) or 0)
+    except Exception:
+        total_tokens = prompt_tokens + output_tokens
+
+    if prompt_tokens <= 0 and output_tokens <= 0 and total_tokens <= 0:
+        return
+
+    in_price = float(_cfg_get(cfg, "gemini.price_input_per_million", 0.30))
+    out_price = float(_cfg_get(cfg, "gemini.price_output_per_million", 2.50))
+    est_cost = (prompt_tokens / 1_000_000.0) * in_price + (output_tokens / 1_000_000.0) * out_price
+    print(
+        "[gemini] usage: "
+        f"prompt={prompt_tokens} output={output_tokens} total={total_tokens} "
+        f"est_cost=${est_cost:.6f}"
+    )
+
+    out_dir = Path(str(_cfg_get(cfg, "run.output_dir", "outputs")))
+    out_dir.mkdir(parents=True, exist_ok=True)
+    usage_log_name = str(_cfg_get(cfg, "gemini.usage_log_file", "gemini_usage.jsonl")).strip() or "gemini_usage.jsonl"
+    usage_log_path = out_dir / usage_log_name
+    line = {
+        "ts_utc": datetime.now(timezone.utc).isoformat(),
+        "model": model,
+        "mode": mode,
+        "key_source": key_source,
+        "prompt_tokens": prompt_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": total_tokens,
+        "estimated_cost_usd": round(est_cost, 8),
+    }
+    try:
+        with usage_log_path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(line, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+
+def _label_main_verb(label: str) -> str:
+    text = re.sub(r"\s+", " ", (label or "").strip()).lower()
+    if not text:
+        return ""
+    m = re.match(r"([a-z]+)", text)
+    return m.group(1) if m else ""
+
+
+_NUM_WORDS_0_TO_19 = [
+    "zero",
+    "one",
+    "two",
+    "three",
+    "four",
+    "five",
+    "six",
+    "seven",
+    "eight",
+    "nine",
+    "ten",
+    "eleven",
+    "twelve",
+    "thirteen",
+    "fourteen",
+    "fifteen",
+    "sixteen",
+    "seventeen",
+    "eighteen",
+    "nineteen",
+]
+_NUM_TENS_WORDS = [
+    "",
+    "",
+    "twenty",
+    "thirty",
+    "forty",
+    "fifty",
+    "sixty",
+    "seventy",
+    "eighty",
+    "ninety",
+]
+
+
+def _int_to_words(n: int) -> str:
+    if n < 0:
+        return "minus " + _int_to_words(-n)
+    if n < 20:
+        return _NUM_WORDS_0_TO_19[n]
+    if n < 100:
+        tens, rem = divmod(n, 10)
+        return _NUM_TENS_WORDS[tens] if rem == 0 else f"{_NUM_TENS_WORDS[tens]}-{_NUM_WORDS_0_TO_19[rem]}"
+    if n < 1000:
+        hundreds, rem = divmod(n, 100)
+        return (
+            f"{_NUM_WORDS_0_TO_19[hundreds]} hundred"
+            if rem == 0
+            else f"{_NUM_WORDS_0_TO_19[hundreds]} hundred {_int_to_words(rem)}"
+        )
+    if n < 10000:
+        thousands, rem = divmod(n, 1000)
+        return (
+            f"{_NUM_WORDS_0_TO_19[thousands]} thousand"
+            if rem == 0
+            else f"{_NUM_WORDS_0_TO_19[thousands]} thousand {_int_to_words(rem)}"
+        )
+    return str(n)
+
+
+def _replace_numerals_with_words(text: str) -> str:
+    def repl(match: re.Match[str]) -> str:
+        token = match.group(0)
+        try:
+            value = int(token)
+        except (TypeError, ValueError):
+            return token
+        return _int_to_words(value)
+
+    out = re.sub(r"\b\d+\b", repl, text or "")
+    return re.sub(r"\s+", " ", out).strip()
+
+
+def _rewrite_label_tier3(label: str) -> str:
+    text = re.sub(r"\s+", " ", (label or "").strip())
+    if not text:
+        return text
+    if text.lower() == "no action":
+        return "No Action"
+
+    # Keep labels imperative, remove narrative fillers, and normalize forbidden verbs.
+    text = re.sub(r"\bthen\b", ",", text, flags=re.IGNORECASE)
+    text = re.sub(r"\bnext\b", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\bcontinue\b", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\bagain\b", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\banother\b\s+", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\brotate(?:d|s|ing)?\b", "adjust", text, flags=re.IGNORECASE)
+    text = re.sub(r"\bturn(?:ed|s|ing)?\b", "adjust", text, flags=re.IGNORECASE)
+    text = re.sub(r"\bgrab(?:bed|s|bing)?\b", "pick up", text, flags=re.IGNORECASE)
+    text = _normalize_gripper_terms(text)
+    text = _replace_numerals_with_words(text)
+    text = re.sub(r"\s*,\s*", ", ", text)
+    text = re.sub(r"\s+", " ", text).strip(" ,")
+
+    clauses = [c.strip() for c in text.split(",") if c.strip()]
+    if not clauses:
+        return text
+
+    # Remove exact duplicate clauses.
+    deduped: List[str] = []
+    seen: set[str] = set()
+    for c in clauses:
+        key = re.sub(r"\s+", " ", c).strip().lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(c)
+    clauses = deduped
+
+    return ", ".join(clauses).strip()
+
+
+def _normalize_label_min_safety(label: str) -> str:
+    text = re.sub(r"\s+", " ", (label or "").strip())
+    if not text:
+        return text
+    if text.lower() == "no action":
+        return "No Action"
+    # Always enforce this minimal safety rewrite before policy gate.
+    text = re.sub(r"\brotate(?:d|s|ing)?\b", "adjust", text, flags=re.IGNORECASE)
+    text = re.sub(r"\bturn(?:ed|s|ing)?\b", "adjust", text, flags=re.IGNORECASE)
+    text = _normalize_gripper_terms(text)
+    text = _replace_numerals_with_words(text)
+    text = re.sub(r"\s+", " ", text).strip(" ,")
+    return text
+
+
 def _normalize_segment_plan(
     payload: Dict[str, Any],
     source_segments: List[Dict[str, Any]],
+    cfg: Optional[Dict[str, Any]] = None,
 ) -> Dict[int, Dict[str, Any]]:
     items = payload.get("segments")
     if not isinstance(items, list):
@@ -2101,6 +4835,9 @@ def _normalize_segment_plan(
         if source is None:
             continue
         label = str(item.get("label", "")).strip() or str(source.get("current_label", "")).strip()
+        if bool(_cfg_get(cfg or {}, "run.tier3_label_rewrite", True)):
+            label = _rewrite_label_tier3(label)
+        label = _normalize_label_min_safety(label)
         start_src = _safe_float(source.get("start_sec", 0.0), 0.0)
         end_src = _safe_float(source.get("end_sec", 0.0), 0.0)
         start_sec = _safe_float(item.get("start_sec", start_src), start_src)
@@ -2161,6 +4898,16 @@ def apply_timestamp_adjustments(
 ) -> Dict[str, Any]:
     if not bool(_cfg_get(cfg, "run.adjust_timestamps", True)):
         return {"adjusted": 0, "failed": []}
+    mode = str(_cfg_get(cfg, "run.timestamp_adjust_mode", "best_effort")).strip().lower() or "best_effort"
+    if mode in {"off", "none", "disabled"}:
+        return {"adjusted": 0, "failed": []}
+    skip_if_segments_ge = max(0, int(_cfg_get(cfg, "run.timestamp_skip_if_segments_ge", 24)))
+    if skip_if_segments_ge > 0 and len(segment_plan) >= skip_if_segments_ge and mode != "strict":
+        print(
+            f"[run] timestamp adjustments skipped: segment count {len(segment_plan)} >= "
+            f"{skip_if_segments_ge} (mode={mode})."
+        )
+        return {"adjusted": 0, "failed": []}
 
     _dismiss_blocking_modals(page)
     _dismiss_blocking_side_panel(page, cfg, aggressive=True)
@@ -2170,17 +4917,45 @@ def apply_timestamp_adjustments(
     minus_sel = str(_cfg_get(cfg, "atlas.selectors.segment_time_minus_button", 'button:has(svg.lucide-minus)'))
     step_sec = max(0.01, float(_cfg_get(cfg, "atlas.timestamp_step_sec", 0.1)))
     max_clicks = max(1, int(_cfg_get(cfg, "atlas.timestamp_max_clicks_per_segment", 30)))
+    click_timeout_ms = max(120, int(_cfg_get(cfg, "run.timestamp_click_timeout_ms", 350)))
+    click_pause_ms = max(0, int(_cfg_get(cfg, "run.timestamp_click_pause_ms", 15)))
+    max_failures = max(1, int(_cfg_get(cfg, "run.timestamp_max_failures_per_episode", 10)))
+    max_total_clicks = max(1, int(_cfg_get(cfg, "run.timestamp_max_total_clicks", 80)))
+    abort_on_first_failure = bool(_cfg_get(cfg, "run.timestamp_abort_on_first_failure", False))
+    skip_disabled_buttons = bool(_cfg_get(cfg, "run.timestamp_skip_disabled_buttons", True))
 
     try:
         best_rows_sel, rows = _resolve_rows_locator(page, rows_sel)
     except Exception:
         return {"adjusted": 0, "failed": ["rows locator unavailable for timestamp adjustment"]}
 
+    def _short_err(exc: Exception, max_len: int = 180) -> str:
+        raw = str(exc or "").strip()
+        if not raw:
+            return exc.__class__.__name__
+        first = raw.splitlines()[0].strip()
+        if len(first) > max_len:
+            return first[:max_len] + "..."
+        return first
+
     source_by_idx: Dict[int, Dict[str, Any]] = {int(seg["segment_index"]): seg for seg in source_segments}
     adjusted = 0
     failed: List[str] = []
+    total_clicks_done = 0
 
     for idx in sorted(segment_plan):
+        if total_clicks_done >= max_total_clicks:
+            print(
+                f"[run] timestamp adjustment budget reached: "
+                f"{total_clicks_done}/{max_total_clicks} clicks."
+            )
+            break
+        if len(failed) >= max_failures:
+            print(
+                f"[run] timestamp adjustments stopped early after {len(failed)} failures "
+                f"(limit={max_failures})."
+            )
+            break
         rows = page.locator(best_rows_sel)
         count = rows.count()
         if idx > count:
@@ -2198,14 +4973,31 @@ def apply_timestamp_adjustments(
         clicks = min(max_clicks, int(round(abs(diff) / step_sec)))
         if clicks <= 0:
             continue
+        clicks = min(clicks, max_total_clicks - total_clicks_done)
+        if clicks <= 0:
+            break
         use_plus = diff > 0
         btn_sel = plus_sel if use_plus else minus_sel
         btn = _first_visible_child_locator(row, btn_sel)
         if btn is None:
             failed.append(f"segment {idx}: timestamp {'plus' if use_plus else 'minus'} button not found")
+            if abort_on_first_failure:
+                break
             continue
+        if skip_disabled_buttons:
+            try:
+                if not btn.is_enabled():
+                    failed.append(
+                        f"segment {idx}: timestamp {'plus' if use_plus else 'minus'} button disabled"
+                    )
+                    if abort_on_first_failure:
+                        break
+                    continue
+            except Exception:
+                pass
         try:
             _click_segment_row_with_recovery(page, rows, idx, cfg)
+            clicked_this_segment = 0
             for _ in range(clicks):
                 live_row = page.locator(best_rows_sel).nth(idx - 1)
                 live_btn = _first_visible_child_locator(live_row, btn_sel)
@@ -2213,22 +5005,239 @@ def apply_timestamp_adjustments(
                     raise RuntimeError(
                         f"timestamp {'plus' if use_plus else 'minus'} button disappeared during adjustment"
                     )
+                if skip_disabled_buttons:
+                    try:
+                        if not live_btn.is_enabled():
+                            raise RuntimeError(
+                                f"timestamp {'plus' if use_plus else 'minus'} button disabled during adjustment"
+                            )
+                    except RuntimeError:
+                        raise
+                    except Exception:
+                        pass
                 try:
-                    live_btn.click(timeout=900)
-                except Exception:
+                    live_btn.click(timeout=click_timeout_ms, no_wait_after=True)
+                except Exception as click_exc:
                     _dismiss_blocking_side_panel(page, cfg, aggressive=True)
-                    live_btn.click(timeout=900, force=True)
-                time.sleep(0.03)
-            adjusted += 1
+                    try:
+                        live_btn.click(timeout=click_timeout_ms, force=True, no_wait_after=True)
+                    except Exception as force_exc:
+                        if mode == "strict":
+                            raise force_exc
+                        raise RuntimeError(_short_err(click_exc)) from force_exc
+                clicked_this_segment += 1
+                total_clicks_done += 1
+                if click_pause_ms > 0:
+                    time.sleep(click_pause_ms / 1000.0)
+            if clicked_this_segment > 0:
+                adjusted += 1
         except Exception as exc:
-            failed.append(f"segment {idx}: {exc}")
+            failed.append(f"segment {idx}: {_short_err(exc)}")
+            if abort_on_first_failure:
+                break
 
     return {"adjusted": adjusted, "failed": failed}
 
 
+def _action_selector_for_row(cfg: Dict[str, Any], action: str) -> str:
+    if action == "edit":
+        return str(_cfg_get(cfg, "atlas.selectors.edit_button_in_row", "")).strip()
+    if action == "split":
+        return str(_cfg_get(cfg, "atlas.selectors.split_button_in_row", "")).strip()
+    if action == "delete":
+        return str(_cfg_get(cfg, "atlas.selectors.delete_button_in_row", "")).strip()
+    if action == "merge":
+        return str(_cfg_get(cfg, "atlas.selectors.merge_button_in_row", "")).strip()
+    return ""
+
+
+def _action_hotkey(action: str) -> str:
+    if action == "edit":
+        return "e"
+    if action == "split":
+        return "s"
+    if action == "delete":
+        return "d"
+    if action == "merge":
+        return "m"
+    return ""
+
+
+def _confirm_action_dialog(page: Page, cfg: Dict[str, Any]) -> bool:
+    confirm_sel = str(_cfg_get(cfg, "atlas.selectors.action_confirm_button", "")).strip()
+    if not confirm_sel:
+        return False
+    clicked = _safe_locator_click(page, confirm_sel, timeout_ms=1200)
+    if clicked:
+        page.wait_for_timeout(250)
+    return clicked
+
+
+def _wait_rows_delta(page: Page, rows_selector: str, before_count: int, expected_delta: int, timeout_ms: int = 4000) -> bool:
+    if expected_delta == 0:
+        return True
+    target = max(0, before_count + expected_delta)
+    deadline = time.time() + (timeout_ms / 1000.0)
+    while time.time() < deadline:
+        try:
+            current = page.locator(rows_selector).count()
+            if current == target:
+                return True
+        except Exception:
+            pass
+        time.sleep(0.12)
+    return False
+
+
+def apply_segment_operations(page: Page, cfg: Dict[str, Any], operations: List[Dict[str, Any]]) -> Dict[str, Any]:
+    if not operations:
+        return {"applied": 0, "structural_applied": 0, "failed": []}
+    rows_sel = str(_cfg_get(cfg, "atlas.selectors.segment_rows", ""))
+    sample_size = max(1, int(_cfg_get(cfg, "run.segment_resolve_sample_size", 8)))
+    row_text_timeout_ms = max(100, int(_cfg_get(cfg, "run.segment_resolve_row_text_timeout_ms", 350)))
+    structural_skip_if_segments_ge = max(0, int(_cfg_get(cfg, "run.structural_skip_if_segments_ge", 40)))
+    structural_max_failures = max(1, int(_cfg_get(cfg, "run.structural_max_failures_per_episode", 4)))
+    structural_wait_rows_delta_timeout_ms = max(
+        600, int(_cfg_get(cfg, "run.structural_wait_rows_delta_timeout_ms", 1800))
+    )
+    failed: List[str] = []
+    applied = 0
+    structural_applied = 0
+
+    if structural_skip_if_segments_ge > 0:
+        try:
+            _, probe_rows = _resolve_rows_locator(
+                page,
+                rows_sel,
+                sample_size=sample_size,
+                row_text_timeout_ms=row_text_timeout_ms,
+            )
+            seg_count = probe_rows.count()
+            if seg_count >= structural_skip_if_segments_ge:
+                print(
+                    f"[run] structural operations skipped: segment count {seg_count} >= "
+                    f"{structural_skip_if_segments_ge}."
+                )
+                return {"applied": 0, "structural_applied": 0, "failed": []}
+        except Exception:
+            pass
+
+    for i, op in enumerate(operations, start=1):
+        if len(failed) >= structural_max_failures:
+            print(
+                f"[run] structural operations stopped after {len(failed)} failures "
+                f"(limit={structural_max_failures})."
+            )
+            break
+        action = str(op.get("action", "")).strip().lower()
+        idx = int(op.get("segment_index", 0) or 0)
+        if action not in {"edit", "split", "delete", "merge"} or idx <= 0:
+            failed.append(f"op#{i}: invalid operation payload {op}")
+            continue
+
+        _dismiss_blocking_modals(page, cfg)
+        _dismiss_blocking_side_panel(page, cfg, aggressive=True)
+        try:
+            best_rows_sel, rows = _resolve_rows_locator(
+                page,
+                rows_sel,
+                sample_size=sample_size,
+                row_text_timeout_ms=row_text_timeout_ms,
+            )
+        except Exception as exc:
+            failed.append(f"op#{i} {action} segment {idx}: rows unavailable ({exc})")
+            continue
+
+        count = rows.count()
+        if idx > count:
+            failed.append(f"op#{i} {action} segment {idx}: row missing (count={count})")
+            continue
+
+        row = rows.nth(idx - 1)
+        try:
+            _click_segment_row_with_recovery(page, rows, idx, cfg)
+        except Exception as exc:
+            failed.append(f"op#{i} {action} segment {idx}: cannot focus row ({exc})")
+            continue
+
+        before_count = count
+        triggered = False
+        btn_sel = _action_selector_for_row(cfg, action)
+        if btn_sel:
+            live_row = page.locator(best_rows_sel).nth(idx - 1)
+            for candidate in _selector_variants(btn_sel):
+                try:
+                    btn = live_row.locator(candidate).first
+                    if btn.count() > 0 and btn.is_visible():
+                        btn.click(timeout=1200, no_wait_after=True)
+                        triggered = True
+                        break
+                except Exception:
+                    continue
+
+        if not triggered:
+            key = _action_hotkey(action)
+            if key:
+                try:
+                    page.keyboard.press(key)
+                    triggered = True
+                except Exception:
+                    triggered = False
+
+        if not triggered:
+            failed.append(f"op#{i} {action} segment {idx}: action trigger failed")
+            continue
+
+        if action in {"delete", "merge"}:
+            _confirm_action_dialog(page, cfg)
+            _dismiss_blocking_modals(page, cfg)
+
+        expected_delta = 0
+        if action == "split":
+            expected_delta = 1
+        elif action in {"delete", "merge"}:
+            expected_delta = -1
+        if not _wait_rows_delta(
+            page,
+            best_rows_sel,
+            before_count,
+            expected_delta,
+            timeout_ms=structural_wait_rows_delta_timeout_ms,
+        ):
+            # Some actions may succeed without visible count change due to UI constraints.
+            try:
+                after_count = page.locator(best_rows_sel).count()
+            except Exception:
+                after_count = before_count
+            if expected_delta != 0 and after_count == before_count:
+                failed.append(
+                    f"op#{i} {action} segment {idx}: no row-count change "
+                    f"(expected {before_count + expected_delta}, got {after_count})"
+                )
+                continue
+
+        applied += 1
+        if action in {"split", "delete", "merge"}:
+            structural_applied += 1
+        print(f"[atlas] operation applied: {action} on segment {idx}")
+        page.wait_for_timeout(220)
+
+    return {"applied": applied, "structural_applied": structural_applied, "failed": failed}
+
+
 def _fill_input(locator: Locator, label: str, page: Page) -> None:
-    locator.wait_for(state="visible", timeout=4000)
-    locator.click()
+    # Avoid long waits on stale textarea locators; keep label apply loop fast.
+    try:
+        locator.scroll_into_view_if_needed(timeout=700)
+    except Exception:
+        pass
+    try:
+        locator.click(timeout=900, force=True)
+    except Exception:
+        try:
+            locator.click(timeout=700)
+        except Exception:
+            pass
     try:
         editable = bool(locator.evaluate("el => !!el.isContentEditable"))
     except Exception:
@@ -2239,7 +5248,7 @@ def _fill_input(locator: Locator, label: str, page: Page) -> None:
         page.keyboard.type(label, delay=8)
         return
     try:
-        locator.fill(label)
+        locator.fill(label, timeout=1600)
     except Exception:
         page.keyboard.press("Control+A")
         page.keyboard.type(label, delay=8)
@@ -2300,7 +5309,7 @@ def _handle_quality_review_modal(page: Page, cfg: Dict[str, Any], timeout_ms: in
                     if tag == "input" and typ == "checkbox":
                         cb.check(timeout=1200, force=True)
                     else:
-                        cb.click(timeout=1200, force=True)
+                        cb.click(timeout=1200, force=True, no_wait_after=True)
                     checked = True
                     break
                 except Exception:
@@ -2312,22 +5321,42 @@ def _handle_quality_review_modal(page: Page, cfg: Dict[str, Any], timeout_ms: in
     if checked:
         page.wait_for_timeout(250)
 
-    submitted = False
-    for _ in range(5):
-        submit_btn: Optional[Locator] = None
+    def _find_submit_button(modal_loc: Locator) -> Optional[Locator]:
         for candidate in _selector_variants(submit_sel):
             try:
-                loc = modal.locator(candidate)
+                loc = modal_loc.locator(candidate)
                 scan = min(loc.count(), 4)
                 for i in range(scan):
                     btn = loc.nth(i)
                     if btn.is_visible():
-                        submit_btn = btn
-                        break
-                if submit_btn is not None:
-                    break
+                        return btn
             except Exception:
                 continue
+        return None
+
+    def _try_click_submit(modal_loc: Locator) -> bool:
+        submit_btn = _find_submit_button(modal_loc)
+        if submit_btn is None:
+            return False
+        try:
+            disabled = bool(
+                submit_btn.evaluate(
+                    "el => !!el.disabled || String(el.getAttribute('aria-disabled') || '').toLowerCase() === 'true'"
+                )
+            )
+        except Exception:
+            disabled = False
+        if disabled:
+            return False
+        try:
+            submit_btn.click(timeout=1500, force=True, no_wait_after=True)
+            return True
+        except Exception:
+            return False
+
+    submitted = False
+    for _ in range(5):
+        submit_btn = _find_submit_button(modal)
         if submit_btn is None:
             break
         try:
@@ -2342,7 +5371,7 @@ def _handle_quality_review_modal(page: Page, cfg: Dict[str, Any], timeout_ms: in
             page.wait_for_timeout(300)
             continue
         try:
-            submit_btn.click(timeout=1500, force=True)
+            submit_btn.click(timeout=1500, force=True, no_wait_after=True)
             submitted = True
             print("[atlas] quality review submitted.")
             page.wait_for_timeout(1300)
@@ -2353,9 +5382,38 @@ def _handle_quality_review_modal(page: Page, cfg: Dict[str, Any], timeout_ms: in
 
     if not submitted:
         return False
-    if _first_visible_locator(page, modal_sel, timeout_ms=1200) is not None:
-        return False
-    return True
+
+    # Atlas UI can keep the modal visible for a few seconds even after successful submit.
+    # Keep polling and re-click submit (if still enabled) before deciding failure.
+    for _ in range(18):
+        current_modal = _first_visible_locator(page, modal_sel, timeout_ms=350)
+        if current_modal is None:
+            return True
+        if _try_click_submit(current_modal):
+            page.wait_for_timeout(450)
+        else:
+            page.wait_for_timeout(450)
+
+    current_modal = _first_visible_locator(page, modal_sel, timeout_ms=350)
+    if current_modal is None:
+        return True
+    submit_btn = _find_submit_button(current_modal)
+    if submit_btn is None:
+        # Modal still visible but submit button disappeared; likely accepted.
+        return True
+    try:
+        disabled = bool(
+            submit_btn.evaluate(
+                "el => !!el.disabled || String(el.getAttribute('aria-disabled') || '').toLowerCase() === 'true'"
+            )
+        )
+    except Exception:
+        disabled = False
+    if disabled:
+        # Atlas sometimes keeps stale modal frame visible after successful submit.
+        print("[atlas] quality review submit appears accepted (button disabled; modal still visible).")
+        return True
+    return False
 
 
 def _submit_episode(page: Page, cfg: Dict[str, Any]) -> bool:
@@ -2373,7 +5431,7 @@ def _submit_episode(page: Page, cfg: Dict[str, Any]) -> bool:
             complete_loc = _first_visible_locator(page, complete_sel, timeout_ms=1800)
             if complete_loc is not None:
                 try:
-                    complete_loc.click(timeout=1200, force=True)
+                    complete_loc.click(timeout=1200, force=True, no_wait_after=True)
                     completed = True
                 except Exception:
                     completed = False
@@ -2418,17 +5476,61 @@ def apply_labels(page: Page, cfg: Dict[str, Any], label_map: Dict[int, str]) -> 
     save_sel = str(_cfg_get(cfg, "atlas.selectors.save_button", ""))
     complete_sel = str(_cfg_get(cfg, "atlas.selectors.complete_button", ""))
     skip_unchanged = bool(_cfg_get(cfg, "run.skip_unchanged_labels", True))
+    progress_every = max(1, int(_cfg_get(cfg, "run.label_apply_progress_every", 5)))
+    max_total_sec = max(30, int(_cfg_get(cfg, "run.label_apply_max_total_sec", 600)))
+    max_failures = max(1, int(_cfg_get(cfg, "run.label_apply_max_failures", 18)))
+    input_timeout_ms = max(800, int(_cfg_get(cfg, "run.label_apply_input_timeout_ms", 3000)))
+    save_timeout_ms = max(300, int(_cfg_get(cfg, "run.label_apply_save_timeout_ms", 1800)))
+    edit_click_timeout_ms = max(400, int(_cfg_get(cfg, "run.label_apply_edit_click_timeout_ms", 900)))
+    submit_guard_enabled = bool(_cfg_get(cfg, "run.submit_guard_enabled", True))
+    submit_guard_max_failure_ratio = min(
+        1.0, max(0.0, float(_cfg_get(cfg, "run.submit_guard_max_failure_ratio", 0.25)))
+    )
+    submit_guard_min_applied_ratio = min(
+        1.0, max(0.0, float(_cfg_get(cfg, "run.submit_guard_min_applied_ratio", 0.9)))
+    )
+    submit_guard_block_on_budget_exceeded = bool(
+        _cfg_get(cfg, "run.submit_guard_block_on_budget_exceeded", True)
+    )
 
     best_rows_sel, rows = _resolve_rows_locator(page, rows_sel)
     failed: List[str] = []
     applied = 0
     skipped_unchanged = 0
+    total_targets = len(label_map)
+    started_at = time.time()
+    processed = 0
+    if total_targets > 0:
+        print(f"[run] apply labels started: targets={total_targets}")
 
     for idx in sorted(label_map):
+        processed += 1
+        elapsed = time.time() - started_at
+        if elapsed > float(max_total_sec):
+            failed.append(
+                f"apply budget exceeded after {elapsed:.1f}s "
+                f"(processed={processed - 1}/{total_targets})"
+            )
+            print(
+                f"[run] apply labels stopped: exceeded {max_total_sec}s budget "
+                f"after {processed - 1}/{total_targets} segments."
+            )
+            break
+        if len(failed) >= max_failures:
+            print(
+                f"[run] apply labels stopped: failure limit {max_failures} reached "
+                f"(processed={processed - 1}/{total_targets})."
+            )
+            break
         rows = page.locator(best_rows_sel)
         count = rows.count()
         if idx > count:
             failed.append(f"segment {idx}: row missing (count={count})")
+            if processed % progress_every == 0:
+                print(
+                    f"[run] apply progress {processed}/{total_targets} "
+                    f"(applied={applied}, skipped={skipped_unchanged}, failed={len(failed)})"
+                )
             continue
         row = rows.nth(idx - 1)
         label = label_map[idx]
@@ -2444,37 +5546,54 @@ def apply_labels(page: Page, cfg: Dict[str, Any], label_map: Dict[int, str]) -> 
                         skipped_unchanged += 1
                         continue
 
-            clicked_edit = False
-            for candidate in _selector_variants(edit_sel):
-                edit_loc = row.locator(candidate).first
-                if edit_loc.count() > 0 and edit_loc.is_visible():
-                    try:
-                        edit_loc.click(timeout=1500)
-                    except Exception:
-                        _dismiss_blocking_side_panel(page, cfg, aggressive=True)
-                        edit_loc.click(timeout=1000, force=True)
-                    clicked_edit = True
-                    break
-            if not clicked_edit:
-                try:
-                    row.dblclick(timeout=1200)
-                    clicked_edit = True
-                except Exception:
-                    page.keyboard.press("e")
+            # Fastest path: row focus then keyboard edit hotkey.
+            input_loc = None
+            try:
+                page.keyboard.press("e")
+                input_loc = _first_visible_locator(page, input_sel, timeout_ms=min(1200, input_timeout_ms))
+            except Exception:
+                input_loc = None
 
-            input_loc = _first_visible_locator(page, input_sel, timeout_ms=5000)
+            # Fallback: open editor by row double-click.
+            if input_loc is None:
+                try:
+                    row.dblclick(timeout=max(500, edit_click_timeout_ms - 300))
+                except Exception:
+                    pass
+                input_loc = _first_visible_locator(page, input_sel, timeout_ms=min(1200, input_timeout_ms))
+
+            # Last fallback: explicit Edit button selectors.
+            if input_loc is None:
+                for candidate in _selector_variants(edit_sel):
+                    edit_loc = row.locator(candidate).first
+                    if edit_loc.count() > 0 and edit_loc.is_visible():
+                        try:
+                            edit_loc.click(timeout=edit_click_timeout_ms, no_wait_after=True)
+                        except Exception:
+                            _dismiss_blocking_side_panel(page, cfg, aggressive=True)
+                            edit_loc.click(
+                                timeout=max(400, edit_click_timeout_ms - 300),
+                                force=True,
+                                no_wait_after=True,
+                            )
+                        input_loc = _first_visible_locator(page, input_sel, timeout_ms=min(1800, input_timeout_ms))
+                        if input_loc is not None:
+                            break
+
+            if input_loc is None:
+                input_loc = _first_visible_locator(page, input_sel, timeout_ms=input_timeout_ms)
             if input_loc is None:
                 raise RuntimeError("label input not found")
             _fill_input(input_loc, label, page)
 
-            saved = _safe_locator_click(page, save_sel, timeout_ms=2500) if save_sel else False
+            saved = _safe_locator_click(page, save_sel, timeout_ms=save_timeout_ms) if save_sel else False
             if not saved:
                 for candidate in _selector_variants(save_sel):
-                    btn = _first_visible_locator(page, candidate, timeout_ms=900)
+                    btn = _first_visible_locator(page, candidate, timeout_ms=max(300, save_timeout_ms // 2))
                     if btn is None:
                         continue
                     try:
-                        btn.click(timeout=900, force=True)
+                        btn.click(timeout=max(300, save_timeout_ms // 2), force=True, no_wait_after=True)
                         saved = True
                         break
                     except Exception:
@@ -2485,15 +5604,45 @@ def apply_labels(page: Page, cfg: Dict[str, Any], label_map: Dict[int, str]) -> 
             applied += 1
             time.sleep(0.15)
         except Exception as exc:
-            failed.append(f"segment {idx}: {exc}")
+            failed.append(f"segment {idx}: {_short_error_text(exc)}")
+        if processed % progress_every == 0:
+            print(
+                f"[run] apply progress {processed}/{total_targets} "
+                f"(applied={applied}, skipped={skipped_unchanged}, failed={len(failed)})"
+            )
 
-    completed = _submit_episode(page, cfg) if complete_sel else False
+    submit_guard_reasons: List[str] = []
+    budget_exceeded = any("apply budget exceeded" in str(msg).lower() for msg in failed)
+    total_targets_safe = max(1, total_targets)
+    failure_ratio = float(len(failed)) / float(total_targets_safe)
+    applied_ratio = float(applied) / float(total_targets_safe)
+    if submit_guard_enabled and total_targets > 0:
+        if submit_guard_block_on_budget_exceeded and budget_exceeded:
+            submit_guard_reasons.append("apply budget exceeded")
+        if failure_ratio > submit_guard_max_failure_ratio:
+            submit_guard_reasons.append(
+                f"failure ratio {failure_ratio:.1%} > {submit_guard_max_failure_ratio:.1%}"
+            )
+        if applied_ratio < submit_guard_min_applied_ratio:
+            submit_guard_reasons.append(
+                f"applied ratio {applied_ratio:.1%} < {submit_guard_min_applied_ratio:.1%}"
+            )
+
+    if submit_guard_reasons:
+        print("[run] submit guard blocked auto-submit for this episode:")
+        for reason in submit_guard_reasons:
+            print(f"  - {reason}")
+        completed = False
+    else:
+        completed = _submit_episode(page, cfg) if complete_sel else False
 
     return {
         "applied": applied,
         "skipped_unchanged": skipped_unchanged,
         "failed": failed,
         "completed": completed,
+        "submit_guard_blocked": bool(submit_guard_reasons),
+        "submit_guard_reasons": submit_guard_reasons,
     }
 
 
@@ -2548,21 +5697,120 @@ def _save_outputs(
             pass
 
 
+def _capture_debug_artifacts(page: Page, cfg: Dict[str, Any], prefix: str = "debug_failure") -> Tuple[Optional[Path], Optional[Path]]:
+    out_dir = Path(str(_cfg_get(cfg, "run.output_dir", "outputs")))
+    out_dir.mkdir(parents=True, exist_ok=True)
+    ts = time.strftime("%Y%m%d_%H%M%S")
+    snap_path = out_dir / f"{prefix}_{ts}.png"
+    html_path = out_dir / f"{prefix}_{ts}.html"
+
+    snap_saved: Optional[Path] = None
+    html_saved: Optional[Path] = None
+    try:
+        page.screenshot(path=str(snap_path), full_page=True)
+        snap_saved = snap_path
+        print(f"[debug] screenshot saved: {snap_path}")
+    except Exception:
+        pass
+    try:
+        html_path.write_text(page.content(), encoding="utf-8")
+        html_saved = html_path
+        print(f"[debug] html saved: {html_path}")
+    except Exception:
+        pass
+    return snap_saved, html_saved
+
+
+def _apply_global_gemini_video_policy(cfg: Dict[str, Any]) -> None:
+    """
+    Enforce a low-cost + quality-preserving video policy for all accounts.
+    This runs after YAML merge so old/new account files get consistent behavior.
+    """
+    gem = cfg.setdefault("gemini", {})
+    if not isinstance(gem, dict):
+        cfg["gemini"] = {}
+        gem = cfg["gemini"]
+
+    defaults = {
+        "optimize_video_for_upload": True,
+        "optimize_video_target_mb": 4.0,
+        "optimize_video_target_fps": 10.0,
+        "optimize_video_min_fps": 8.0,
+        "optimize_video_min_width": 320,
+        "optimize_video_min_short_side": 320,
+        "reference_frames_enabled": True,
+        "reference_frames_always": False,
+        "reference_frame_attach_when_video_mb_le": 2.5,
+        "reference_frame_count": 2,
+        "reference_frame_positions": [0.2, 0.55, 0.85],
+        "reference_frame_max_side": 960,
+        "reference_frame_jpeg_quality": 82,
+        "reference_frame_max_total_kb": 420,
+    }
+    for key, value in defaults.items():
+        gem.setdefault(key, value)
+
+    # Keep upload cost low (target <= 4MB), while avoiding aggressive visual degradation.
+    try:
+        target_mb = float(gem.get("optimize_video_target_mb", 4.0))
+    except Exception:
+        target_mb = 4.0
+    gem["optimize_video_target_mb"] = min(4.0, max(1.0, target_mb))
+
+    try:
+        target_fps = float(gem.get("optimize_video_target_fps", 10.0))
+    except Exception:
+        target_fps = 10.0
+    try:
+        min_fps = float(gem.get("optimize_video_min_fps", 8.0))
+    except Exception:
+        min_fps = 8.0
+    min_fps = max(8.0, min_fps)
+    gem["optimize_video_min_fps"] = min_fps
+    gem["optimize_video_target_fps"] = max(min_fps, target_fps)
+
+    try:
+        min_width = int(gem.get("optimize_video_min_width", 320))
+    except Exception:
+        min_width = 320
+    try:
+        min_short = int(gem.get("optimize_video_min_short_side", 320))
+    except Exception:
+        min_short = 320
+    gem["optimize_video_min_width"] = max(320, min_width)
+    gem["optimize_video_min_short_side"] = max(320, min_short)
+
+    floor_surface_guard = (
+        "If floor mat vs table is unclear, do not guess raised furniture; "
+        "use neutral location wording."
+    )
+    extra = str(gem.get("extra_instructions", "") or "").strip()
+    if floor_surface_guard.lower() not in extra.lower():
+        gem["extra_instructions"] = (
+            f"{extra}\n{floor_surface_guard}".strip() if extra else floor_surface_guard
+        )
+
+
 def load_config(path: Path) -> Dict[str, Any]:
     if not path.exists():
         raise FileNotFoundError(f"Config file not found: {path}")
     raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     if not isinstance(raw, dict):
         raise ValueError("Config root must be YAML object")
-    return _deep_merge(DEFAULT_CONFIG, raw)
+    cfg = _deep_merge(DEFAULT_CONFIG, raw)
+    _apply_global_gemini_video_policy(cfg)
+    return cfg
 
 
 def run(cfg: Dict[str, Any], execute: bool) -> None:
+    global _GEMINI_FALLBACK_USES
+    _GEMINI_FALLBACK_USES = 0
     state_path = Path(str(_cfg_get(cfg, "browser.storage_state_path", ".state/atlas_auth.json")))
     force_login = bool(_cfg_get(cfg, "browser.force_login", False))
     headless = bool(_cfg_get(cfg, "browser.headless", False))
     slow_mo = int(_cfg_get(cfg, "browser.slow_mo_ms", 0))
     use_chrome_profile = bool(_cfg_get(cfg, "browser.use_chrome_profile", False))
+    restore_state_in_profile_mode = bool(_cfg_get(cfg, "browser.restore_state_in_profile_mode", False))
     fallback_on_profile_error = bool(
         _cfg_get(cfg, "browser.fallback_to_isolated_context_on_profile_error", True)
     )
@@ -2577,6 +5825,13 @@ def run(cfg: Dict[str, Any], execute: bool) -> None:
     prefer_profile_with_atlas_cookies = bool(_cfg_get(cfg, "browser.prefer_profile_with_atlas_cookies", True))
     cloned_user_data_dir = str(_cfg_get(cfg, "browser.cloned_user_data_dir", ".state/chrome_user_data_clone")).strip()
     chrome_channel = str(_cfg_get(cfg, "browser.chrome_channel", "chrome")).strip() or "chrome"
+    browser_executable_path_raw = (
+        str(_cfg_get(cfg, "browser.executable_path", "")).strip()
+        or os.environ.get("BROWSER_EXECUTABLE_PATH", "").strip()
+    )
+    browser_executable_path = ""
+    if browser_executable_path_raw:
+        browser_executable_path = shutil.which(browser_executable_path_raw) or browser_executable_path_raw
     chrome_user_data_dir = (
         str(_cfg_get(cfg, "browser.chrome_user_data_dir", "")).strip()
         or os.environ.get("CHROME_USER_DATA_DIR", "").strip()
@@ -2590,6 +5845,53 @@ def run(cfg: Dict[str, Any], execute: bool) -> None:
         chrome_profile_directory = ""
     else:
         chrome_profile_directory = chrome_profile_directory_raw or "Default"
+    proxy_server_raw = (
+        str(_cfg_get(cfg, "browser.proxy_server", "")).strip()
+        or os.environ.get("ATLAS_PROXY_SERVER", "").strip()
+    )
+    proxy_username = (
+        str(_cfg_get(cfg, "browser.proxy_username", "")).strip()
+        or os.environ.get("ATLAS_PROXY_USERNAME", "").strip()
+    )
+    proxy_password = (
+        str(_cfg_get(cfg, "browser.proxy_password", "")).strip()
+        or os.environ.get("ATLAS_PROXY_PASSWORD", "").strip()
+    )
+    proxy_bypass = (
+        str(_cfg_get(cfg, "browser.proxy_bypass", "")).strip()
+        or os.environ.get("ATLAS_PROXY_BYPASS", "").strip()
+    )
+    clear_env_proxy_for_backend_requests = bool(
+        _cfg_get(cfg, "browser.clear_env_proxy_for_backend_requests", True)
+    )
+    browser_proxy: Optional[Dict[str, str]] = None
+    if proxy_server_raw:
+        proxy_server = proxy_server_raw if "://" in proxy_server_raw else f"http://{proxy_server_raw}"
+        browser_proxy = {"server": proxy_server}
+        if proxy_username:
+            browser_proxy["username"] = proxy_username
+        if proxy_password:
+            browser_proxy["password"] = proxy_password
+        if proxy_bypass:
+            browser_proxy["bypass"] = proxy_bypass
+        print(f"[browser] proxy enabled: {proxy_server_raw} (auth={'yes' if proxy_username else 'no'})")
+    if clear_env_proxy_for_backend_requests:
+        cleared_proxy_env: List[str] = []
+        for env_name in (
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "ALL_PROXY",
+            "http_proxy",
+            "https_proxy",
+            "all_proxy",
+        ):
+            if os.environ.pop(env_name, None):
+                cleared_proxy_env.append(env_name)
+        if cleared_proxy_env:
+            print(
+                "[net] cleared env proxy vars for backend requests: "
+                + ", ".join(cleared_proxy_env)
+            )
     atlas_email = _resolve_atlas_email(cfg)
 
     dry_run = bool(_cfg_get(cfg, "run.dry_run", True))
@@ -2656,17 +5958,26 @@ def run(cfg: Dict[str, Any], execute: bool) -> None:
             profile_launch_args = list(launch_args)
             profile_log = chrome_profile_directory if chrome_profile_directory else "<direct-profile-path>"
             print(f"[browser] using Chrome profile: user_data_dir={launch_user_data_dir}, profile={profile_log}")
+            if browser_executable_path:
+                print(f"[browser] forcing executable path: {browser_executable_path}")
             last_profile_exc: Exception | None = None
             context = None
             for attempt in range(profile_launch_retry_count + 1):
                 try:
+                    launch_kwargs: Dict[str, Any] = {
+                        "user_data_dir": launch_user_data_dir,
+                        "headless": headless,
+                        "slow_mo": slow_mo,
+                        "proxy": browser_proxy,
+                        "args": launch_args,
+                        "timeout": profile_launch_timeout_ms,
+                    }
+                    if browser_executable_path:
+                        launch_kwargs["executable_path"] = browser_executable_path
+                    else:
+                        launch_kwargs["channel"] = chrome_channel
                     context = pw.chromium.launch_persistent_context(
-                        user_data_dir=launch_user_data_dir,
-                        channel=chrome_channel,
-                        headless=headless,
-                        slow_mo=slow_mo,
-                        args=launch_args,
-                        timeout=profile_launch_timeout_ms,
+                        **launch_kwargs
                     )
                     last_profile_exc = None
                     break
@@ -2699,11 +6010,19 @@ def run(cfg: Dict[str, Any], execute: bool) -> None:
                 page = context.pages[-1]
             else:
                 page = context.new_page()
-            if not force_login:
+            if not force_login and restore_state_in_profile_mode:
                 _restore_storage_state(context, page, state_path)
             print(f"[browser] initial page url: {page.url}")
         else:
-            browser = pw.chromium.launch(headless=headless, slow_mo=slow_mo)
+            launch_browser_kwargs: Dict[str, Any] = {
+                "headless": headless,
+                "slow_mo": slow_mo,
+                "proxy": browser_proxy,
+            }
+            if browser_executable_path:
+                print(f"[browser] forcing executable path: {browser_executable_path}")
+                launch_browser_kwargs["executable_path"] = browser_executable_path
+            browser = pw.chromium.launch(**launch_browser_kwargs)
             context_kwargs: Dict[str, Any] = {}
             if state_path.exists() and not force_login:
                 context_kwargs["storage_state"] = str(state_path)
@@ -2716,7 +6035,7 @@ def run(cfg: Dict[str, Any], execute: bool) -> None:
             if room_url:
                 print(f"[run] opening room url: {room_url}")
                 try:
-                    page.goto(room_url, wait_until="commit", timeout=45000)
+                    _goto_with_retry(page, room_url, wait_until="commit", timeout_ms=45000, cfg=cfg, reason="initial-room")
                     print(f"[run] page after room goto: {page.url}")
                     if (
                         using_profile_mode
@@ -2732,24 +6051,40 @@ def run(cfg: Dict[str, Any], execute: bool) -> None:
                             target_user_data_dir=cloned_user_data_dir,
                             reuse_existing=False,
                         )
+                        refresh_kwargs: Dict[str, Any] = {
+                            "user_data_dir": refreshed_user_data_dir,
+                            "headless": headless,
+                            "slow_mo": slow_mo,
+                            "proxy": browser_proxy,
+                            "args": profile_launch_args,
+                            "timeout": profile_launch_timeout_ms,
+                        }
+                        if browser_executable_path:
+                            refresh_kwargs["executable_path"] = browser_executable_path
+                        else:
+                            refresh_kwargs["channel"] = chrome_channel
                         context = pw.chromium.launch_persistent_context(
-                            user_data_dir=refreshed_user_data_dir,
-                            channel=chrome_channel,
-                            headless=headless,
-                            slow_mo=slow_mo,
-                            args=profile_launch_args,
-                            timeout=profile_launch_timeout_ms,
+                            **refresh_kwargs
                         )
                         if context.pages:
                             page = context.pages[-1]
                         else:
                             page = context.new_page()
-                        if not force_login:
+                        if not force_login and restore_state_in_profile_mode:
                             _restore_storage_state(context, page, state_path)
-                        page.goto(room_url, wait_until="commit", timeout=45000)
+                        _goto_with_retry(page, room_url, wait_until="commit", timeout_ms=45000, cfg=cfg, reason="refreshed-clone-room")
                         print(f"[run] page after refreshed-clone room goto: {page.url}")
                 except Exception as exc:
-                    print(f"[run] room goto failed: {exc}. Continuing with login flow.")
+                    if _is_too_many_redirects_error(exc):
+                        print("[run] room redirect loop detected; clearing Atlas session and retrying room once.")
+                        _clear_atlas_site_session(page)
+                        try:
+                            _goto_with_retry(page, room_url, wait_until="commit", timeout_ms=45000, cfg=cfg, reason="initial-room-after-clear")
+                            print(f"[run] page after room retry: {page.url}")
+                        except Exception as retry_exc:
+                            print(f"[run] room retry after clear failed: {retry_exc}. Continuing with login flow.")
+                    else:
+                        print(f"[run] room goto failed: {exc}. Continuing with login flow.")
 
             if "/dashboard" not in page.url.lower() and "/tasks" not in page.url.lower():
                 ensure_logged_in(page, cfg)
@@ -2758,57 +6093,318 @@ def run(cfg: Dict[str, Any], execute: bool) -> None:
                     context.storage_state(path=str(state_path))
                     print(f"[auth] saved state: {state_path}")
 
-            max_episodes_per_run = int(_cfg_get(cfg, "run.max_episodes_per_run", 1))
+            max_episodes_per_run = int(_cfg_get(cfg, "run.max_episodes_per_run", 5))
+            recycle_after_max_episodes = bool(_cfg_get(cfg, "run.recycle_after_max_episodes", True))
+            release_all_after_batch = bool(_cfg_get(cfg, "run.release_all_after_batch", True))
+            release_all_wait_sec = max(0.0, float(_cfg_get(cfg, "run.release_all_wait_sec", 180)))
+            no_task_retry_count = max(0, int(_cfg_get(cfg, "run.no_task_retry_count", 5)))
+            no_task_retry_delay_sec = max(0.0, float(_cfg_get(cfg, "run.no_task_retry_delay_sec", 6.0)))
+            no_task_backoff_factor = max(1.0, float(_cfg_get(cfg, "run.no_task_backoff_factor", 1.5)))
+            no_task_max_delay_sec = max(
+                no_task_retry_delay_sec,
+                float(_cfg_get(cfg, "run.no_task_max_delay_sec", max(30.0, no_task_retry_delay_sec))),
+            )
+            keep_alive_when_idle = bool(_cfg_get(cfg, "run.keep_alive_when_idle", True))
+            keep_alive_idle_cycle_pause_sec = max(
+                0.0, float(_cfg_get(cfg, "run.keep_alive_idle_cycle_pause_sec", 120.0))
+            )
+            clear_blocked_after_hits = max(
+                1, int(_cfg_get(cfg, "run.clear_blocked_tasks_after_all_visible_blocked_hits", 2))
+            )
             resume_from_artifacts = bool(_cfg_get(cfg, "run.resume_from_artifacts", True))
             resume_skip_video_steps_when_cached = bool(_cfg_get(cfg, "run.resume_skip_video_steps_when_cached", True))
             resume_skip_apply_steps_when_done = bool(_cfg_get(cfg, "run.resume_skip_apply_steps_when_done", True))
+            allow_resume_auto_submit = bool(_cfg_get(cfg, "run.allow_resume_auto_submit", False))
+            execute_force_fresh_gemini = bool(_cfg_get(cfg, "run.execute_force_fresh_gemini", True))
+            execute_force_live_segments = bool(_cfg_get(cfg, "run.execute_force_live_segments", True))
+            execute_require_video_context = bool(_cfg_get(cfg, "run.execute_require_video_context", True))
+            skip_duplicate_task_in_run = bool(_cfg_get(cfg, "run.skip_duplicate_task_in_run", True))
+            duplicate_task_retry_count = max(0, int(_cfg_get(cfg, "run.duplicate_task_retry_count", 3)))
+            duplicate_task_retry_wait_sec = max(0.0, float(_cfg_get(cfg, "run.duplicate_task_retry_wait_sec", 2.0)))
+            continue_on_episode_error = bool(_cfg_get(cfg, "run.continue_on_episode_error", True))
+            max_episode_failures_per_run = max(0, int(_cfg_get(cfg, "run.max_episode_failures_per_run", 3)))
+            episode_failure_retry_delay_sec = max(0.0, float(_cfg_get(cfg, "run.episode_failure_retry_delay_sec", 4.0)))
+            max_video_prepare_failures_per_task = max(1, int(_cfg_get(cfg, "run.max_video_prepare_failures_per_task", 2)))
+            max_gemini_failures_per_task = max(1, int(_cfg_get(cfg, "run.max_gemini_failures_per_task", 1)))
             episode_no = 0
+            seen_task_ids: set[str] = set()
+            blocked_task_ids: set[str] = set()
+            video_prepare_failures_by_task: Dict[str, int] = {}
+            gemini_failures_by_task: Dict[str, int] = {}
+            duplicate_hits = 0
+            no_task_hits = 0
+            all_visible_blocked_hits = 0
+            consecutive_episode_failures = 0
+
+            def _episode_failure_mode() -> str:
+                if not continue_on_episode_error:
+                    return "raise"
+                if consecutive_episode_failures > max_episode_failures_per_run:
+                    return "stop"
+                return "continue"
+
             while True:
                 if max_episodes_per_run > 0 and episode_no >= max_episodes_per_run:
                     print(f"[run] reached max_episodes_per_run={max_episodes_per_run}.")
+                    if recycle_after_max_episodes:
+                        if release_all_after_batch:
+                            _release_all_reserved_episodes(page, cfg)
+                        if release_all_wait_sec > 0:
+                            print(f"[run] waiting {release_all_wait_sec:.0f}s before reserving a new episode batch.")
+                            time.sleep(release_all_wait_sec)
+                        episode_no = 0
+                        seen_task_ids.clear()
+                        blocked_task_ids.clear()
+                        video_prepare_failures_by_task.clear()
+                        gemini_failures_by_task.clear()
+                        duplicate_hits = 0
+                        no_task_hits = 0
+                        consecutive_episode_failures = 0
+                        if room_url:
+                            try:
+                                _goto_with_retry(
+                                    page,
+                                    room_url,
+                                    wait_until="domcontentloaded",
+                                    timeout_ms=45000,
+                                    cfg=cfg,
+                                    reason="room-after-release-cycle",
+                                )
+                            except Exception:
+                                pass
+                        continue
                     break
 
-                opened = goto_task_room(page, cfg)
+                skip_task_ids_for_open: set[str] = set(blocked_task_ids)
+                if skip_duplicate_task_in_run:
+                    skip_task_ids_for_open.update(seen_task_ids)
+                open_status: Dict[str, Any] = {}
+                blocked_before_open = set(blocked_task_ids)
+                opened = goto_task_room(
+                    page,
+                    cfg,
+                    skip_task_ids=skip_task_ids_for_open,
+                    status_out=open_status,
+                )
+                # Important: do not pollute blocked_task_ids with seen_task_ids.
+                newly_blocked = {
+                    tid for tid in skip_task_ids_for_open
+                    if tid not in blocked_before_open and tid not in seen_task_ids
+                }
+                if newly_blocked:
+                    blocked_task_ids.update(newly_blocked)
                 if not opened:
-                    print("[run] no label task available right now.")
-                    break
+                    if bool(open_status.get("all_visible_blocked")):
+                        all_visible_blocked_hits += 1
+                        if blocked_task_ids and all_visible_blocked_hits >= clear_blocked_after_hits:
+                            print(
+                                "[run] all visible tasks stayed blocked across idle checks; "
+                                f"clearing blocked-task list (size={len(blocked_task_ids)})."
+                            )
+                            blocked_task_ids.clear()
+                            all_visible_blocked_hits = 0
+                    else:
+                        all_visible_blocked_hits = 0
+                    no_task_hits += 1
+                    keep_alive_pause_sec = 0.0
+                    if no_task_hits > no_task_retry_count:
+                        if keep_alive_when_idle and max_episodes_per_run <= 0:
+                            print(
+                                "[run] no label task available right now; "
+                                "retry budget exhausted but keep-alive is enabled, continuing poll loop."
+                            )
+                            no_task_hits = max(1, no_task_retry_count)
+                            keep_alive_pause_sec = keep_alive_idle_cycle_pause_sec
+                        else:
+                            print("[run] no label task available right now; retry budget exhausted.")
+                            break
+                    backoff_exp = max(0, no_task_hits - 1)
+                    retry_delay_sec = min(
+                        no_task_max_delay_sec,
+                        no_task_retry_delay_sec * (no_task_backoff_factor**backoff_exp),
+                    )
+                    if keep_alive_pause_sec > retry_delay_sec:
+                        retry_delay_sec = keep_alive_pause_sec
+                    print(
+                        f"[run] no label task available right now; retry "
+                        f"{no_task_hits}/{no_task_retry_count} in {retry_delay_sec:.1f}s."
+                    )
+                    if room_url:
+                        try:
+                            _goto_with_retry(
+                                page,
+                                room_url,
+                                wait_until="domcontentloaded",
+                                timeout_ms=45000,
+                                cfg=cfg,
+                                reason="room-retry-no-task",
+                            )
+                        except Exception:
+                            pass
+                    if retry_delay_sec > 0:
+                        time.sleep(retry_delay_sec)
+                    continue
+                no_task_hits = 0
+                all_visible_blocked_hits = 0
+                task_id = _task_id_from_url(page.url)
+                if task_id and task_id in blocked_task_ids:
+                    print(f"[run] opened blocked task again ({task_id}); retrying room selection.")
+                    if room_url:
+                        try:
+                            _goto_with_retry(
+                                page,
+                                room_url,
+                                wait_until="domcontentloaded",
+                                timeout_ms=45000,
+                                cfg=cfg,
+                                reason="room-after-blocked-task",
+                            )
+                        except Exception:
+                            pass
+                    if no_task_retry_delay_sec > 0:
+                        time.sleep(no_task_retry_delay_sec)
+                    continue
+                if skip_duplicate_task_in_run and task_id and task_id in seen_task_ids:
+                    duplicate_hits += 1
+                    print(
+                        f"[run] duplicate task reopened in same run: {task_id} "
+                        f"(retry {duplicate_hits}/{duplicate_task_retry_count})."
+                    )
+                    if duplicate_hits > duplicate_task_retry_count:
+                        blocked_task_ids.add(task_id)
+                        duplicate_hits = 0
+                        print(
+                            "[run] duplicate task retry budget exhausted; "
+                            f"blocking task for this run and continuing: {task_id}"
+                        )
+                        if room_url:
+                            try:
+                                _goto_with_retry(
+                                    page,
+                                    room_url,
+                                    wait_until="domcontentloaded",
+                                    timeout_ms=45000,
+                                    cfg=cfg,
+                                    reason="room-after-duplicate-exhausted",
+                                )
+                            except Exception:
+                                pass
+                        if duplicate_task_retry_wait_sec > 0:
+                            time.sleep(duplicate_task_retry_wait_sec)
+                        continue
+                    if duplicate_task_retry_wait_sec > 0:
+                        time.sleep(duplicate_task_retry_wait_sec)
+                    if room_url:
+                        try:
+                            _goto_with_retry(
+                                page,
+                                room_url,
+                                wait_until="domcontentloaded",
+                                timeout_ms=45000,
+                                cfg=cfg,
+                                reason="room-after-duplicate",
+                            )
+                        except Exception:
+                            pass
+                    continue
+                duplicate_hits = 0
                 episode_no += 1
                 print(f"[run] episode {episode_no} opened: {page.url}")
-                task_id = _task_id_from_url(page.url)
                 task_state = _load_task_state(cfg, task_id) if (resume_from_artifacts and task_id) else {}
                 scoped_paths = _task_scoped_artifact_paths(cfg, task_id) if task_id else {}
 
                 _dismiss_blocking_modals(page)
-                labels_payload = _load_cached_labels(cfg, task_id) if task_id else None
+                if bool(_cfg_get(cfg, "run.loop_off_on_episode_open", True)):
+                    # Fast-path: toggle loop off right after opening the episode.
+                    _ensure_loop_off(page, cfg)
+                labels_payload: Optional[Dict[str, Any]] = None
+                if task_id:
+                    if execute and execute_force_fresh_gemini:
+                        print("[gemini] execute mode: forcing fresh Gemini evaluation (ignoring cached labels).")
+                    else:
+                        labels_payload = _load_cached_labels(cfg, task_id)
                 min_video_bytes = int(_cfg_get(cfg, "gemini.min_video_bytes", 500000))
+                validate_video_decode = bool(_cfg_get(cfg, "gemini.validate_video_decode", True))
                 cached_video_file: Optional[Path] = None
                 if task_id:
                     candidate = scoped_paths.get("video")
                     if candidate is not None and candidate.exists():
                         try:
                             if candidate.stat().st_size >= min_video_bytes and _is_probably_mp4(candidate):
-                                cached_video_file = candidate
+                                if not validate_video_decode or _is_video_decodable(candidate):
+                                    cached_video_file = candidate
+                                else:
+                                    print(f"[video] ignoring cached video with failed decode check: {candidate}")
                         except Exception:
                             cached_video_file = None
 
                 skip_video_steps = bool(
                     resume_from_artifacts
                     and resume_skip_video_steps_when_cached
-                    and cached_video_file is not None
-                    and labels_payload is not None
+                    and (cached_video_file is not None or labels_payload is not None)
                 )
                 if skip_video_steps:
-                    print(f"[run] resume mode: cached video+labels found for task {task_id}; skipping video playback.")
+                    print(
+                        f"[run] resume mode: skipping video playback "
+                        f"(cached_video={cached_video_file is not None}, cached_labels={labels_payload is not None})."
+                    )
                 else:
                     _ensure_loop_off(page, cfg)
                     _play_full_video_once(page, cfg)
 
-                if cached_video_file is not None:
+                if labels_payload is not None and skip_video_steps and cached_video_file is None:
+                    video_file = None
+                    print("[video] skipped video preparation (cached labels available).")
+                elif cached_video_file is not None:
                     video_file = cached_video_file
                     print(f"[video] using cached task video: {video_file}")
                 else:
                     print("[run] preparing task video for Gemini...")
-                    video_file = _prepare_video_for_gemini(page, context, cfg, task_id=task_id)
+                    try:
+                        video_file = _prepare_video_for_gemini(page, context, cfg, task_id=task_id)
+                    except Exception as exc:
+                        consecutive_episode_failures += 1
+                        print(f"[run] episode {episode_no} failed during video preparation: {exc}")
+                        _capture_debug_artifacts(page, cfg, prefix="debug_episode_failure")
+                        if task_id:
+                            current_failures = int(video_prepare_failures_by_task.get(task_id, 0)) + 1
+                            video_prepare_failures_by_task[task_id] = current_failures
+                            print(
+                                f"[run] video prepare failure for task {task_id}: "
+                                f"{current_failures}/{max_video_prepare_failures_per_task}"
+                            )
+                            if current_failures >= max_video_prepare_failures_per_task:
+                                blocked_task_ids.add(task_id)
+                                print(f"[run] task blocked for this run due to repeated video failures: {task_id}")
+                        if task_id and resume_from_artifacts:
+                            task_state["last_error"] = str(exc)
+                            _save_task_state(cfg, task_id, task_state)
+                        failure_mode = _episode_failure_mode()
+                        if failure_mode == "raise":
+                            raise
+                        if failure_mode == "stop":
+                            print(
+                                "[run] episode failure budget exhausted "
+                                f"({consecutive_episode_failures}>{max_episode_failures_per_run}); stopping run."
+                            )
+                            break
+                        if room_url:
+                            print("[run] returning to room page after episode failure.")
+                            try:
+                                _goto_with_retry(
+                                    page,
+                                    room_url,
+                                    wait_until="domcontentloaded",
+                                    timeout_ms=45000,
+                                    cfg=cfg,
+                                    reason="room-after-episode-failure-video",
+                                )
+                            except Exception:
+                                pass
+                        if episode_failure_retry_delay_sec > 0:
+                            print(f"[run] waiting {episode_failure_retry_delay_sec:.1f}s before retrying next episode.")
+                            time.sleep(episode_failure_retry_delay_sec)
+                        continue
 
                 if task_id and video_file is not None and resume_from_artifacts:
                     task_state["video_path"] = str(video_file)
@@ -2816,7 +6412,7 @@ def run(cfg: Dict[str, Any], execute: bool) -> None:
                     _save_task_state(cfg, task_id, task_state)
 
                 segments = None
-                if resume_from_artifacts and task_id:
+                if not (execute and execute_force_live_segments) and resume_from_artifacts and task_id:
                     cached_segments = _load_cached_segments(cfg, task_id)
                     if cached_segments:
                         segments = cached_segments
@@ -2828,20 +6424,267 @@ def run(cfg: Dict[str, Any], execute: bool) -> None:
                     if task_id and resume_from_artifacts:
                         _save_cached_segments(cfg, task_id, segments)
 
-                prompt = build_prompt(segments, str(_cfg_get(cfg, "gemini.extra_instructions", "")))
+                enable_structural_actions = bool(_cfg_get(cfg, "run.enable_structural_actions", True))
+                requery_after_structural_actions = bool(_cfg_get(cfg, "run.requery_after_structural_actions", True))
+                prompt = build_prompt(
+                    segments,
+                    str(_cfg_get(cfg, "gemini.extra_instructions", "")),
+                    allow_operations=True,
+                )
                 if labels_payload is None:
                     print("[run] requesting labels from Gemini...")
-                    labels_payload = call_gemini_labels(cfg, prompt, video_file=video_file)
+                    try:
+                        labels_payload = call_gemini_labels(
+                            cfg,
+                            prompt,
+                            video_file=video_file,
+                            segment_count=len(segments),
+                        )
+                    except Exception as exc:
+                        consecutive_episode_failures += 1
+                        print(f"[run] episode {episode_no} failed during Gemini request: {exc}")
+                        _capture_debug_artifacts(page, cfg, prefix="debug_episode_failure")
+                        if task_id:
+                            current_failures = int(gemini_failures_by_task.get(task_id, 0)) + 1
+                            gemini_failures_by_task[task_id] = current_failures
+                            print(
+                                f"[run] gemini failure for task {task_id}: "
+                                f"{current_failures}/{max_gemini_failures_per_task}"
+                            )
+                            if current_failures >= max_gemini_failures_per_task:
+                                blocked_task_ids.add(task_id)
+                                print(f"[run] task blocked for this run due to repeated Gemini failures: {task_id}")
+                        if task_id and resume_from_artifacts:
+                            task_state["last_error"] = str(exc)
+                            _save_task_state(cfg, task_id, task_state)
+                        if _is_non_retriable_gemini_error(exc):
+                            print("[run] non-retriable Gemini error detected; stopping run.")
+                            break
+                        failure_mode = _episode_failure_mode()
+                        if failure_mode == "raise":
+                            raise
+                        if failure_mode == "stop":
+                            print(
+                                "[run] episode failure budget exhausted "
+                                f"({consecutive_episode_failures}>{max_episode_failures_per_run}); stopping run."
+                            )
+                            break
+                        if room_url:
+                            print("[run] returning to room page after episode failure.")
+                            try:
+                                _goto_with_retry(
+                                    page,
+                                    room_url,
+                                    wait_until="domcontentloaded",
+                                    timeout_ms=45000,
+                                    cfg=cfg,
+                                    reason="room-after-episode-failure-gemini",
+                                )
+                            except Exception:
+                                pass
+                        if episode_failure_retry_delay_sec > 0:
+                            print(f"[run] waiting {episode_failure_retry_delay_sec:.1f}s before retrying next episode.")
+                            time.sleep(episode_failure_retry_delay_sec)
+                        continue
+                    if execute and execute_require_video_context:
+                        meta = labels_payload.get("_meta", {}) if isinstance(labels_payload, dict) else {}
+                        video_attached = bool(meta.get("video_attached", False))
+                        mode = str(meta.get("mode", "unknown"))
+                        if not video_attached:
+                            raise RuntimeError(
+                                "Execute blocked: Gemini response is text-only (no video context). "
+                                "Video review is required before apply/complete."
+                            )
+                        print(f"[gemini] execute guard: video context confirmed ({mode}).")
                     if task_id:
                         _save_cached_labels(cfg, task_id, labels_payload)
                     if task_id and resume_from_artifacts:
                         task_state["labels_ready"] = True
                         _save_task_state(cfg, task_id, task_state)
+
+                operations = _normalize_operations(labels_payload, cfg=cfg)
+                if operations:
+                    ops_text = ", ".join([f"{op['action']}#{op['segment_index']}" for op in operations[:20]])
+                    print(f"[gemini] suggested operations ({len(operations)}): {ops_text}")
+
+                if execute and enable_structural_actions and operations:
+                    op_result = apply_segment_operations(page, cfg, operations)
+                    print(
+                        f"[run] operations applied: {op_result['applied']} "
+                        f"(structural={op_result['structural_applied']})"
+                    )
+                    if op_result["failed"]:
+                        print("[run] operation failures:")
+                        for item in op_result["failed"]:
+                            print(f"  - {item}")
+
+                    if op_result["structural_applied"] > 0 and requery_after_structural_actions:
+                        print("[run] structural changes detected; refreshing segments and requesting Gemini again...")
+                        segments = extract_segments(page, cfg)
+                        print(f"[atlas] extracted {len(segments)} segments (post-operations)")
+                        if task_id and resume_from_artifacts:
+                            _save_cached_segments(cfg, task_id, segments)
+                        prompt = build_prompt(
+                            segments,
+                            str(_cfg_get(cfg, "gemini.extra_instructions", "")),
+                            allow_operations=False,
+                        )
+                        try:
+                            labels_payload = call_gemini_labels(
+                                cfg,
+                                prompt,
+                                video_file=video_file,
+                                segment_count=len(segments),
+                            )
+                        except Exception as exc:
+                            consecutive_episode_failures += 1
+                            print(f"[run] episode {episode_no} failed during Gemini re-query: {exc}")
+                            _capture_debug_artifacts(page, cfg, prefix="debug_episode_failure")
+                            if task_id:
+                                current_failures = int(gemini_failures_by_task.get(task_id, 0)) + 1
+                                gemini_failures_by_task[task_id] = current_failures
+                                print(
+                                    f"[run] gemini re-query failure for task {task_id}: "
+                                    f"{current_failures}/{max_gemini_failures_per_task}"
+                                )
+                                if current_failures >= max_gemini_failures_per_task:
+                                    blocked_task_ids.add(task_id)
+                                    print(f"[run] task blocked for this run due to repeated Gemini failures: {task_id}")
+                            if task_id and resume_from_artifacts:
+                                task_state["last_error"] = str(exc)
+                                _save_task_state(cfg, task_id, task_state)
+                            if _is_non_retriable_gemini_error(exc):
+                                print("[run] non-retriable Gemini error detected; stopping run.")
+                                break
+                            failure_mode = _episode_failure_mode()
+                            if failure_mode == "raise":
+                                raise
+                            if failure_mode == "stop":
+                                print(
+                                    "[run] episode failure budget exhausted "
+                                    f"({consecutive_episode_failures}>{max_episode_failures_per_run}); stopping run."
+                                )
+                                break
+                            if room_url:
+                                print("[run] returning to room page after episode failure.")
+                                try:
+                                    _goto_with_retry(
+                                        page,
+                                        room_url,
+                                        wait_until="domcontentloaded",
+                                        timeout_ms=45000,
+                                        cfg=cfg,
+                                        reason="room-after-episode-failure-gemini-requery",
+                                    )
+                                except Exception:
+                                    pass
+                            if episode_failure_retry_delay_sec > 0:
+                                print(f"[run] waiting {episode_failure_retry_delay_sec:.1f}s before retrying next episode.")
+                                time.sleep(episode_failure_retry_delay_sec)
+                            continue
+                        if execute and execute_require_video_context:
+                            meta = labels_payload.get("_meta", {}) if isinstance(labels_payload, dict) else {}
+                            video_attached = bool(meta.get("video_attached", False))
+                            mode = str(meta.get("mode", "unknown"))
+                            if not video_attached:
+                                raise RuntimeError(
+                                    "Execute blocked: Gemini response is text-only (no video context). "
+                                    "Video review is required before apply/complete."
+                                )
+                            print(f"[gemini] execute guard: video context confirmed ({mode}).")
+                        post_ops = _normalize_operations(labels_payload, cfg=cfg)
+                        if post_ops:
+                            print("[run] ignoring operations in second pass (labels-only pass).")
+                        if task_id:
+                            _save_cached_labels(cfg, task_id, labels_payload)
+                        if task_id and resume_from_artifacts:
+                            task_state["labels_ready"] = True
+                            _save_task_state(cfg, task_id, task_state)
+                elif operations and not execute:
+                    print("[run] operations skipped (dry-run mode).")
+
                 _save_outputs(cfg, segments, prompt, labels_payload, task_id=task_id)
 
-                segment_plan = _normalize_segment_plan(labels_payload, segments)
+                segment_plan = _normalize_segment_plan(labels_payload, segments, cfg=cfg)
                 if task_id:
                     _save_task_text_files(cfg, task_id, segments, segment_plan)
+
+                if bool(_cfg_get(cfg, "run.enable_policy_gate", True)):
+                    validation_report = _validate_segment_plan_against_policy(cfg, segments, segment_plan)
+                    report_task_id = task_id or f"episode_{episode_no}"
+                    report_path = _save_validation_report(cfg, report_task_id, validation_report)
+                    if report_path is not None:
+                        print(f"[out] validation: {report_path}")
+
+                    warnings = [str(w).strip() for w in validation_report.get("warnings", []) if str(w).strip()]
+                    errors = [str(e).strip() for e in validation_report.get("errors", []) if str(e).strip()]
+                    ignored_ts_errors: List[str] = []
+                    if (
+                        not bool(_cfg_get(cfg, "run.adjust_timestamps", True))
+                        and bool(
+                            _cfg_get(
+                                cfg,
+                                "run.ignore_timestamp_policy_errors_when_adjust_disabled",
+                                True,
+                            )
+                        )
+                    ):
+                        ignored_ts_errors = [e for e in errors if _is_timestamp_policy_error(e)]
+                        if ignored_ts_errors:
+                            errors = [e for e in errors if not _is_timestamp_policy_error(e)]
+                            print(
+                                f"[policy] ignored timestamp errors: {len(ignored_ts_errors)} "
+                                "(adjust_timestamps=false)"
+                            )
+                            for item in ignored_ts_errors[:10]:
+                                print(f"  - {item}")
+                    ignored_no_action_errors: List[str] = []
+                    if bool(_cfg_get(cfg, "run.ignore_no_action_standalone_policy_error", True)):
+                        ignored_no_action_errors = [e for e in errors if _is_no_action_policy_error(e)]
+                        if ignored_no_action_errors:
+                            errors = [e for e in errors if not _is_no_action_policy_error(e)]
+                            print(
+                                f"[policy] ignored no-action standalone errors: "
+                                f"{len(ignored_no_action_errors)}"
+                            )
+                            for item in ignored_no_action_errors[:10]:
+                                print(f"  - {item}")
+                    if warnings:
+                        print(f"[policy] warnings: {len(warnings)}")
+                        for item in warnings[:10]:
+                            print(f"  - {item}")
+                    if task_id and resume_from_artifacts:
+                        task_state["validation_ok"] = len(errors) == 0
+                        _save_task_state(cfg, task_id, task_state)
+                    if errors:
+                        print(f"[policy] validation errors: {len(errors)}")
+                        for item in errors[:20]:
+                            print(f"  - {item}")
+                        if bool(_cfg_get(cfg, "run.block_apply_on_validation_fail", True)):
+                            print("[run] policy gate blocked apply for this episode.")
+                            if task_id:
+                                blocked_task_ids.add(task_id)
+                                if skip_duplicate_task_in_run:
+                                    seen_task_ids.add(task_id)
+                                _invalidate_cached_labels(cfg, task_id)
+                            if keep_alive_when_idle and max_episodes_per_run <= 0:
+                                if room_url:
+                                    print("[run] returning to room page after policy gate block.")
+                                    try:
+                                        _goto_with_retry(
+                                            page,
+                                            room_url,
+                                            wait_until="domcontentloaded",
+                                            timeout_ms=45000,
+                                            cfg=cfg,
+                                            reason="room-after-policy-block",
+                                        )
+                                    except Exception:
+                                        pass
+                                _respect_episode_delay(cfg)
+                                continue
+                            break
+
                 label_map = _normalize_label_map_from_plan(segment_plan)
                 print(f"[gemini] usable labels: {len(label_map)}")
                 pre_skipped_unchanged = 0
@@ -2870,11 +6713,16 @@ def run(cfg: Dict[str, Any], execute: bool) -> None:
 
                 if resume_from_artifacts and resume_skip_apply_steps_when_done and bool(task_state.get("labels_applied")):
                     print("[run] resume: skipping label apply (already completed previously).")
+                    completed_from_resume = False
+                    if allow_resume_auto_submit:
+                        completed_from_resume = _submit_episode(page, cfg)
+                    else:
+                        print("[run] resume auto-submit disabled; not clicking Complete from stale state.")
                     result = {
                         "applied": 0,
                         "skipped_unchanged": 0,
                         "failed": [],
-                        "completed": _submit_episode(page, cfg),
+                        "completed": completed_from_resume,
                     }
                 else:
                     result = apply_labels(page, cfg, label_map)
@@ -2889,32 +6737,38 @@ def run(cfg: Dict[str, Any], execute: bool) -> None:
                 elif task_id and resume_from_artifacts:
                     task_state["labels_applied"] = True
                     _save_task_state(cfg, task_id, task_state)
-                if not result.get("completed"):
-                    print("[run] Complete button not clicked (not found or not visible).")
+                if bool(result.get("submit_guard_blocked")):
+                    print("[run] episode submit skipped by submit guard.")
+                    for item in result.get("submit_guard_reasons", [])[:10]:
+                        print(f"  - {item}")
+                elif not result.get("completed"):
+                    print("[run] episode submit could not be fully verified (Complete/Quality confirmation not fully observed).")
                 elif task_id and resume_from_artifacts:
                     task_state["episode_submitted"] = True
                     _save_task_state(cfg, task_id, task_state)
 
+                if task_id:
+                    seen_task_ids.add(task_id)
+                    if task_id in video_prepare_failures_by_task:
+                        video_prepare_failures_by_task.pop(task_id, None)
+                    if task_id in gemini_failures_by_task:
+                        gemini_failures_by_task.pop(task_id, None)
+                consecutive_episode_failures = 0
+
                 if room_url:
                     print("[run] returning to room page for next episode.")
-                    page.goto(room_url, wait_until="domcontentloaded")
+                    _goto_with_retry(
+                        page,
+                        room_url,
+                        wait_until="domcontentloaded",
+                        timeout_ms=45000,
+                        cfg=cfg,
+                        reason="room-after-episode",
+                    )
                     page.wait_for_timeout(1500)
+                _respect_episode_delay(cfg)
         except Exception as exc:
-            out_dir = Path(str(_cfg_get(cfg, "run.output_dir", "outputs")))
-            out_dir.mkdir(parents=True, exist_ok=True)
-            ts = time.strftime("%Y%m%d_%H%M%S")
-            snap_path = out_dir / f"debug_failure_{ts}.png"
-            html_path = out_dir / f"debug_failure_{ts}.html"
-            try:
-                page.screenshot(path=str(snap_path), full_page=True)
-                print(f"[debug] screenshot saved: {snap_path}")
-            except Exception:
-                pass
-            try:
-                html_path.write_text(page.content(), encoding="utf-8")
-                print(f"[debug] html saved: {html_path}")
-            except Exception:
-                pass
+            _capture_debug_artifacts(page, cfg, prefix="debug_failure")
             raise
         finally:
             try:
@@ -2943,6 +6797,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    print(f"[build] atlas_web_auto_solver {_SCRIPT_BUILD}")
     args = parse_args()
     cfg = load_config(Path(args.config))
     run(cfg, execute=bool(args.execute))
