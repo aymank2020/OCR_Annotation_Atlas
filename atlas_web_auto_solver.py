@@ -234,9 +234,15 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "quota_fallback_enabled": False,
         "quota_fallback_max_uses_per_run": 1,
         "model": "gemini-2.5-flash",
+        "policy_retry_model": "gemini-2.5-pro",
+        "retry_with_stronger_model_on_policy_fail": False,
+        "policy_retry_only_if_flash": True,
         "system_instruction_file": "",
         "system_instruction_text": "",
         "temperature": 0.0,
+        "top_p": None,
+        "top_k": None,
+        "max_output_tokens": None,
         "candidate_count": 1,
         "max_retries": 3,
         "retry_base_delay_sec": 2.0,
@@ -4254,13 +4260,53 @@ def _is_gemini_quota_exceeded_429(resp: requests.Response) -> bool:
     return any(marker in body for marker in quota_markers)
 
 
+def _build_gemini_generation_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Build deterministic JSON-oriented generationConfig while keeping fields optional.
+    """
+    temperature = float(_cfg_get(cfg, "gemini.temperature", 0.0))
+    candidate_count = max(1, int(_cfg_get(cfg, "gemini.candidate_count", 1)))
+    top_p_raw = _cfg_get(cfg, "gemini.top_p", None)
+    top_k_raw = _cfg_get(cfg, "gemini.top_k", None)
+    max_output_tokens_raw = _cfg_get(cfg, "gemini.max_output_tokens", None)
+
+    gen_cfg: Dict[str, Any] = {
+        "temperature": temperature,
+        "responseMimeType": "application/json",
+        "candidateCount": candidate_count,
+    }
+    try:
+        if top_p_raw is not None and str(top_p_raw).strip() != "":
+            top_p = float(top_p_raw)
+            if top_p > 0:
+                gen_cfg["topP"] = top_p
+    except Exception:
+        pass
+    try:
+        if top_k_raw is not None and str(top_k_raw).strip() != "":
+            top_k = int(top_k_raw)
+            if top_k > 0:
+                gen_cfg["topK"] = top_k
+    except Exception:
+        pass
+    try:
+        if max_output_tokens_raw is not None and str(max_output_tokens_raw).strip() != "":
+            max_tokens = int(max_output_tokens_raw)
+            if max_tokens > 0:
+                gen_cfg["maxOutputTokens"] = max_tokens
+    except Exception:
+        pass
+    return gen_cfg
+
+
 def call_gemini_labels(
     cfg: Dict[str, Any],
     prompt: str,
     video_file: Optional[Path] = None,
     segment_count: int = 0,
+    model_override: str = "",
 ) -> Dict[str, Any]:
-    model = str(_cfg_get(cfg, "gemini.model", "gemini-2.5-flash"))
+    model = str(model_override or _cfg_get(cfg, "gemini.model", "gemini-2.5-flash")).strip()
     primary_api_key = _resolve_gemini_key(str(_cfg_get(cfg, "gemini.api_key", "")))
     if not primary_api_key:
         raise RuntimeError("Missing Gemini API key (gemini.api_key or GEMINI_API_KEY/GOOGLE_API_KEY).")
@@ -4277,8 +4323,7 @@ def call_gemini_labels(
 
     system_instruction = _resolve_system_instruction(cfg)
     max_retries = max(0, int(_cfg_get(cfg, "gemini.max_retries", 3)))
-    temperature = float(_cfg_get(cfg, "gemini.temperature", 0.0))
-    candidate_count = max(1, int(_cfg_get(cfg, "gemini.candidate_count", 1)))
+    generation_config_template = _build_gemini_generation_config(cfg)
     connect_timeout_sec = max(5, int(_cfg_get(cfg, "gemini.connect_timeout_sec", 30)))
     request_timeout_sec = max(30, int(_cfg_get(cfg, "gemini.request_timeout_sec", 420)))
     require_video = bool(_cfg_get(cfg, "gemini.require_video", False))
@@ -4522,13 +4567,10 @@ def call_gemini_labels(
             f"[gemini] request attempt {attempt + 1}/{max_retries + 1} "
             f"(model={model}, mode={mode}, key={active_key_name})"
         )
+        generation_config = dict(generation_config_template)
         payload = {
             "contents": [{"role": "user", "parts": parts}],
-            "generationConfig": {
-                "temperature": temperature,
-                "responseMimeType": "application/json",
-                "candidateCount": candidate_count,
-            },
+            "generationConfig": generation_config,
         }
         if system_instruction:
             payload["systemInstruction"] = {"parts": [{"text": system_instruction}]}
@@ -6667,6 +6709,86 @@ def run(cfg: Dict[str, Any], execute: bool) -> None:
                 if bool(_cfg_get(cfg, "run.enable_policy_gate", True)):
                     validation_report = _validate_segment_plan_against_policy(cfg, segments, segment_plan)
                     report_task_id = task_id or f"episode_{episode_no}"
+
+                    raw_errors = [str(e).strip() for e in validation_report.get("errors", []) if str(e).strip()]
+                    retry_with_stronger_model = bool(
+                        _cfg_get(cfg, "gemini.retry_with_stronger_model_on_policy_fail", False)
+                    )
+                    policy_retry_model = str(_cfg_get(cfg, "gemini.policy_retry_model", "")).strip()
+                    policy_retry_only_if_flash = bool(
+                        _cfg_get(cfg, "gemini.policy_retry_only_if_flash", True)
+                    )
+                    current_model = str(
+                        (labels_payload.get("_meta", {}) or {}).get(
+                            "model",
+                            _cfg_get(cfg, "gemini.model", "gemini-2.5-flash"),
+                        )
+                    ).strip()
+
+                    can_retry_with_stronger_model = (
+                        retry_with_stronger_model
+                        and bool(raw_errors)
+                        and bool(policy_retry_model)
+                        and policy_retry_model.lower() != current_model.lower()
+                    )
+                    if can_retry_with_stronger_model and policy_retry_only_if_flash:
+                        can_retry_with_stronger_model = "flash" in current_model.lower()
+
+                    if can_retry_with_stronger_model:
+                        print(
+                            "[policy] validation failed; retrying Gemini with stronger model "
+                            f"({current_model} -> {policy_retry_model})..."
+                        )
+                        try:
+                            retry_payload = call_gemini_labels(
+                                cfg,
+                                prompt,
+                                video_file=video_file,
+                                segment_count=len(segments),
+                                model_override=policy_retry_model,
+                            )
+                            if execute and execute_require_video_context:
+                                retry_meta = retry_payload.get("_meta", {}) if isinstance(retry_payload, dict) else {}
+                                retry_video_attached = bool(retry_meta.get("video_attached", False))
+                                retry_mode = str(retry_meta.get("mode", "unknown"))
+                                if not retry_video_attached:
+                                    raise RuntimeError(
+                                        "Execute blocked: stronger-model retry returned text-only "
+                                        "(no video context)."
+                                    )
+                                print(f"[gemini] stronger-model retry has video context ({retry_mode}).")
+
+                            retry_plan = _normalize_segment_plan(retry_payload, segments, cfg=cfg)
+                            retry_validation_report = _validate_segment_plan_against_policy(cfg, segments, retry_plan)
+                            retry_raw_errors = [
+                                str(e).strip()
+                                for e in retry_validation_report.get("errors", [])
+                                if str(e).strip()
+                            ]
+
+                            if len(retry_raw_errors) <= len(raw_errors):
+                                print(
+                                    "[policy] accepted stronger-model retry: "
+                                    f"errors {len(raw_errors)} -> {len(retry_raw_errors)}"
+                                )
+                                labels_payload = retry_payload
+                                segment_plan = retry_plan
+                                validation_report = retry_validation_report
+                                _save_outputs(cfg, segments, prompt, labels_payload, task_id=task_id)
+                                if task_id:
+                                    _save_task_text_files(cfg, task_id, segments, segment_plan)
+                                    _save_cached_labels(cfg, task_id, labels_payload)
+                                    if resume_from_artifacts:
+                                        task_state["labels_ready"] = True
+                                        _save_task_state(cfg, task_id, task_state)
+                            else:
+                                print(
+                                    "[policy] kept primary-model output: stronger-model retry was not better "
+                                    f"({len(raw_errors)} -> {len(retry_raw_errors)})."
+                                )
+                        except Exception as retry_exc:
+                            print(f"[policy] stronger-model retry failed: {retry_exc}")
+
                     report_path = _save_validation_report(cfg, report_task_id, validation_report)
                     if report_path is not None:
                         print(f"[out] validation: {report_path}")
