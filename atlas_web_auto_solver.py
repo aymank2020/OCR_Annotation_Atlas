@@ -3724,6 +3724,9 @@ def build_prompt(
         "If surface type/elevation is unclear (floor mat vs table/shelf), do not guess raised furniture.\n"
         "Use neutral location wording (on surface/on mat/on floor) unless elevation is clearly visible.\n"
         "Use 'place' only with explicit location (on/in/into/onto/at/to/inside/under/over).\n"
+        "Attach verbs to objects: do not write 'pick up and place box' or 'pick up box and place under desk'; "
+        "write 'pick up box, place box under desk'.\n"
+        "If the segment clearly includes lift then placement, include both actions (pick up ..., place ...).\n"
         "If a segment timestamp is wrong, correct start_sec/end_sec.\n"
         "Label rules: imperative style, concise, minimum 2 words, maximum 20 words.\n"
         "Use \"No Action\" only as standalone label.\n"
@@ -3832,6 +3835,14 @@ def _validate_segment_plan_against_policy(
         _cfg_get(cfg, "run.skip_policy_lexical_checks_on_unchanged_labels", True)
     )
     place_location_pattern = re.compile(r"\bplace\b.*\b(on|in|into|onto|at|to|inside|under|over)\b", re.IGNORECASE)
+    chained_verb_without_object_pattern = re.compile(
+        r"\b(pick up|place|move|adjust|hold|align)\s+and\s+(pick up|place|move|adjust|hold|align)\b",
+        re.IGNORECASE,
+    )
+    orphan_second_place_pattern = re.compile(
+        r"\band\s+place\s+(on|in|into|onto|at|to|inside|under|over)\b",
+        re.IGNORECASE,
+    )
 
     source_by_idx: Dict[int, Dict[str, Any]] = {}
     for seg in source_segments:
@@ -3887,6 +3898,12 @@ def _validate_segment_plan_against_policy(
                     errors.append(f"segment {idx}: label contains numerals")
                 if "place" in label_l and not place_location_pattern.search(label):
                     errors.append(f"segment {idx}: 'place' missing explicit location")
+                if chained_verb_without_object_pattern.search(label):
+                    errors.append(
+                        f"segment {idx}: verbs must attach to objects (avoid '<verb> and <verb>' chaining)"
+                    )
+                if orphan_second_place_pattern.search(label):
+                    errors.append(f"segment {idx}: 'place' missing explicit object after conjunction")
                 if re.search(r"\bno action\b", label_l) and label_l != "no action":
                     errors.append(f"segment {idx}: 'No Action' must be standalone")
                 action_count = _count_atomic_actions_in_label(label)
@@ -4758,6 +4775,42 @@ def _replace_numerals_with_words(text: str) -> str:
     return re.sub(r"\s+", " ", out).strip()
 
 
+def _expand_verb_object_attachment_patterns(text: str) -> str:
+    """
+    Normalize common chained-verb shorthand into explicit object-attached actions.
+    Example: "pick up box and place under desk" -> "pick up box, place box under desk"
+    """
+    out = text or ""
+
+    def _clean(token: str) -> str:
+        return re.sub(r"\s+", " ", (token or "").strip(" ,"))
+
+    def _repl(match: re.Match[str]) -> str:
+        obj = _clean(match.group(1))
+        prep = _clean(match.group(2)).lower()
+        dest = _clean(match.group(3))
+        if not obj or not prep or not dest:
+            return match.group(0)
+        return f"pick up {obj}, place {obj} {prep} {dest}"
+
+    # Case A: object omitted after first verb.
+    out = re.sub(
+        r"\bpick up\s+and\s+place\s+([^,]+?)\s+(on|in|into|onto|at|to|inside|under|over)\s+([^,]+)",
+        _repl,
+        out,
+        flags=re.IGNORECASE,
+    )
+    # Case B: object omitted after second verb.
+    out = re.sub(
+        r"\bpick up\s+([^,]+?)\s+and\s+place\s+(on|in|into|onto|at|to|inside|under|over)\s+([^,]+)",
+        _repl,
+        out,
+        flags=re.IGNORECASE,
+    )
+
+    return re.sub(r"\s+", " ", out).strip(" ,")
+
+
 def _rewrite_label_tier3(label: str) -> str:
     text = re.sub(r"\s+", " ", (label or "").strip())
     if not text:
@@ -4776,6 +4829,7 @@ def _rewrite_label_tier3(label: str) -> str:
     text = re.sub(r"\bgrab(?:bed|s|bing)?\b", "pick up", text, flags=re.IGNORECASE)
     text = _normalize_gripper_terms(text)
     text = _replace_numerals_with_words(text)
+    text = _expand_verb_object_attachment_patterns(text)
     text = re.sub(r"\s*,\s*", ", ", text)
     text = re.sub(r"\s+", " ", text).strip(" ,")
 
@@ -4808,6 +4862,7 @@ def _normalize_label_min_safety(label: str) -> str:
     text = re.sub(r"\bturn(?:ed|s|ing)?\b", "adjust", text, flags=re.IGNORECASE)
     text = _normalize_gripper_terms(text)
     text = _replace_numerals_with_words(text)
+    text = _expand_verb_object_attachment_patterns(text)
     text = re.sub(r"\s+", " ", text).strip(" ,")
     return text
 
