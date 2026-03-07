@@ -37,6 +37,11 @@ DEFAULTS: Dict[str, Any] = {
         "model": "gemini-2.5-flash",
         "connect_timeout_sec": 30,
         "request_timeout_sec": 300,
+        "temperature": 0.0,
+        "candidate_count": 1,
+        "top_p": None,
+        "top_k": None,
+        "max_output_tokens": None,
         "strict_json_only": True,
         "reject_markdown_code_fences": True,
     },
@@ -493,6 +498,39 @@ def _parse_gemini_response_json(cfg: Dict[str, Any], data: Dict[str, Any]) -> Tu
     return parsed, text
 
 
+def _build_gemini_generation_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    generation: Dict[str, Any] = {
+        "temperature": float(cfg_get(cfg, "gemini.temperature", 0.0)),
+        "responseMimeType": "application/json",
+        "candidateCount": max(1, int(cfg_get(cfg, "gemini.candidate_count", 1))),
+    }
+    top_p_raw = cfg_get(cfg, "gemini.top_p", None)
+    top_k_raw = cfg_get(cfg, "gemini.top_k", None)
+    max_output_tokens_raw = cfg_get(cfg, "gemini.max_output_tokens", None)
+    try:
+        if top_p_raw is not None and str(top_p_raw).strip() != "":
+            top_p = float(top_p_raw)
+            if top_p > 0:
+                generation["topP"] = top_p
+    except Exception:
+        pass
+    try:
+        if top_k_raw is not None and str(top_k_raw).strip() != "":
+            top_k = int(top_k_raw)
+            if top_k > 0:
+                generation["topK"] = top_k
+    except Exception:
+        pass
+    try:
+        if max_output_tokens_raw is not None and str(max_output_tokens_raw).strip() != "":
+            max_output_tokens = int(max_output_tokens_raw)
+            if max_output_tokens > 0:
+                generation["maxOutputTokens"] = max_output_tokens
+    except Exception:
+        pass
+    return generation
+
+
 def call_gemini_progress_review(cfg: Dict[str, Any], prompt_text: str) -> Dict[str, Any]:
     key = resolve_gemini_key(cfg)
     if not key:
@@ -512,10 +550,7 @@ def call_gemini_progress_review(cfg: Dict[str, Any], prompt_text: str) -> Dict[s
     payload = {
         "systemInstruction": {"parts": [{"text": system_instruction}]},
         "contents": [{"role": "user", "parts": [{"text": prompt_text}]}],
-        "generationConfig": {
-            "temperature": 0.2,
-            "responseMimeType": "application/json",
-        },
+        "generationConfig": _build_gemini_generation_config(cfg),
     }
     last_error = ""
     for attempt in range(4):
@@ -555,10 +590,7 @@ def call_gemini_t4_lessons(cfg: Dict[str, Any], prompt_text: str) -> Dict[str, A
     payload = {
         "systemInstruction": {"parts": [{"text": system_instruction}]},
         "contents": [{"role": "user", "parts": [{"text": prompt_text}]}],
-        "generationConfig": {
-            "temperature": 0.1,
-            "responseMimeType": "application/json",
-        },
+        "generationConfig": _build_gemini_generation_config(cfg),
     }
     last_error = ""
     for attempt in range(4):
@@ -599,10 +631,7 @@ def call_gemini_alignment_review(cfg: Dict[str, Any], prompt_text: str) -> Dict[
     payload = {
         "systemInstruction": {"parts": [{"text": system_instruction}]},
         "contents": [{"role": "user", "parts": [{"text": prompt_text}]}],
-        "generationConfig": {
-            "temperature": 0.1,
-            "responseMimeType": "application/json",
-        },
+        "generationConfig": _build_gemini_generation_config(cfg),
     }
     last_error = ""
     for attempt in range(4):
