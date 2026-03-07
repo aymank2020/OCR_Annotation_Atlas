@@ -14,12 +14,16 @@
 ## 2. STRICT VERB & LABELING POLICY
 - IMPERATIVE VOICE: Write all labels as direct commands (e.g., "pick up iron", NOT "picking up iron")[cite: 171, 440].
 - THE "ADJUST" RULE: Use "adjust" for any small corrective change in position, orientation, or movement[cite: 192, 530].
+- ATTACH VERBS TO OBJECTS: In dense labels, each verb MUST explicitly attach to an object.
+    * NO: "pick up and place box", "pick up box and place under desk"
+    * YES: "pick up box, place box under desk"
 - FORBIDDEN VERBS:
     * NO "rotate": Replace with "adjust" unless rotation is the primary, distinct task goal[cite: 532].
     * NO "inspect", "check", "look", "examine": Do not label visual/mental states[cite: 83, 429].
     * NO "reach": Adjust timestamps instead of using this verb[cite: 177, 501].
     * NO "grab": Use "pick up" (object leaves surface) or "hold" (maintain grip)[cite: 510, 534, 537].
 - PLACE REQUIREMENT: The verb "place" MUST be followed by a location (e.g., "place cup on table")[cite: 244, 580].
+- COMPLETENESS: If a segment clearly includes a lift before placement, include both actions (e.g., "pick up ..., place ...").
 - NO NARRATIVE PHRASING: Delete words like "another", "then", "next", "continue", or "again".
 
 ## 3. OBJECT NAMING & DESCRIPTORS
@@ -41,6 +45,7 @@
 - Fail if: Missed major hand interaction[cite: 341, 636].
 - Fail if: Hallucinated (non-occurring) action or object[cite: 340, 637].
 - Fail if: Timestamps cut off action or include different actions[cite: 339, 638].
+- Fail if: Chained verbs are used without explicit object attachment per verb (e.g., "pick up and place box").
 - Fail if: Forbidden verbs used or "place" has no location[cite: 374, 638].
 - Fail if: "No Action" combined with real actions[cite: 238, 640].
 
@@ -58,7 +63,7 @@
 
 # BEGIN_DISCORD_LIVE_UPDATES
 # AUTO-GENERATED FROM DISCORD UPDATES
-# generated_at: 2026-03-07T18:35:55.972515
+# generated_at: 2026-03-07T22:05:57.911243
 # source_messages: 0
 
 - No new actionable policy updates detected in this cycle.

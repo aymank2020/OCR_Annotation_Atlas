@@ -23,14 +23,21 @@ Core objective:
 Strict rules:
 - label only task-relevant hand-object interactions
 - do not label walking/navigation/idle gestures/inspection-only behavior
+- treat gripper as an extension of hand
+- usually do not mention the tool; if unavoidable, use only "gripper"
+- never use tool terms like "mechanical arm", "robotic arm", "robot arm", "manipulator", "claw arm"
 - imperative voice only
 - forbidden verbs: inspect, check, reach (except truncated-end edge case)
 - no numerals in labels
 - never mix dense/coarse in one segment
+- max 2 atomic actions per segment label (usually one comma or one "and")
 - No Action only when hands touch nothing or ego is idle/irrelevant
 - No Action must be standalone, never mixed with action
 - place should include location
+- attach every verb to an object (no "pick up and place box"; use "pick up box, place box ...")
+- if lift then place both happen in the same segment, include both actions
 - if uncertain, use general nouns (tool/container/cloth/item)
+- do not keep placeholder/default labels
 - do not hallucinate hidden actions
 
 Output requirements:
@@ -58,11 +65,14 @@ Critical behavior:
 Rules to enforce:
 - imperative labels only
 - forbidden verbs: inspect, check, reach
+- treat gripper as hand extension; avoid tool mention unless unavoidable
+- if tool must be named, use only "gripper" (never mechanical/robotic arm wording)
 - no numerals in labels
+- max 2 atomic actions per segment label (usually one comma or one "and")
 - No Action must not be mixed with action
 - each segment has one granularity: dense/coarse/no_action
 - place should include a location
-- verbs must be attached to objects
+- verbs must be attached to objects (no "pick up and place box"; use "pick up box, place box ...")
 - avoid intent-only wording (prepare to, try to, about to)
 
 Timestamp handling:
@@ -86,7 +96,7 @@ Audit each segment for:
 1) one continuous interaction toward one goal
 2) task-relevant hand-object focus
 3) accurate verb/object naming (no guessing)
-4) label format: imperative, no numerals, verbs attached to objects
+4) label format: imperative, no numerals, max 2 atomic actions, verbs attached to objects
 5) no forbidden verbs: inspect/check/reach
 6) dense/coarse not mixed
 7) No Action usage and isolation correctness
@@ -97,7 +107,7 @@ Audit each segment for:
 Decision policy:
 - FAIL if major fail conditions exist:
   missed major action, hallucination, invalid timestamps,
-  forbidden verbs, dense/coarse mix, No Action mixed with action
+  forbidden verbs, dense/coarse mix, >2 atomic actions, No Action mixed with action
 - BORDERLINE if no major fail but multiple medium risks
 - PASS only when accurate, defensible, and consistent
 
@@ -123,6 +133,7 @@ Rules:
 - imperative labels
 - no numerals
 - no forbidden verbs: inspect/check/reach
+- normalize disallowed tool terms to "gripper" when unavoidable
 - no intent-only language
 - consistent object naming within episode
 - verbs clearly attached to objects
