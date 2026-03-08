@@ -123,7 +123,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "segment_chunking_enabled": True,
         "segment_chunking_min_segments": 16,
         "segment_chunking_min_video_sec": 60.0,
-        "segment_chunking_max_segments_per_request": 8,
+        "segment_chunking_max_segments_per_request": 2,
         "segment_chunking_video_pad_sec": 1.0,
         "segment_chunking_keep_temp_files": False,
         "segment_chunking_include_previous_labels_context": True,
@@ -300,10 +300,10 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "connect_timeout_sec": 30,
         "request_timeout_sec": 420,
         "attach_video": True,
-        "require_video": False,
+        "require_video": True,
         "allow_text_only_fallback_on_network_error": True,
         "skip_video_when_segments_le": 0,
-        "video_transport": "auto",
+        "video_transport": "files_api",
         "files_api_fallback_to_inline": True,
         "file_ready_timeout_sec": 120,
         "file_ready_poll_sec": 2.0,
@@ -5598,7 +5598,7 @@ def _request_labels_with_optional_segment_chunking(
     chunking_enabled = bool(_cfg_get(cfg, "run.segment_chunking_enabled", True))
     min_segments_for_chunking = max(2, int(_cfg_get(cfg, "run.segment_chunking_min_segments", 16)))
     min_video_sec_for_chunking = max(0.0, float(_cfg_get(cfg, "run.segment_chunking_min_video_sec", 60.0)))
-    max_segments_per_chunk = max(2, int(_cfg_get(cfg, "run.segment_chunking_max_segments_per_request", 8)))
+    max_segments_per_chunk = max(2, int(_cfg_get(cfg, "run.segment_chunking_max_segments_per_request", 2)))
     chunking_disable_operations = bool(_cfg_get(cfg, "run.segment_chunking_disable_operations", True))
     chunking_video_pad_sec = max(0.0, float(_cfg_get(cfg, "run.segment_chunking_video_pad_sec", 1.0)))
     chunking_keep_temp_files = bool(_cfg_get(cfg, "run.segment_chunking_keep_temp_files", False))
@@ -7448,6 +7448,16 @@ def _apply_global_gemini_video_policy(cfg: Dict[str, Any]) -> None:
     gem["optimize_video_min_width"] = max(320, min_width)
     gem["optimize_video_min_short_side"] = max(320, min_short)
 
+    # Prevent costly text-only calls for vision tasks.
+    if not bool(gem.get("require_video", True)):
+        gem["require_video"] = True
+        print("[policy] gemini.require_video forced ON to avoid text-only quota burn.")
+
+    current_transport = str(gem.get("video_transport", "") or "").strip().lower()
+    if current_transport in {"", "auto", "inline"}:
+        gem["video_transport"] = "files_api"
+        print("[policy] gemini.video_transport forced to files_api for reliable video attachment.")
+
     floor_surface_guard = (
         "If floor mat vs table is unclear, do not guess raised furniture; "
         "use neutral location wording."
@@ -7473,6 +7483,18 @@ def _apply_global_run_policy(cfg: Dict[str, Any]) -> None:
     run.setdefault("auto_continuity_merge_min_run_segments", 3)
     run.setdefault("auto_continuity_merge_min_token_overlap", 1)
     run.setdefault("segment_chunking_min_video_sec", 60.0)
+    try:
+        chunk_max = int(run.get("segment_chunking_max_segments_per_request", 2) or 2)
+    except Exception:
+        chunk_max = 2
+    if chunk_max != 2:
+        run["segment_chunking_max_segments_per_request"] = 2
+        print(
+            "[policy] run.segment_chunking_max_segments_per_request forced to 2 "
+            "to reduce upload size and avoid text-only fallback."
+        )
+    else:
+        run["segment_chunking_max_segments_per_request"] = 2
     run["skip_reserve_when_all_visible_blocked"] = False
     run["clear_blocked_tasks_after_all_visible_blocked_hits"] = 1
     run["clear_blocked_tasks_every_retry"] = True
@@ -7488,6 +7510,9 @@ def _apply_global_run_policy(cfg: Dict[str, Any]) -> None:
     run["no_task_max_delay_sec"] = 5.0
     run["keep_alive_idle_cycle_pause_sec"] = 5.0
     run["release_all_wait_sec"] = 5.0
+    if not bool(run.get("execute_require_video_context", True)):
+        run["execute_require_video_context"] = True
+        print("[policy] run.execute_require_video_context forced ON.")
 
     # Merge must stay enabled for continuity fixes to work.
     if not bool(run.get("structural_allow_merge", True)):
