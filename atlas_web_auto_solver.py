@@ -102,6 +102,9 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "max_episode_failures_per_run": 3,
         "episode_failure_retry_delay_sec": 4.0,
         "gemini_quota_retry_delay_sec": 15.0,
+        "gemini_quota_global_pause_min_sec": 60.0,
+        "gemini_quota_global_pause_step_sec": 60.0,
+        "gemini_quota_task_block_max_wait_sec": 21600.0,
         "max_video_prepare_failures_per_task": 2,
         "max_gemini_failures_per_task": 1,
         "workflow_reentry_enter_clicks": 2,
@@ -2848,9 +2851,38 @@ def _extract_retry_seconds_from_text(text: str, default_wait_sec: float = 0.0) -
     if not body:
         return max(0.0, float(default_wait_sec))
 
+    # Support compound waits like "Please retry in 3h52m42.1s".
+    compound_match = re.search(r"(?:retry|try again|please retry)\s+in\s*([^\n\r,;]+)", body)
+    if compound_match:
+        fragment = compound_match.group(1)[:96]
+        total_sec = 0.0
+        token_count = 0
+        for amount_str, unit in re.findall(
+            r"([0-9]+(?:\.[0-9]+)?)\s*(h|hr|hrs|hour|hours|m|min|mins|minute|minutes|s|sec|secs|second|seconds)",
+            fragment,
+        ):
+            try:
+                amount = float(amount_str)
+            except Exception:
+                continue
+            if amount <= 0:
+                continue
+            token_count += 1
+            unit_char = unit[0]
+            if unit_char == "h":
+                total_sec += amount * 3600.0
+            elif unit_char == "m":
+                total_sec += amount * 60.0
+            else:
+                total_sec += amount
+        if token_count > 0 and total_sec > 0:
+            return total_sec
+
     patterns: List[Tuple[str, float]] = [
+        (r"(?:retry|try again|please retry)\s+in\s*([0-9]+(?:\.[0-9]+)?)\s*(?:h|hr|hrs|hour|hours)\b", 3600.0),
         (r"(?:retry|try again|please retry)\s+in\s*([0-9]+(?:\.[0-9]+)?)\s*(?:s|sec|secs|second|seconds)\b", 1.0),
         (r"(?:retry|try again|please retry)\s+in\s*([0-9]+(?:\.[0-9]+)?)\s*(?:m|min|mins|minute|minutes)\b", 60.0),
+        (r"wait\s*([0-9]+(?:\.[0-9]+)?)\s*(?:h|hr|hrs|hour|hours)\b", 3600.0),
         (r"wait\s*([0-9]+(?:\.[0-9]+)?)\s*(?:s|sec|secs|second|seconds)\b", 1.0),
         (r"wait\s*([0-9]+(?:\.[0-9]+)?)\s*(?:m|min|mins|minute|minutes)\b", 60.0),
     ]
@@ -7770,11 +7802,22 @@ def run(cfg: Dict[str, Any], execute: bool) -> None:
             continue_on_episode_error = bool(_cfg_get(cfg, "run.continue_on_episode_error", True))
             max_episode_failures_per_run = max(0, int(_cfg_get(cfg, "run.max_episode_failures_per_run", 3)))
             episode_failure_retry_delay_sec = max(0.0, float(_cfg_get(cfg, "run.episode_failure_retry_delay_sec", 4.0)))
+            gemini_quota_global_pause_min_sec = max(
+                1.0, float(_cfg_get(cfg, "run.gemini_quota_global_pause_min_sec", 60.0))
+            )
+            gemini_quota_global_pause_step_sec = max(
+                1.0, float(_cfg_get(cfg, "run.gemini_quota_global_pause_step_sec", 60.0))
+            )
+            gemini_quota_task_block_max_wait_sec = max(
+                5.0, float(_cfg_get(cfg, "run.gemini_quota_task_block_max_wait_sec", 21600.0))
+            )
             max_video_prepare_failures_per_task = max(1, int(_cfg_get(cfg, "run.max_video_prepare_failures_per_task", 2)))
             max_gemini_failures_per_task = max(1, int(_cfg_get(cfg, "run.max_gemini_failures_per_task", 1)))
             episode_no = 0
             seen_task_ids: set[str] = set()
             blocked_task_ids: set[str] = set()
+            quota_blocked_task_until_ts: Dict[str, float] = {}
+            gemini_quota_global_pause_until_ts = 0.0
             video_prepare_failures_by_task: Dict[str, int] = {}
             gemini_failures_by_task: Dict[str, int] = {}
             duplicate_hits = 0
@@ -7788,6 +7831,59 @@ def run(cfg: Dict[str, Any], execute: bool) -> None:
                 if consecutive_episode_failures > max_episode_failures_per_run:
                     return "stop"
                 return "continue"
+
+            def _cleanup_expired_quota_blocks() -> None:
+                now_ts = time.time()
+                expired_ids = [
+                    task for task, until_ts in quota_blocked_task_until_ts.items()
+                    if until_ts <= now_ts
+                ]
+                for task in expired_ids:
+                    quota_blocked_task_until_ts.pop(task, None)
+                if expired_ids:
+                    print(f"[run] cleared expired quota task cooldowns: {len(expired_ids)}")
+
+            def _active_quota_blocked_task_ids() -> set[str]:
+                _cleanup_expired_quota_blocks()
+                now_ts = time.time()
+                return {
+                    task for task, until_ts in quota_blocked_task_until_ts.items()
+                    if until_ts > now_ts
+                }
+
+            def _register_quota_failure(task_id: Optional[str], exc: Exception, phase_label: str) -> float:
+                nonlocal gemini_quota_global_pause_until_ts
+                base_delay_sec = max(1.0, float(_cfg_get(cfg, "run.gemini_quota_retry_delay_sec", 15.0)))
+                quota_wait_sec = _extract_retry_seconds_from_text(str(exc or ""), default_wait_sec=base_delay_sec)
+                quota_wait_sec = min(gemini_quota_task_block_max_wait_sec, max(base_delay_sec, quota_wait_sec))
+                now_ts = time.time()
+
+                if quota_wait_sec >= gemini_quota_global_pause_min_sec:
+                    pause_until_ts = now_ts + quota_wait_sec
+                    if pause_until_ts > gemini_quota_global_pause_until_ts:
+                        gemini_quota_global_pause_until_ts = pause_until_ts
+                    print(
+                        "[run] Gemini quota cooldown activated globally "
+                        f"for {quota_wait_sec:.1f}s ({phase_label})."
+                    )
+
+                if task_id:
+                    blocked_until_ts = now_ts + quota_wait_sec
+                    prev_until_ts = quota_blocked_task_until_ts.get(task_id, 0.0)
+                    if blocked_until_ts > prev_until_ts:
+                        quota_blocked_task_until_ts[task_id] = blocked_until_ts
+                    blocked_task_ids.add(task_id)
+                    print(
+                        f"[run] gemini quota limit for task {task_id}; "
+                        f"task blocked for {quota_wait_sec:.1f}s before retry."
+                    )
+                else:
+                    print(
+                        "[run] gemini quota limit encountered without task id; "
+                        f"using retry wait {quota_wait_sec:.1f}s."
+                    )
+
+                return quota_wait_sec
 
             def _release_then_reserve_cycle(reason: str) -> bool:
                 nonlocal no_task_hits, all_visible_blocked_hits, duplicate_hits
@@ -7861,7 +7957,20 @@ def run(cfg: Dict[str, Any], execute: bool) -> None:
                         continue
                     break
 
+                if gemini_quota_global_pause_until_ts > time.time():
+                    remaining_sec = gemini_quota_global_pause_until_ts - time.time()
+                    pause_sec = min(remaining_sec, gemini_quota_global_pause_step_sec)
+                    pause_sec = max(1.0, pause_sec)
+                    print(
+                        "[run] Gemini daily quota pause is active; "
+                        f"remaining {remaining_sec:.1f}s, sleeping {pause_sec:.1f}s."
+                    )
+                    time.sleep(pause_sec)
+                    continue
+
+                active_quota_blocked_task_ids = _active_quota_blocked_task_ids()
                 skip_task_ids_for_open: set[str] = set(blocked_task_ids)
+                skip_task_ids_for_open.update(active_quota_blocked_task_ids)
                 if skip_duplicate_task_in_run:
                     skip_task_ids_for_open.update(seen_task_ids)
                 open_status: Dict[str, Any] = {}
@@ -7875,7 +7984,9 @@ def run(cfg: Dict[str, Any], execute: bool) -> None:
                 # Important: do not pollute blocked_task_ids with seen_task_ids.
                 newly_blocked = {
                     tid for tid in skip_task_ids_for_open
-                    if tid not in blocked_before_open and tid not in seen_task_ids
+                    if tid not in blocked_before_open
+                    and tid not in seen_task_ids
+                    and tid not in active_quota_blocked_task_ids
                 }
                 if newly_blocked:
                     blocked_task_ids.update(newly_blocked)
@@ -7919,6 +8030,21 @@ def run(cfg: Dict[str, Any], execute: bool) -> None:
                         no_task_max_delay_sec,
                         no_task_retry_delay_sec * (no_task_backoff_factor**backoff_exp),
                     )
+                    if active_quota_blocked_task_ids:
+                        soonest_quota_release_sec = min(
+                            max(0.0, quota_blocked_task_until_ts.get(tid, 0.0) - time.time())
+                            for tid in active_quota_blocked_task_ids
+                        )
+                        quota_idle_wait_sec = min(
+                            soonest_quota_release_sec,
+                            gemini_quota_global_pause_step_sec,
+                        )
+                        if quota_idle_wait_sec > retry_delay_sec:
+                            retry_delay_sec = quota_idle_wait_sec
+                            print(
+                                "[run] quota-task cooldown active while idle; "
+                                f"next retry in {retry_delay_sec:.1f}s."
+                            )
                     if keep_alive_pause_sec > retry_delay_sec:
                         retry_delay_sec = keep_alive_pause_sec
                     print(
@@ -8140,6 +8266,7 @@ def run(cfg: Dict[str, Any], execute: bool) -> None:
                         )
                     except Exception as exc:
                         quota_error = _is_gemini_quota_error(exc)
+                        quota_wait_sec = 0.0
                         if quota_error:
                             consecutive_episode_failures = 0
                         else:
@@ -8148,10 +8275,7 @@ def run(cfg: Dict[str, Any], execute: bool) -> None:
                         _capture_debug_artifacts(page, cfg, prefix="debug_episode_failure")
                         if task_id:
                             if quota_error:
-                                print(
-                                    f"[run] gemini quota limit for task {task_id}; "
-                                    "task will not be blocked and will be retried later."
-                                )
+                                quota_wait_sec = _register_quota_failure(task_id, exc, "gemini-request")
                             else:
                                 current_failures = int(gemini_failures_by_task.get(task_id, 0)) + 1
                                 gemini_failures_by_task[task_id] = current_failures
@@ -8196,7 +8320,9 @@ def run(cfg: Dict[str, Any], execute: bool) -> None:
                                 0.0,
                                 float(_cfg_get(cfg, "run.gemini_quota_retry_delay_sec", 15.0)),
                             )
-                            retry_delay_sec = max(retry_delay_sec, quota_retry_delay_sec)
+                            if quota_wait_sec <= 0:
+                                quota_wait_sec = _register_quota_failure(task_id, exc, "gemini-request")
+                            retry_delay_sec = max(retry_delay_sec, quota_retry_delay_sec, quota_wait_sec)
                         if retry_delay_sec > 0:
                             print(f"[run] waiting {retry_delay_sec:.1f}s before retrying next episode.")
                             time.sleep(retry_delay_sec)
@@ -8266,6 +8392,7 @@ def run(cfg: Dict[str, Any], execute: bool) -> None:
                             )
                         except Exception as exc:
                             quota_error = _is_gemini_quota_error(exc)
+                            quota_wait_sec = 0.0
                             if quota_error:
                                 consecutive_episode_failures = 0
                             else:
@@ -8274,10 +8401,7 @@ def run(cfg: Dict[str, Any], execute: bool) -> None:
                             _capture_debug_artifacts(page, cfg, prefix="debug_episode_failure")
                             if task_id:
                                 if quota_error:
-                                    print(
-                                        f"[run] gemini quota limit on re-query for task {task_id}; "
-                                        "task will not be blocked and will be retried later."
-                                    )
+                                    quota_wait_sec = _register_quota_failure(task_id, exc, "gemini-requery")
                                 else:
                                     current_failures = int(gemini_failures_by_task.get(task_id, 0)) + 1
                                     gemini_failures_by_task[task_id] = current_failures
@@ -8322,7 +8446,9 @@ def run(cfg: Dict[str, Any], execute: bool) -> None:
                                     0.0,
                                     float(_cfg_get(cfg, "run.gemini_quota_retry_delay_sec", 15.0)),
                                 )
-                                retry_delay_sec = max(retry_delay_sec, quota_retry_delay_sec)
+                                if quota_wait_sec <= 0:
+                                    quota_wait_sec = _register_quota_failure(task_id, exc, "gemini-requery")
+                                retry_delay_sec = max(retry_delay_sec, quota_retry_delay_sec, quota_wait_sec)
                             if retry_delay_sec > 0:
                                 print(f"[run] waiting {retry_delay_sec:.1f}s before retrying next episode.")
                                 time.sleep(retry_delay_sec)
