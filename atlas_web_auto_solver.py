@@ -260,9 +260,10 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "gemini": {
         "api_key": "",
         "fallback_api_key": "",
+        "prefer_fallback_key_as_primary": True,
         "quota_fallback_enabled": False,
         "quota_fallback_max_uses_per_run": 1,
-        "model": "gemini-2.5-flash",
+        "model": "gemini-3.1-pro-preview",
         "policy_retry_model": "gemini-2.5-pro",
         "retry_with_stronger_model_on_policy_fail": True,
         "policy_retry_only_if_flash": True,
@@ -4845,11 +4846,27 @@ def call_gemini_labels(
     segment_count: int = 0,
     model_override: str = "",
 ) -> Dict[str, Any]:
-    model = str(model_override or _cfg_get(cfg, "gemini.model", "gemini-2.5-flash")).strip()
-    primary_api_key = _resolve_gemini_key(str(_cfg_get(cfg, "gemini.api_key", "")))
+    model = str(model_override or _cfg_get(cfg, "gemini.model", "gemini-3.1-pro-preview")).strip()
+    configured_primary_key = _resolve_gemini_key(str(_cfg_get(cfg, "gemini.api_key", "")))
+    configured_fallback_key = _resolve_gemini_fallback_key(str(_cfg_get(cfg, "gemini.fallback_api_key", "")))
+    prefer_fallback_key_as_primary = bool(
+        _cfg_get(cfg, "gemini.prefer_fallback_key_as_primary", True)
+    )
+    primary_api_key = configured_primary_key
+    fallback_api_key = configured_fallback_key
+    if prefer_fallback_key_as_primary and configured_fallback_key:
+        primary_api_key = configured_fallback_key
+        fallback_api_key = configured_primary_key
+        print("[gemini] configured fallback key as primary key source.")
+    elif not configured_primary_key and configured_fallback_key:
+        primary_api_key = configured_fallback_key
+        fallback_api_key = ""
+        print("[gemini] primary key missing; using fallback key as primary.")
     if not primary_api_key:
-        raise RuntimeError("Missing Gemini API key (gemini.api_key or GEMINI_API_KEY/GOOGLE_API_KEY).")
-    fallback_api_key = _resolve_gemini_fallback_key(str(_cfg_get(cfg, "gemini.fallback_api_key", "")))
+        raise RuntimeError(
+            "Missing Gemini API key. Set GEMINI_API_KEY_FALLBACK (preferred) "
+            "or GEMINI_API_KEY/GOOGLE_API_KEY."
+        )
     quota_fallback_enabled = bool(_cfg_get(cfg, "gemini.quota_fallback_enabled", False))
     quota_fallback_max_uses_per_run = max(
         0,
@@ -5724,7 +5741,7 @@ def _request_labels_with_optional_segment_chunking(
         if "secondary" in meta_key_sources:
             key_source_meta = "secondary"
         model_meta = meta_models[-1] if meta_models else str(
-            model_override or _cfg_get(cfg, "gemini.model", "gemini-2.5-flash")
+            model_override or _cfg_get(cfg, "gemini.model", "gemini-3.1-pro-preview")
         )
         result: Dict[str, Any] = {
             "operations": [],
@@ -8157,7 +8174,7 @@ def run(cfg: Dict[str, Any], execute: bool) -> None:
                     current_model = str(
                         (labels_payload.get("_meta", {}) or {}).get(
                             "model",
-                            _cfg_get(cfg, "gemini.model", "gemini-2.5-flash"),
+                            _cfg_get(cfg, "gemini.model", "gemini-3.1-pro-preview"),
                         )
                     ).strip()
 
@@ -8424,7 +8441,7 @@ def parse_args() -> argparse.Namespace:
         "--gemini-model",
         type=str,
         default="",
-        help="Override gemini.model for this process only (e.g., gemini-2.5-pro).",
+        help="Override gemini.model for this process only (e.g., gemini-3.1-pro-preview).",
     )
     parser.add_argument(
         "--use-fallback-key",
