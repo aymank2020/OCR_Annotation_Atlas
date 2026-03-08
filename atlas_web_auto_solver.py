@@ -135,7 +135,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "loop_off_on_episode_open": True,
         "enable_policy_gate": True,
         "block_apply_on_validation_fail": True,
-        "skip_policy_lexical_checks_on_unchanged_labels": True,
+        "skip_policy_lexical_checks_on_unchanged_labels": False,
         "ignore_timestamp_policy_errors_when_adjust_disabled": True,
         "ignore_no_action_standalone_policy_error": True,
         "no_action_pause_rewrite_enabled": True,
@@ -145,7 +145,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "min_label_words": 2,
         "max_label_words": 20,
         "max_atomic_actions_per_label": 2,
-        "forbidden_label_verbs": ["inspect", "check", "look", "examine", "reach", "rotate", "grab"],
+        "forbidden_label_verbs": ["inspect", "check", "look", "examine", "reach", "rotate", "grab", "relocate"],
         "forbidden_narrative_words": ["another", "then", "next", "continue", "again"],
         "tier3_label_rewrite": True,
         "enable_structural_actions": True,
@@ -4230,6 +4230,7 @@ def build_prompt(
         "and tool/object is never dropped, you MUST merge them.\n"
         "Coarse-goal verbs: avoid mechanical muscle-motion phrasing (e.g., 'move saw back and forth'). "
         "Use task-goal verbs (e.g., 'cut wood with saw', 'sand board with sandpaper').\n"
+        "No token stuttering: never repeat words/phrases like 'detangle detangle' or 'pull loosened pull loosened'.\n"
         "No '-ing' verbs: use imperative commands only (e.g., 'turn mold', not 'turning the mold').\n"
         "Timestamp strictness: describe only what happens inside each exact segment start_sec/end_sec; "
         "do not shift actions into neighboring segments.\n"
@@ -4238,7 +4239,7 @@ def build_prompt(
         "Do not exceed 20 words or 2 atomic actions per label (typically one separator: a single comma or one 'and').\n"
         "Do not write narrative filler words like then/another/next/continue/again.\n"
         "For small corrective reorientation/reposition, prefer verb 'adjust'.\n"
-        "Avoid forbidden verbs: rotate, inspect, check, look, examine, reach, grab.\n"
+        "Avoid forbidden verbs: rotate, inspect, check, look, examine, reach, grab, relocate.\n"
         "Use conservative object names that are directly visible.\n"
         "If object identity is unclear after careful inspection, use safe general nouns (tool/container/item).\n"
         "Do not guess hidden object identities and do not keep placeholder/default labels.\n"
@@ -4265,6 +4266,10 @@ def build_prompt(
         "GOOD: merge/relabel pause into surrounding action; do not isolate No Action.\n"
         "BAD: paint chair -> dip paintbrush -> paint chair in separate short consecutive segments\n"
         "GOOD: merge micro-actions into one segment label 'paint chair with paintbrush' when tool is never dropped.\n"
+        "BAD: move comb through wig to detangle\n"
+        "GOOD: detangle wig with comb\n"
+        "BAD: move hair straightener to press wig section\n"
+        "GOOD: straighten wig section with hair straightener\n"
         "If a segment timestamp is wrong, correct start_sec/end_sec.\n"
         "Label rules: imperative style, concise, minimum 2 words, maximum 20 words.\n"
         "Use \"No Action\" only as standalone label.\n"
@@ -4370,15 +4375,28 @@ def _validate_segment_plan_against_policy(
     forbidden_narrative_raw = _cfg_get(cfg, "run.forbidden_narrative_words", [])
     forbidden_narrative_words = [str(v).strip().lower() for v in forbidden_narrative_raw if str(v).strip()]
     skip_unchanged_lexical = bool(
-        _cfg_get(cfg, "run.skip_policy_lexical_checks_on_unchanged_labels", True)
+        _cfg_get(cfg, "run.skip_policy_lexical_checks_on_unchanged_labels", False)
     )
     place_location_pattern = re.compile(r"\bplace\b.*\b(on|in|into|onto|at|to|inside|under|over)\b", re.IGNORECASE)
     chained_verb_without_object_pattern = re.compile(
-        r"\b(pick up|place|move|adjust|hold|align)\s+and\s+(pick up|place|move|adjust|hold|align)\b",
+        r"\b(pick up|place|move|adjust|hold|align|relocate)\s+and\s+(pick up|place|move|adjust|hold|align|relocate)\b",
         re.IGNORECASE,
     )
     orphan_second_place_pattern = re.compile(
         r"\band\s+place\s+(on|in|into|onto|at|to|inside|under|over)\b",
+        re.IGNORECASE,
+    )
+    body_part_reference_pattern = re.compile(
+        r"\b(hand|hands|finger|fingers|thumb|thumbs|palm|palms|wrist|wrists)\b",
+        re.IGNORECASE,
+    )
+    token_stuttering_pattern = re.compile(
+        r"\b([a-z]+(?:\s+[a-z]+){0,2})\s+\1\b",
+        re.IGNORECASE,
+    )
+    mechanical_motion_pattern = re.compile(
+        r"\bmove\s+(?:comb(?:\s+tail)?|hair\s+straightener)\b|"
+        r"\bmove\s+\w+\s+back\s+and\s+forth\b",
         re.IGNORECASE,
     )
 
@@ -4434,6 +4452,12 @@ def _validate_segment_plan_against_policy(
                     warnings.append(f"segment {idx}: label mentions 'gripper' (ensure tool mention is unavoidable)")
                 if re.search(r"\d", label):
                     errors.append(f"segment {idx}: label contains numerals")
+                if body_part_reference_pattern.search(label):
+                    errors.append(f"segment {idx}: avoid body-part wording unless unavoidable")
+                if token_stuttering_pattern.search(label):
+                    errors.append(f"segment {idx}: repeated token/phrase detected (stuttering)")
+                if mechanical_motion_pattern.search(label):
+                    errors.append(f"segment {idx}: mechanical-motion phrasing detected (use coarse goal verb)")
                 if "place" in label_l and not place_location_pattern.search(label):
                     errors.append(f"segment {idx}: 'place' missing explicit location")
                 if chained_verb_without_object_pattern.search(label):
@@ -6216,7 +6240,89 @@ def _normalize_mechanical_motion_to_goal(text: str) -> str:
         flags=re.IGNORECASE,
     )
 
+    def _norm_hair_obj(value: str) -> str:
+        obj = _norm_obj(value)
+        obj = re.sub(r"\bsection\s+hair\b", "wig", obj, flags=re.IGNORECASE)
+        obj = re.sub(r"\bwig\s+hair\b", "wig", obj, flags=re.IGNORECASE)
+        obj = re.sub(r"\bhair\b", "wig", obj, flags=re.IGNORECASE)
+        obj = re.sub(r"\s+", " ", obj).strip(" ,.;:")
+        return obj or "wig"
+
+    def _comb_section_repl(match: re.Match[str]) -> str:
+        obj = _norm_hair_obj(str(match.group("obj") or "wig"))
+        return f"section {obj} with comb"
+
+    # move comb/tail through wig to section hair -> section wig with comb
+    out = re.sub(
+        r"\bmove\s+comb(?:\s+tail)?\s+through\s+(?P<obj>[^,]+?)\s+to\s+section(?:\s+hair)?\b",
+        _comb_section_repl,
+        out,
+        flags=re.IGNORECASE,
+    )
+
+    def _comb_detangle_repl(match: re.Match[str]) -> str:
+        obj = _norm_hair_obj(str(match.group("obj") or "wig"))
+        return f"detangle {obj} with comb"
+
+    out = re.sub(
+        r"\bmove\s+comb\s+through\s+(?P<obj>[^,]+?)\s+to\s+detangle\b",
+        _comb_detangle_repl,
+        out,
+        flags=re.IGNORECASE,
+    )
+
+    def _comb_style_repl(match: re.Match[str]) -> str:
+        obj = _norm_hair_obj(str(match.group("obj") or "wig"))
+        return f"comb {obj}"
+
+    out = re.sub(
+        r"\bmove\s+comb\s+through\s+(?P<obj>[^,]+?)\s+to\s+style\b",
+        _comb_style_repl,
+        out,
+        flags=re.IGNORECASE,
+    )
+
+    def _comb_generic_repl(match: re.Match[str]) -> str:
+        obj = _norm_hair_obj(str(match.group("obj") or "wig"))
+        return f"comb {obj}"
+
+    # move comb through wig -> comb wig
+    out = re.sub(
+        r"\bmove\s+comb\s+through\s+(?P<obj>[^,]+)\b",
+        _comb_generic_repl,
+        out,
+        flags=re.IGNORECASE,
+    )
+
+    def _straightener_repl(match: re.Match[str]) -> str:
+        obj = _norm_hair_obj(str(match.group("obj") or "wig"))
+        return f"straighten {obj} with hair straightener"
+
+    # move hair straightener to press wig section -> straighten wig with hair straightener
+    out = re.sub(
+        r"\bmove\s+hair\s+straightener\s+(?:to\s+)?(?:press|straighten)\s+(?P<obj>[^,]+)\b",
+        _straightener_repl,
+        out,
+        flags=re.IGNORECASE,
+    )
+
     return re.sub(r"\s+", " ", out).strip(" ,")
+
+
+def _collapse_adjacent_duplicate_tokens(text: str) -> str:
+    out = re.sub(r"\s+", " ", (text or "").strip())
+    if not out:
+        return out
+    repeated_phrase = re.compile(r"\b([a-z]+(?:\s+[a-z]+){1,2})\s+\1\b", re.IGNORECASE)
+    repeated_word = re.compile(r"\b([a-z]+)\s+\1\b", re.IGNORECASE)
+    for _ in range(6):
+        prev = out
+        out = repeated_phrase.sub(r"\1", out)
+        out = repeated_word.sub(r"\1", out)
+        out = re.sub(r"\s+", " ", out).strip(" ,")
+        if out == prev:
+            break
+    return out
 
 
 def _rewrite_label_tier3(label: str) -> str:
@@ -6234,9 +6340,11 @@ def _rewrite_label_tier3(label: str) -> str:
     text = re.sub(r"\banother\b\s+", "", text, flags=re.IGNORECASE)
     text = re.sub(r"\brotate(?:d|s|ing)?\b", "adjust", text, flags=re.IGNORECASE)
     text = re.sub(r"\bturn(?:ed|s|ing)?\b", "adjust", text, flags=re.IGNORECASE)
+    text = re.sub(r"\brelocate(?:d|s|ing)?\b", "move", text, flags=re.IGNORECASE)
     text = re.sub(r"\bgrab(?:bed|s|bing)?\b", "pick up", text, flags=re.IGNORECASE)
     text = _normalize_ing_verbs_to_imperative(text)
     text = _normalize_mechanical_motion_to_goal(text)
+    text = _collapse_adjacent_duplicate_tokens(text)
     text = _normalize_gripper_terms(text)
     text = _replace_numerals_with_words(text)
     text = _expand_verb_object_attachment_patterns(text)
@@ -6273,6 +6381,7 @@ def _normalize_label_min_safety(label: str) -> str:
     text = re.sub(r"\brelocate(?:d|s|ing)?\b", "move", text, flags=re.IGNORECASE)
     text = _normalize_ing_verbs_to_imperative(text)
     text = _normalize_mechanical_motion_to_goal(text)
+    text = _collapse_adjacent_duplicate_tokens(text)
     text = _normalize_gripper_terms(text)
     text = _replace_numerals_with_words(text)
     text = _expand_verb_object_attachment_patterns(text)
@@ -6322,9 +6431,13 @@ def _normalize_segment_plan(
     for idx, source in source_by_idx.items():
         if idx in out:
             continue
+        source_label = str(source.get("current_label", "")).strip()
+        if bool(_cfg_get(cfg or {}, "run.tier3_label_rewrite", True)):
+            source_label = _rewrite_label_tier3(source_label)
+        source_label = _normalize_label_min_safety(source_label)
         out[idx] = {
             "segment_index": idx,
-            "label": str(source.get("current_label", "")).strip(),
+            "label": source_label,
             "start_sec": round(_safe_float(source.get("start_sec", 0.0), 0.0), 3),
             "end_sec": round(_safe_float(source.get("end_sec", 0.0), 0.0), 3),
         }

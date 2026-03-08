@@ -43,6 +43,9 @@ Strict rules:
 - if 3+ consecutive segments are the same ongoing action and tool/object is never dropped, merge them aggressively
 - treat short tool reloading actions (dip/reload brush, wet sponge, etc.) as micro-actions of the same main goal
 - avoid mechanical-motion phrasing like "move saw back and forth"; use coarse goal verbs like "cut wood with saw"
+- never use mechanical tool-motion labels like "move comb through wig" or "move hair straightener to press hair";
+  use direct task verbs like "detangle wig with comb", "section wig with comb", "straighten wig with hair straightener"
+- no token stuttering/repetition like "detangle detangle" or "pull loosened pull loosened"
 - if ego is still holding tool/object, "No Action" is forbidden; merge/relabel short pauses into surrounding action
 - timestamp strictness: label only what happens inside each exact segment start/end window; do not shift actions
 - avoid body-part wording (hands/fingers/body parts) unless unavoidable

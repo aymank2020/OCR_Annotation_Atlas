@@ -29,9 +29,11 @@ OBJECT_EXPECTING_VERBS = {
     "pick up",
     "place",
     "move",
+    "relocate",
     "adjust",
     "hold",
     "grab",
+    "align",
     "cut",
     "open",
     "close",
@@ -52,11 +54,24 @@ NUMERAL_PATTERN = re.compile(r"\d")
 WHITESPACE_PATTERN = re.compile(r"\s+")
 PLACE_LOCATION_PATTERN = re.compile(r"\bplace\b.*\b(on|in|into|onto|to|inside|at|under|over)\b", re.IGNORECASE)
 CHAINED_VERB_WITHOUT_OBJECT_PATTERN = re.compile(
-    r"\b(pick up|place|move|adjust|hold|align)\s+and\s+(pick up|place|move|adjust|hold|align)\b",
+    r"\b(pick up|place|move|relocate|adjust|hold|align)\s+and\s+(pick up|place|move|relocate|adjust|hold|align)\b",
     re.IGNORECASE,
 )
 ORPHAN_SECOND_PLACE_PATTERN = re.compile(
     r"\band\s+place\s+(on|in|into|onto|to|inside|at|under|over)\b",
+    re.IGNORECASE,
+)
+BODY_PART_REFERENCE_PATTERN = re.compile(
+    r"\b(hand|hands|finger|fingers|thumb|thumbs|palm|palms|wrist|wrists)\b",
+    re.IGNORECASE,
+)
+TOKEN_STUTTER_PATTERN = re.compile(
+    r"\b([a-z]+(?:\s+[a-z]+){0,2})\s+\1\b",
+    re.IGNORECASE,
+)
+MECHANICAL_MOTION_PATTERN = re.compile(
+    r"\bmove\s+(?:comb(?:\s+tail)?|hair\s+straightener)\b|"
+    r"\bmove\s+\w+\s+back\s+and\s+forth\b",
     re.IGNORECASE,
 )
 
@@ -196,7 +211,7 @@ def detect_possible_missing_object(action_phrase: str) -> bool:
             tokens = l.split()
             if verb == "pick up" and len(tokens) <= 2:
                 return True
-            if verb in {"place", "move"} and len(tokens) <= 2:
+            if verb in {"place", "move", "relocate"} and len(tokens) <= 2:
                 return True
             return False
     return False
@@ -211,6 +226,27 @@ def has_unattached_verb_chain(label: str) -> bool:
     if ORPHAN_SECOND_PLACE_PATTERN.search(l):
         return True
     return False
+
+
+def has_body_part_reference(label: str) -> bool:
+    l = normalize_spaces(label)
+    if not l or l == NO_ACTION_LABEL:
+        return False
+    return bool(BODY_PART_REFERENCE_PATTERN.search(l))
+
+
+def has_token_stuttering(label: str) -> bool:
+    l = normalize_spaces(label)
+    if not l or l == NO_ACTION_LABEL:
+        return False
+    return bool(TOKEN_STUTTER_PATTERN.search(l))
+
+
+def has_mechanical_motion_phrase(label: str) -> bool:
+    l = normalize_spaces(label)
+    if not l or l == NO_ACTION_LABEL:
+        return False
+    return bool(MECHANICAL_MOTION_PATTERN.search(l))
 
 
 def place_has_location(label: str) -> bool:
@@ -442,6 +478,12 @@ def validate_segment(seg: Dict[str, Any], video_duration_sec: float) -> Tuple[Di
         disallowed_terms = disallowed_tool_terms_found(label)
         if disallowed_terms:
             errors.append("disallowed_tool_terms")
+        if has_body_part_reference(label):
+            errors.append("body_parts_referenced")
+        if has_token_stuttering(label):
+            errors.append("token_stuttering")
+        if has_mechanical_motion_phrase(label):
+            errors.append("mechanical_motion_phrase")
         if re.search(r"\bgripper\b", lower(label)):
             warnings.append("gripper_term_used")
 
@@ -490,6 +532,9 @@ def validate_segment(seg: Dict[str, Any], video_duration_sec: float) -> Tuple[Di
         "no_numerals": "numerals_present" not in errors,
         "no_forbidden_verbs": "forbidden_verbs" not in errors,
         "forbidden_verbs_found": contains_forbidden_verbs(label),
+        "no_body_part_references": "body_parts_referenced" not in errors,
+        "no_token_stuttering": "token_stuttering" not in errors,
+        "no_mechanical_motion_phrasing": "mechanical_motion_phrase" not in errors,
         "verbs_attached_to_objects": (
             "possible_missing_object" not in warnings and "verbs_not_attached_to_objects" not in errors
         ),
@@ -508,6 +553,12 @@ def validate_segment(seg: Dict[str, Any], video_duration_sec: float) -> Tuple[Di
     if "verbs_not_attached_to_objects" in errors:
         audit_reasons.append("verb_choice_ambiguous")
     if "disallowed_tool_terms" in errors:
+        audit_reasons.append("verb_choice_ambiguous")
+    if "body_parts_referenced" in errors:
+        audit_reasons.append("verb_choice_ambiguous")
+    if "token_stuttering" in errors:
+        audit_reasons.append("verb_choice_ambiguous")
+    if "mechanical_motion_phrase" in errors:
         audit_reasons.append("verb_choice_ambiguous")
     if "numerals_present" in errors:
         audit_reasons.append("possible_hallucination")
@@ -590,6 +641,12 @@ def validate_episode(annotation: Dict[str, Any]) -> Dict[str, Any]:
             major_fail_triggers.append("verbs_not_attached_to_objects")
         if "disallowed_tool_terms" in errs:
             major_fail_triggers.append("disallowed_tool_terms")
+        if "body_parts_referenced" in errs:
+            major_fail_triggers.append("body_parts_referenced")
+        if "token_stuttering" in errs:
+            major_fail_triggers.append("token_stuttering")
+        if "mechanical_motion_phrase" in errs:
+            major_fail_triggers.append("mechanical_motion_phrase")
         if "dense_coarse_mixed" in errs:
             major_fail_triggers.append("dense_coarse_mixed")
         if "too_many_atomic_actions" in errs:

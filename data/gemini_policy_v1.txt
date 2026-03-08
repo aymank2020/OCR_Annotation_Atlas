@@ -34,6 +34,11 @@
 - COARSE GOAL VERBS:
   Do not describe mechanical muscle motions (e.g., "move saw back and forth", "rub sandpaper").
   Use the task-goal verb (e.g., "cut wood board with saw", "sand wooden board with sandpaper").
+- NO MECHANICAL TOOL MOTION:
+  Never use labels like "move comb through wig" or "move hair straightener to press hair".
+  Use direct task verbs instead (e.g., "detangle wig with comb", "section wig with comb", "straighten wig with hair straightener").
+- NO TOKEN STUTTERING:
+  Never repeat words/phrases unnaturally (e.g., "detangle detangle", "pull loosened pull loosened").
 - NO-PAUSE "NO ACTION":
   If ego is still holding the task object/tool, "No Action" is forbidden.
   Do not split solely to isolate short pauses; merge/relabel with surrounding task action.
@@ -77,6 +82,11 @@
   Seg 3 (0:12-0:20): "paint chair with paintbrush"
   Rule: reloading/dipping tool is a micro-action of the same main task when tool is never dropped.
   Correct operation: merge all into one segment "paint chair with paintbrush" (0:00-0:20).
+- Example: mechanical motion to direct verb
+  Draft: "move comb through wig to detangle"
+  Correct: "detangle wig with comb"
+  Draft: "move hair straightener to press wig section"
+  Correct: "straighten wig section with hair straightener"
 
 ## 5. OUTPUT CONTRACT (STRICT JSON)
 - Return raw JSON only. No markdown, no commentary.
