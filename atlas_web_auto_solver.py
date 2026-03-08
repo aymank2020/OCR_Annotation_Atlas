@@ -122,6 +122,10 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "segment_chunking_include_previous_labels_context": True,
         "segment_chunking_max_previous_labels": 12,
         "segment_chunking_disable_operations": True,
+        "segment_chunking_consistency_memory_enabled": True,
+        "segment_chunking_consistency_memory_limit": 40,
+        "segment_chunking_consistency_prompt_terms": 16,
+        "segment_chunking_consistency_normalize_labels": True,
         "use_task_scoped_artifacts": True,
         "enable_quality_review_submit": True,
         "loop_off_on_episode_open": True,
@@ -5289,6 +5293,202 @@ def call_gemini_labels(
     raise RuntimeError(last_error or "Gemini request failed")
 
 
+_CHUNK_CONSISTENCY_VERB_PREFIXES: Tuple[str, ...] = (
+    "pick up",
+    "place",
+    "open",
+    "close",
+    "pull open",
+    "push",
+    "adjust",
+    "move",
+    "drag",
+    "tighten",
+    "loosen",
+    "remove",
+    "insert",
+    "fold",
+    "spread out",
+    "sand",
+    "twist",
+    "pour",
+    "scoop",
+    "hold",
+    "position",
+    "align",
+    "pry open",
+    "drive",
+    "set",
+    "put",
+)
+_CHUNK_CONSISTENCY_EQUIVALENCE_GROUPS: Tuple[Tuple[str, ...], ...] = (
+    ("table", "surface"),
+)
+_CHUNK_CONSISTENCY_PREPOSITION_RE = re.compile(
+    r"\b(from|in|into|on|onto|under|inside|at|to|with|over|near|across|through)\b",
+    flags=re.IGNORECASE,
+)
+_CHUNK_CONSISTENCY_TOKEN_RE = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)?", flags=re.IGNORECASE)
+_CHUNK_CONSISTENCY_STOPWORDS: set[str] = {
+    "the",
+    "a",
+    "an",
+    "and",
+    "or",
+    "to",
+    "with",
+    "from",
+    "in",
+    "into",
+    "on",
+    "onto",
+    "under",
+    "inside",
+    "at",
+    "over",
+    "near",
+    "across",
+    "through",
+}
+
+
+def _consistency_norm(text: str) -> str:
+    return re.sub(r"\s+", " ", (text or "").strip(" ,.;:")).lower()
+
+
+def _consistency_tokens(text: str) -> List[str]:
+    return [t.lower() for t in _CHUNK_CONSISTENCY_TOKEN_RE.findall(text or "")]
+
+
+def _extract_consistency_terms_from_label(label: str, max_terms: int = 8) -> List[str]:
+    if not label:
+        return []
+    terms: List[str] = []
+    clauses = [c.strip().lower() for c in re.split(r",", label) if c and c.strip()]
+    for clause in clauses:
+        if clause == "no action":
+            continue
+        rest = clause
+        for prefix in _CHUNK_CONSISTENCY_VERB_PREFIXES:
+            token = prefix + " "
+            if rest.startswith(token):
+                rest = rest[len(token) :].strip()
+                break
+        if not rest:
+            continue
+        m = _CHUNK_CONSISTENCY_PREPOSITION_RE.search(rest)
+        candidates = [rest]
+        if m:
+            candidates = [rest[: m.start()].strip(), rest[m.end() :].strip()]
+        for cand in candidates:
+            norm = _consistency_norm(re.sub(r"^(the|a|an)\s+", "", cand))
+            if not norm:
+                continue
+            if norm in _CHUNK_CONSISTENCY_STOPWORDS:
+                continue
+            if len(_consistency_tokens(norm)) == 0:
+                continue
+            if norm not in terms:
+                terms.append(norm)
+                if len(terms) >= max_terms:
+                    return terms
+    return terms
+
+
+def _find_equivalent_canonical_term(norm_term: str, canonical_terms: List[str]) -> str:
+    if not norm_term:
+        return ""
+    for existing in canonical_terms:
+        if _consistency_norm(existing) == norm_term:
+            return existing
+
+    for group in _CHUNK_CONSISTENCY_EQUIVALENCE_GROUPS:
+        group_set = {_consistency_norm(x) for x in group}
+        if norm_term in group_set:
+            for existing in canonical_terms:
+                if _consistency_norm(existing) in group_set:
+                    return existing
+
+    term_tokens = _consistency_tokens(norm_term)
+    if not term_tokens:
+        return ""
+    term_head = term_tokens[-1]
+    term_set = set(term_tokens)
+    for existing in canonical_terms:
+        existing_norm = _consistency_norm(existing)
+        existing_tokens = _consistency_tokens(existing_norm)
+        if not existing_tokens:
+            continue
+        if existing_tokens[-1] != term_head:
+            continue
+        existing_set = set(existing_tokens)
+        overlap = term_set.intersection(existing_set)
+        if term_set.issubset(existing_set) or existing_set.issubset(term_set):
+            return existing
+        if len(overlap) >= max(1, min(len(term_set), len(existing_set)) - 1):
+            return existing
+    return ""
+
+
+def _apply_consistency_aliases_to_label(label: str, alias_to_canonical: Dict[str, str]) -> str:
+    out = label or ""
+    if not out or not alias_to_canonical:
+        return out
+    replacements = sorted(alias_to_canonical.items(), key=lambda item: len(item[0]), reverse=True)
+    for alias_norm, canonical in replacements:
+        src = _consistency_norm(alias_norm)
+        dst = _consistency_norm(canonical)
+        if not src or not dst or src == dst:
+            continue
+        pattern = r"(?<![a-z0-9])" + re.escape(src) + r"(?![a-z0-9])"
+        out = re.sub(pattern, dst, out, flags=re.IGNORECASE)
+    return re.sub(r"\s+", " ", out).strip()
+
+
+def _update_chunk_consistency_memory(
+    label: str,
+    canonical_terms: List[str],
+    alias_to_canonical: Dict[str, str],
+    memory_limit: int,
+) -> str:
+    rewritten = _apply_consistency_aliases_to_label(label, alias_to_canonical)
+    extracted_terms = _extract_consistency_terms_from_label(rewritten)
+    for term in extracted_terms:
+        term_norm = _consistency_norm(term)
+        if not term_norm:
+            continue
+        if term_norm in alias_to_canonical:
+            continue
+        canonical = _find_equivalent_canonical_term(term_norm, canonical_terms)
+        if canonical:
+            alias_to_canonical[term_norm] = canonical
+            rewritten = _apply_consistency_aliases_to_label(rewritten, alias_to_canonical)
+            continue
+        alias_to_canonical[term_norm] = term
+        canonical_terms.append(term)
+
+    if memory_limit > 0 and len(canonical_terms) > memory_limit:
+        canonical_terms[:] = canonical_terms[-memory_limit:]
+        allowed = {_consistency_norm(term) for term in canonical_terms}
+        for alias_key in list(alias_to_canonical.keys()):
+            alias_norm = _consistency_norm(alias_key)
+            canonical_norm = _consistency_norm(alias_to_canonical.get(alias_key, ""))
+            if alias_norm in allowed or canonical_norm in allowed:
+                continue
+            alias_to_canonical.pop(alias_key, None)
+    return rewritten
+
+
+def _build_chunk_consistency_prompt_hint(canonical_terms: List[str], max_terms: int) -> str:
+    if not canonical_terms or max_terms <= 0:
+        return ""
+    selected = canonical_terms[-max_terms:]
+    return (
+        "PREFERRED OBJECT/LOCATION TERMS from previous chunks (must keep naming stable for same object): "
+        + " | ".join(selected)
+    )
+
+
 def _request_labels_with_optional_segment_chunking(
     cfg: Dict[str, Any],
     segments: List[Dict[str, Any]],
@@ -5308,6 +5508,14 @@ def _request_labels_with_optional_segment_chunking(
         _cfg_get(cfg, "run.segment_chunking_include_previous_labels_context", True)
     )
     max_previous_labels = max(0, int(_cfg_get(cfg, "run.segment_chunking_max_previous_labels", 12)))
+    consistency_memory_enabled = bool(
+        _cfg_get(cfg, "run.segment_chunking_consistency_memory_enabled", True)
+    )
+    consistency_memory_limit = max(8, int(_cfg_get(cfg, "run.segment_chunking_consistency_memory_limit", 40)))
+    consistency_prompt_terms = max(0, int(_cfg_get(cfg, "run.segment_chunking_consistency_prompt_terms", 16)))
+    consistency_normalize_labels = bool(
+        _cfg_get(cfg, "run.segment_chunking_consistency_normalize_labels", True)
+    )
 
     should_chunk = bool(
         chunking_enabled
@@ -5352,6 +5560,8 @@ def _request_labels_with_optional_segment_chunking(
     temp_chunk_files: List[Path] = []
     collected_labels: Dict[int, str] = {}
     prior_labels: List[str] = []
+    consistency_terms: List[str] = []
+    consistency_alias_to_canonical: Dict[str, str] = {}
     meta_key_sources: List[str] = []
     meta_models: List[str] = []
     chunk_count = len(chunks)
@@ -5401,6 +5611,12 @@ def _request_labels_with_optional_segment_chunking(
                     "Consistency context from previous chunks (keep object naming stable): "
                     + " | ".join(context_labels)
                 )
+            if consistency_memory_enabled and consistency_prompt_terms > 0 and consistency_terms:
+                chunk_hint = _build_chunk_consistency_prompt_hint(
+                    consistency_terms, max_terms=consistency_prompt_terms
+                )
+                if chunk_hint:
+                    chunk_extra_parts.append(chunk_hint)
 
             chunk_allow_operations = allow_operations and (not chunking_disable_operations)
             chunk_prompt = build_prompt(
@@ -5428,6 +5644,13 @@ def _request_labels_with_optional_segment_chunking(
                 if not label:
                     label = str(seg.get("current_label", "")).strip()
                 if label:
+                    if consistency_memory_enabled:
+                        label = _update_chunk_consistency_memory(
+                            label,
+                            canonical_terms=consistency_terms,
+                            alias_to_canonical=consistency_alias_to_canonical,
+                            memory_limit=consistency_memory_limit,
+                        )
                     collected_labels[idx] = label
                     prior_labels.append(label)
                     if len(prior_labels) > 128:
@@ -5445,6 +5668,13 @@ def _request_labels_with_optional_segment_chunking(
         for seg in segments:
             idx = int(seg.get("segment_index", 0))
             label = collected_labels.get(idx, str(seg.get("current_label", "")).strip())
+            if consistency_memory_enabled and consistency_normalize_labels:
+                label = _update_chunk_consistency_memory(
+                    label,
+                    canonical_terms=consistency_terms,
+                    alias_to_canonical=consistency_alias_to_canonical,
+                    memory_limit=consistency_memory_limit,
+                )
             if bool(_cfg_get(cfg, "run.tier3_label_rewrite", True)):
                 label = _rewrite_label_tier3(label)
             label = _normalize_label_min_safety(label)
@@ -5474,6 +5704,7 @@ def _request_labels_with_optional_segment_chunking(
                 "video_parts_count": 1,
                 "chunked": True,
                 "chunk_count": chunk_count,
+                "consistency_memory_terms": len(consistency_terms),
                 "api_key_source": key_source_meta,
                 "model": model_meta,
             },
