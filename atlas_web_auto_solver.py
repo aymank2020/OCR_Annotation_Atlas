@@ -68,15 +68,16 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "max_segments": 0,
         "max_episodes_per_run": 5,
         "no_task_retry_count": 5,
-        "no_task_retry_delay_sec": 6.0,
-        "no_task_backoff_factor": 1.5,
-        "no_task_max_delay_sec": 120.0,
+        "no_task_retry_delay_sec": 5.0,
+        "no_task_backoff_factor": 1.0,
+        "no_task_max_delay_sec": 5.0,
+        "clear_blocked_tasks_every_retry": True,
         "keep_alive_when_idle": True,
-        "keep_alive_idle_cycle_pause_sec": 120.0,
-        "skip_reserve_when_all_visible_blocked": True,
-        "clear_blocked_tasks_after_all_visible_blocked_hits": 2,
-        "reserve_cooldown_sec": 120,
-        "reserve_min_interval_sec": 90,
+        "keep_alive_idle_cycle_pause_sec": 5.0,
+        "skip_reserve_when_all_visible_blocked": False,
+        "clear_blocked_tasks_after_all_visible_blocked_hits": 1,
+        "reserve_cooldown_sec": 0,
+        "reserve_min_interval_sec": 0,
         "reserve_wait_only_on_rate_limit": True,
         "reserve_attempts_per_visit": 3,
         "reserve_label_wait_timeout_ms": 12000,
@@ -85,11 +86,11 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "reserve_skip_initial_label_scan_when_no_reserved": True,
         "reserve_no_reserved_probe_timeout_ms": 900,
         "reserve_refresh_after_click": True,
-        "reserve_rate_limit_wait_sec": 180,
+        "reserve_rate_limit_wait_sec": 5,
         "release_all_on_internal_error": True,
         "recycle_after_max_episodes": True,
         "release_all_after_batch": True,
-        "release_all_wait_sec": 180,
+        "release_all_wait_sec": 5,
         "goto_retry_count": 3,
         "goto_retry_delay_sec": 1.2,
         "skip_duplicate_task_in_run": True,
@@ -2683,31 +2684,32 @@ def _click_reserve_button_dynamic(page: Page, cfg: Dict[str, Any], timeout_ms: i
     return False, ""
 
 
-def _extract_wait_seconds_from_page(page: Page, default_wait_sec: int = 180) -> int:
+def _extract_wait_seconds_from_page(page: Page, default_wait_sec: int = 5) -> int:
     try:
         body = (page.inner_text("body") or "").lower()
     except Exception:
         body = ""
+    hard_cap = max(5, int(default_wait_sec))
     if not body:
-        return default_wait_sec
+        return hard_cap
     if not re.search(
         r"(too many requests|rate[\s-]?limit|try again in|please wait|temporarily unavailable)",
         body,
     ):
-        return default_wait_sec
+        return hard_cap
     m = re.search(r"(?:try again in|wait|after)\s*(\d+)\s*(seconds?|minutes?|mins?)", body)
     if m:
         try:
             amount = int(m.group(1))
             unit = (m.group(2) or "").lower()
             if amount <= 0:
-                return default_wait_sec
+                return hard_cap
             if unit.startswith("second"):
-                return max(5, amount)
-            return amount * 60
+                return min(hard_cap, max(5, amount))
+            return min(hard_cap, amount * 60)
         except Exception:
             pass
-    return default_wait_sec
+    return hard_cap
 
 
 def _reserve_rate_limited(page: Page) -> bool:
@@ -3627,7 +3629,7 @@ def goto_task_room(
     if isinstance(status_out, dict):
         status_out["all_visible_blocked"] = False
     release_all_on_internal_error = bool(_cfg_get(cfg, "run.release_all_on_internal_error", True))
-    reserve_rate_limit_wait_sec = max(30, int(_cfg_get(cfg, "run.reserve_rate_limit_wait_sec", 180)))
+    reserve_rate_limit_wait_sec = max(5, int(_cfg_get(cfg, "run.reserve_rate_limit_wait_sec", 5)))
     release_requested_by_internal_error = False
     current_url = (page.url or "").strip()
     current_l = current_url.lower()
@@ -3778,7 +3780,7 @@ def goto_task_room(
             _cfg_get(cfg, "run.reserve_skip_initial_label_scan_when_no_reserved", True)
         )
         skip_reserve_when_all_visible_blocked = bool(
-            _cfg_get(cfg, "run.skip_reserve_when_all_visible_blocked", True)
+            _cfg_get(cfg, "run.skip_reserve_when_all_visible_blocked", False)
         )
 
         def _open_first_label_from_page(reason: str) -> bool:
@@ -7401,6 +7403,19 @@ def _apply_global_run_policy(cfg: Dict[str, Any]) -> None:
     run.setdefault("auto_continuity_merge_min_run_segments", 3)
     run.setdefault("auto_continuity_merge_min_token_overlap", 1)
     run.setdefault("segment_chunking_min_video_sec", 60.0)
+    run["skip_reserve_when_all_visible_blocked"] = False
+    run["clear_blocked_tasks_after_all_visible_blocked_hits"] = 1
+    run["clear_blocked_tasks_every_retry"] = True
+    run["reserve_cooldown_sec"] = 0
+    run["reserve_min_interval_sec"] = 0
+    run["reserve_wait_only_on_rate_limit"] = True
+    run["reserve_attempts_per_visit"] = max(3, int(run.get("reserve_attempts_per_visit", 3) or 3))
+    run["reserve_rate_limit_wait_sec"] = 5
+    run["no_task_retry_delay_sec"] = 5.0
+    run["no_task_backoff_factor"] = 1.0
+    run["no_task_max_delay_sec"] = 5.0
+    run["keep_alive_idle_cycle_pause_sec"] = 5.0
+    run["release_all_wait_sec"] = 5.0
 
     # Merge must stay enabled for continuity fixes to work.
     if not bool(run.get("structural_allow_merge", True)):
@@ -7714,20 +7729,23 @@ def run(cfg: Dict[str, Any], execute: bool) -> None:
             max_episodes_per_run = int(_cfg_get(cfg, "run.max_episodes_per_run", 5))
             recycle_after_max_episodes = bool(_cfg_get(cfg, "run.recycle_after_max_episodes", True))
             release_all_after_batch = bool(_cfg_get(cfg, "run.release_all_after_batch", True))
-            release_all_wait_sec = max(0.0, float(_cfg_get(cfg, "run.release_all_wait_sec", 180)))
+            release_all_wait_sec = max(0.0, float(_cfg_get(cfg, "run.release_all_wait_sec", 5)))
             no_task_retry_count = max(0, int(_cfg_get(cfg, "run.no_task_retry_count", 5)))
-            no_task_retry_delay_sec = max(0.0, float(_cfg_get(cfg, "run.no_task_retry_delay_sec", 6.0)))
-            no_task_backoff_factor = max(1.0, float(_cfg_get(cfg, "run.no_task_backoff_factor", 1.5)))
+            no_task_retry_delay_sec = max(0.0, float(_cfg_get(cfg, "run.no_task_retry_delay_sec", 5.0)))
+            no_task_backoff_factor = max(1.0, float(_cfg_get(cfg, "run.no_task_backoff_factor", 1.0)))
             no_task_max_delay_sec = max(
                 no_task_retry_delay_sec,
-                float(_cfg_get(cfg, "run.no_task_max_delay_sec", max(30.0, no_task_retry_delay_sec))),
+                float(_cfg_get(cfg, "run.no_task_max_delay_sec", max(5.0, no_task_retry_delay_sec))),
+            )
+            clear_blocked_tasks_every_retry = bool(
+                _cfg_get(cfg, "run.clear_blocked_tasks_every_retry", True)
             )
             keep_alive_when_idle = bool(_cfg_get(cfg, "run.keep_alive_when_idle", True))
             keep_alive_idle_cycle_pause_sec = max(
-                0.0, float(_cfg_get(cfg, "run.keep_alive_idle_cycle_pause_sec", 120.0))
+                0.0, float(_cfg_get(cfg, "run.keep_alive_idle_cycle_pause_sec", 5.0))
             )
             clear_blocked_after_hits = max(
-                1, int(_cfg_get(cfg, "run.clear_blocked_tasks_after_all_visible_blocked_hits", 2))
+                1, int(_cfg_get(cfg, "run.clear_blocked_tasks_after_all_visible_blocked_hits", 1))
             )
             resume_from_artifacts = bool(_cfg_get(cfg, "run.resume_from_artifacts", True))
             resume_skip_video_steps_when_cached = bool(_cfg_get(cfg, "run.resume_skip_video_steps_when_cached", True))
@@ -7812,6 +7830,13 @@ def run(cfg: Dict[str, Any], execute: bool) -> None:
                 if newly_blocked:
                     blocked_task_ids.update(newly_blocked)
                 if not opened:
+                    if blocked_task_ids and clear_blocked_tasks_every_retry:
+                        print(
+                            "[run] clearing blocked-task list before retry "
+                            f"(size={len(blocked_task_ids)})."
+                        )
+                        blocked_task_ids.clear()
+                        all_visible_blocked_hits = 0
                     if bool(open_status.get("all_visible_blocked")):
                         all_visible_blocked_hits += 1
                         if blocked_task_ids and all_visible_blocked_hits >= clear_blocked_after_hits:
