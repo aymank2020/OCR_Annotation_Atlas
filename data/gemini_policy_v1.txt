@@ -22,6 +22,9 @@
 - CONTINUITY RULE (NO OVER-SEGMENTATION):
   If the same coarse goal continues without dropping/disengaging from the object
   (e.g., sanding/wiping/stirring), merge into one coarse segment.
+- COARSE GOAL VERBS:
+  Do not describe mechanical muscle motions (e.g., "move saw back and forth", "rub sandpaper").
+  Use the task-goal verb (e.g., "cut wood board with saw", "sand wooden board with sandpaper").
 
 ## 3. CONSISTENCY AND DEFENSIBILITY
 - Use one consistent noun per object through the episode.

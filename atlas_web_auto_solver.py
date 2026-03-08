@@ -4217,6 +4217,8 @@ def build_prompt(
         "Never use tool terms like mechanical arm / robotic arm / robot arm / manipulator / claw arm.\n"
         "Split only when goal changes or hands disengage/restart; do not split only for No Action pauses.\n"
         "Continuity rule: if same coarse goal continues without disengaging from the object, keep one coarse segment.\n"
+        "Coarse-goal verbs: avoid mechanical muscle-motion phrasing (e.g., 'move saw back and forth'). "
+        "Use task-goal verbs (e.g., 'cut wood with saw', 'sand board with sandpaper').\n"
         "Use coarse single-goal labels for repetitive actions; use dense labels only when needed.\n"
         "Dense labels may include multiple atomic actions separated by commas/and.\n"
         "Do not exceed 20 words or 2 atomic actions per label (typically one separator: a single comma or one 'and').\n"
@@ -5915,6 +5917,56 @@ def _expand_verb_object_attachment_patterns(text: str) -> str:
     return re.sub(r"\s+", " ", out).strip(" ,")
 
 
+def _normalize_mechanical_motion_to_goal(text: str) -> str:
+    """
+    Replace mechanical-motion wording with coarse goal verbs.
+    Example: "move handsaw back and forth on wooden board" -> "cut wooden board with handsaw"
+    """
+    out = text or ""
+
+    def _norm_obj(value: str) -> str:
+        obj = re.sub(r"\s+", " ", (value or "").strip(" ,.;:"))
+        obj = re.sub(r"^(?:on|onto|across|to|into|in)\s+", "", obj, flags=re.IGNORECASE)
+        obj = re.sub(r"^(?:finish|fully)\s+cut(?:ting)?\s+", "", obj, flags=re.IGNORECASE)
+        obj = re.sub(r"^cut(?:ting)?\s+", "", obj, flags=re.IGNORECASE)
+        return re.sub(r"\s+", " ", obj).strip(" ,.;:")
+
+    def _saw_repl(match: re.Match[str]) -> str:
+        tool_raw = str(match.group("tool") or "").strip().lower()
+        obj = _norm_obj(str(match.group("obj") or ""))
+        if not obj:
+            return match.group(0)
+        tool = "handsaw" if "hand" in tool_raw else "saw"
+        return f"cut {obj} with {tool}"
+
+    # move saw/handsaw back and forth [on/across/to cut] <object>
+    out = re.sub(
+        r"\bmove\s+(?P<tool>hand\s*saw|handsaw|saw)\s+back\s+and\s+forth\s+"
+        r"(?:(?:to\s+)?(?:(?:finish|fully)\s+)?cut(?:ting)?\s+)?"
+        r"(?:(?:on|onto|across|to|into|in)\s+)?(?P<obj>[^,]+)",
+        _saw_repl,
+        out,
+        flags=re.IGNORECASE,
+    )
+
+    def _sand_repl(match: re.Match[str]) -> str:
+        obj = _norm_obj(str(match.group("obj") or ""))
+        if not obj:
+            return match.group(0)
+        return f"sand {obj} with sandpaper"
+
+    # move/rub sandpaper [back and forth] on <object>
+    out = re.sub(
+        r"\b(?:move|rub)\s+sandpaper(?:\s+back\s+and\s+forth)?\s+"
+        r"(?:(?:on|onto|across|to|into|in)\s+)?(?P<obj>[^,]+)",
+        _sand_repl,
+        out,
+        flags=re.IGNORECASE,
+    )
+
+    return re.sub(r"\s+", " ", out).strip(" ,")
+
+
 def _rewrite_label_tier3(label: str) -> str:
     text = re.sub(r"\s+", " ", (label or "").strip())
     if not text:
@@ -5932,6 +5984,7 @@ def _rewrite_label_tier3(label: str) -> str:
     text = re.sub(r"\bturn(?:ed|s|ing)?\b", "adjust", text, flags=re.IGNORECASE)
     text = re.sub(r"\brelocate(?:d|s|ing)?\b", "move", text, flags=re.IGNORECASE)
     text = re.sub(r"\bgrab(?:bed|s|bing)?\b", "pick up", text, flags=re.IGNORECASE)
+    text = _normalize_mechanical_motion_to_goal(text)
     text = _normalize_gripper_terms(text)
     text = _replace_numerals_with_words(text)
     text = _expand_verb_object_attachment_patterns(text)
@@ -5966,6 +6019,7 @@ def _normalize_label_min_safety(label: str) -> str:
     text = re.sub(r"\brotate(?:d|s|ing)?\b", "adjust", text, flags=re.IGNORECASE)
     text = re.sub(r"\bturn(?:ed|s|ing)?\b", "adjust", text, flags=re.IGNORECASE)
     text = re.sub(r"\brelocate(?:d|s|ing)?\b", "move", text, flags=re.IGNORECASE)
+    text = _normalize_mechanical_motion_to_goal(text)
     text = _normalize_gripper_terms(text)
     text = _replace_numerals_with_words(text)
     text = _expand_verb_object_attachment_patterns(text)
