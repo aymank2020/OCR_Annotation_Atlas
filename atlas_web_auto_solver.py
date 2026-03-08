@@ -270,6 +270,9 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "quota_fallback_enabled": False,
         "quota_fallback_max_uses_per_run": 1,
         "model": "gemini-3.1-pro-preview",
+        "retry_with_quota_fallback_model": True,
+        "quota_fallback_model": "gemini-3-pro-preview",
+        "quota_fallback_from_models": ["gemini-3.1-pro-preview"],
         "policy_retry_model": "gemini-2.5-pro",
         "retry_with_stronger_model_on_policy_fail": True,
         "policy_retry_only_if_flash": True,
@@ -5611,6 +5614,63 @@ def _request_labels_with_optional_segment_chunking(
     consistency_normalize_labels = bool(
         _cfg_get(cfg, "run.segment_chunking_consistency_normalize_labels", True)
     )
+    retry_with_quota_fallback_model = bool(
+        _cfg_get(cfg, "gemini.retry_with_quota_fallback_model", True)
+    )
+    quota_fallback_model = str(_cfg_get(cfg, "gemini.quota_fallback_model", "gemini-3-pro-preview") or "").strip()
+    quota_fallback_from_models_raw = _cfg_get(
+        cfg, "gemini.quota_fallback_from_models", ["gemini-3.1-pro-preview"]
+    )
+    quota_fallback_from_models: set[str] = set()
+    if isinstance(quota_fallback_from_models_raw, list):
+        for item in quota_fallback_from_models_raw:
+            value = str(item or "").strip().lower()
+            if value:
+                quota_fallback_from_models.add(value)
+    else:
+        raw_text = str(quota_fallback_from_models_raw or "").strip()
+        if raw_text:
+            for part in re.split(r"[,\|;]+", raw_text):
+                value = str(part or "").strip().lower()
+                if value:
+                    quota_fallback_from_models.add(value)
+    active_model_override = str(model_override or "").strip()
+
+    def _call_labels(prompt_text: str, media_file: Optional[Path], seg_count: int) -> Dict[str, Any]:
+        nonlocal active_model_override
+        request_model = str(
+            active_model_override or _cfg_get(cfg, "gemini.model", "gemini-3.1-pro-preview")
+        ).strip()
+        try:
+            return call_gemini_labels(
+                cfg,
+                prompt_text,
+                video_file=media_file,
+                segment_count=seg_count,
+                model_override=request_model,
+            )
+        except Exception as exc:
+            if not _is_gemini_quota_error(exc):
+                raise
+            fallback_model = quota_fallback_model
+            if not retry_with_quota_fallback_model:
+                raise
+            if not fallback_model or fallback_model.lower() == request_model.lower():
+                raise
+            if quota_fallback_from_models and request_model.lower() not in quota_fallback_from_models:
+                raise
+            print(
+                "[gemini] quota model fallback engaged: "
+                f"{request_model} -> {fallback_model}"
+            )
+            active_model_override = fallback_model
+            return call_gemini_labels(
+                cfg,
+                prompt_text,
+                video_file=media_file,
+                segment_count=seg_count,
+                model_override=active_model_override,
+            )
 
     can_chunk_by_shape = bool(
         chunking_enabled
@@ -5635,34 +5695,16 @@ def _request_labels_with_optional_segment_chunking(
 
     should_chunk = bool(can_chunk_by_shape and not short_video_for_chunking)
     if not should_chunk:
-        return call_gemini_labels(
-            cfg,
-            prompt,
-            video_file=video_file,
-            segment_count=len(segments),
-            model_override=model_override,
-        )
+        return _call_labels(prompt, video_file, len(segments))
 
     ffmpeg_bin = _resolve_ffmpeg_binary()
     if not ffmpeg_bin:
         print("[gemini] segment chunking skipped: ffmpeg not found; using single-request flow.")
-        return call_gemini_labels(
-            cfg,
-            prompt,
-            video_file=video_file,
-            segment_count=len(segments),
-            model_override=model_override,
-        )
+        return _call_labels(prompt, video_file, len(segments))
 
     chunks = _segment_chunks(segments, max_segments_per_chunk)
     if len(chunks) <= 1:
-        return call_gemini_labels(
-            cfg,
-            prompt,
-            video_file=video_file,
-            segment_count=len(segments),
-            model_override=model_override,
-        )
+        return _call_labels(prompt, video_file, len(segments))
 
     extra_base = str(_cfg_get(cfg, "gemini.extra_instructions", "") or "").strip()
     out_dir = Path(str(_cfg_get(cfg, "run.output_dir", "outputs")))
@@ -5739,13 +5781,7 @@ def _request_labels_with_optional_segment_chunking(
                 f"segments={len(chunk_segments)} window={window_start:.1f}-{window_end:.1f}s "
                 f"video={effective_video.name if effective_video is not None else 'none'}"
             )
-            chunk_payload = call_gemini_labels(
-                cfg,
-                chunk_prompt,
-                video_file=effective_video,
-                segment_count=len(chunk_segments),
-                model_override=model_override,
-            )
+            chunk_payload = _call_labels(chunk_prompt, effective_video, len(chunk_segments))
             chunk_plan = _normalize_segment_plan(chunk_payload, chunk_segments, cfg=cfg)
             for seg in chunk_segments:
                 idx = int(seg.get("segment_index", 0))
@@ -5801,7 +5837,7 @@ def _request_labels_with_optional_segment_chunking(
         if "secondary" in meta_key_sources:
             key_source_meta = "secondary"
         model_meta = meta_models[-1] if meta_models else str(
-            model_override or _cfg_get(cfg, "gemini.model", "gemini-3.1-pro-preview")
+            active_model_override or _cfg_get(cfg, "gemini.model", "gemini-3.1-pro-preview")
         )
         result: Dict[str, Any] = {
             "operations": [],
