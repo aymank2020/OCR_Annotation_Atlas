@@ -5709,7 +5709,10 @@ def _request_labels_with_optional_segment_chunking(
                 "model": model_meta,
             },
         }
-        print(f"[gemini] chunked labels merged: {len(combined_segments)} segments from {chunk_count} chunks.")
+        print(
+            f"[gemini] chunked labels merged: {len(combined_segments)} segments from {chunk_count} chunks; "
+            f"consistency_terms={len(consistency_terms)}"
+        )
         return result
     finally:
         if not chunking_keep_temp_files:
