@@ -105,6 +105,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "gemini_quota_global_pause_min_sec": 60.0,
         "gemini_quota_global_pause_step_sec": 60.0,
         "gemini_quota_task_block_max_wait_sec": 21600.0,
+        "gemini_quota_zero_retry_delay_sec": 1800.0,
+        "gemini_quota_zero_release_all_on_pause": True,
         "max_video_prepare_failures_per_task": 2,
         "max_gemini_failures_per_task": 1,
         "workflow_reentry_enter_clicks": 2,
@@ -4853,6 +4855,21 @@ def _is_gemini_quota_error_text(text: str) -> bool:
     return any(marker in body for marker in quota_markers)
 
 
+def _is_gemini_quota_hard_zero_error_text(text: str) -> bool:
+    body = (text or "").lower()
+    if not _is_gemini_quota_error_text(body):
+        return False
+    if not re.search(r"limit:\s*0\b", body):
+        return False
+    hard_zero_markers = (
+        "generate_content_free_tier_requests",
+        "generate_content_free_tier_input_token_count",
+        "generate_requests_per_model_per_day",
+        "free_tier",
+    )
+    return any(marker in body for marker in hard_zero_markers)
+
+
 def _is_gemini_quota_exceeded_429(resp: requests.Response) -> bool:
     if resp.status_code != 429:
         return False
@@ -7872,6 +7889,12 @@ def run(cfg: Dict[str, Any], execute: bool) -> None:
             gemini_quota_task_block_max_wait_sec = max(
                 5.0, float(_cfg_get(cfg, "run.gemini_quota_task_block_max_wait_sec", 21600.0))
             )
+            gemini_quota_zero_retry_delay_sec = max(
+                30.0, float(_cfg_get(cfg, "run.gemini_quota_zero_retry_delay_sec", 1800.0))
+            )
+            gemini_quota_zero_release_all_on_pause = bool(
+                _cfg_get(cfg, "run.gemini_quota_zero_release_all_on_pause", True)
+            )
             max_video_prepare_failures_per_task = max(1, int(_cfg_get(cfg, "run.max_video_prepare_failures_per_task", 2)))
             max_gemini_failures_per_task = max(1, int(_cfg_get(cfg, "run.max_gemini_failures_per_task", 1)))
             episode_no = 0
@@ -7879,6 +7902,7 @@ def run(cfg: Dict[str, Any], execute: bool) -> None:
             blocked_task_ids: set[str] = set()
             quota_blocked_task_until_ts: Dict[str, float] = {}
             gemini_quota_global_pause_until_ts = 0.0
+            quota_zero_release_pending = False
             video_prepare_failures_by_task: Dict[str, int] = {}
             gemini_failures_by_task: Dict[str, int] = {}
             duplicate_hits = 0
@@ -7913,9 +7937,19 @@ def run(cfg: Dict[str, Any], execute: bool) -> None:
                 }
 
             def _register_quota_failure(task_id: Optional[str], exc: Exception, phase_label: str) -> float:
-                nonlocal gemini_quota_global_pause_until_ts
+                nonlocal gemini_quota_global_pause_until_ts, quota_zero_release_pending
                 base_delay_sec = max(1.0, float(_cfg_get(cfg, "run.gemini_quota_retry_delay_sec", 15.0)))
-                quota_wait_sec = _extract_retry_seconds_from_text(str(exc or ""), default_wait_sec=base_delay_sec)
+                err_text = str(exc or "")
+                quota_wait_sec = _extract_retry_seconds_from_text(err_text, default_wait_sec=base_delay_sec)
+                hard_zero_quota = _is_gemini_quota_hard_zero_error_text(err_text)
+                if hard_zero_quota:
+                    quota_wait_sec = max(quota_wait_sec, gemini_quota_zero_retry_delay_sec)
+                    if gemini_quota_zero_release_all_on_pause:
+                        quota_zero_release_pending = True
+                    print(
+                        "[run] hard quota=0 detected for current Gemini project/model; "
+                        f"applying long cooldown {quota_wait_sec:.1f}s."
+                    )
                 quota_wait_sec = min(gemini_quota_task_block_max_wait_sec, max(base_delay_sec, quota_wait_sec))
                 now_ts = time.time()
 
@@ -8017,6 +8051,25 @@ def run(cfg: Dict[str, Any], execute: bool) -> None:
                                 pass
                         continue
                     break
+
+                if quota_zero_release_pending:
+                    print("[run] quota hard-stop active; attempting release-all before cooldown wait.")
+                    _release_all_reserved_episodes(page, cfg)
+                    quota_zero_release_pending = False
+                    blocked_task_ids.clear()
+                    seen_task_ids.clear()
+                    if room_url:
+                        try:
+                            _goto_with_retry(
+                                page,
+                                room_url,
+                                wait_until="domcontentloaded",
+                                timeout_ms=45000,
+                                cfg=cfg,
+                                reason="room-after-quota-hard-stop-release",
+                            )
+                        except Exception:
+                            pass
 
                 if gemini_quota_global_pause_until_ts > time.time():
                     remaining_sec = gemini_quota_global_pause_until_ts - time.time()
