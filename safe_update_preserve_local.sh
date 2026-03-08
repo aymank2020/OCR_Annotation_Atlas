@@ -8,11 +8,16 @@ set -euo pipefail
 
 BRANCH="${1:-main}"
 APP_DIR="${2:-$(pwd)}"
+REMOTE_URL="${3:-https://github.com/aymank2020/OCR_Annotation_Atlas.git}"
 
 cd "$APP_DIR"
 if [ ! -d .git ]; then
-  echo "[safe-update] ERROR: $APP_DIR is not a git repository."
-  exit 1
+  echo "[safe-update] .git is missing. Bootstrapping git metadata from remote..."
+  TMP="$(mktemp -d)"
+  git clone --no-checkout "$REMOTE_URL" "$TMP/repo"
+  cp -a "$TMP/repo/.git" .
+  rm -rf "$TMP"
+  echo "[safe-update] git metadata restored."
 fi
 
 TS="$(date +%Y%m%d_%H%M%S)"

@@ -79,6 +79,10 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "reserve_wait_only_on_rate_limit": True,
         "reserve_attempts_per_visit": 3,
         "reserve_label_wait_timeout_ms": 12000,
+        "reserve_label_wait_timeout_after_reserve_ms": 3500,
+        "reserve_immediate_when_no_reserved": True,
+        "reserve_skip_initial_label_scan_when_no_reserved": True,
+        "reserve_no_reserved_probe_timeout_ms": 900,
         "reserve_refresh_after_click": True,
         "reserve_rate_limit_wait_sec": 180,
         "release_all_on_internal_error": True,
@@ -93,6 +97,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "continue_on_episode_error": True,
         "max_episode_failures_per_run": 3,
         "episode_failure_retry_delay_sec": 4.0,
+        "gemini_quota_retry_delay_sec": 15.0,
         "max_video_prepare_failures_per_task": 2,
         "max_gemini_failures_per_task": 1,
         "workflow_reentry_enter_clicks": 2,
@@ -248,6 +253,9 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "max_output_tokens": 8192,
         "candidate_count": 1,
         "max_retries": 3,
+        "retry_on_quota_429": False,
+        "quota_retry_default_wait_sec": 12.0,
+        "quota_cooldown_max_wait_sec": 120.0,
         "retry_base_delay_sec": 2.0,
         "retry_jitter_sec": 0.8,
         "max_backoff_sec": 30.0,
@@ -255,9 +263,9 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "price_output_per_million": 2.50,
         "usage_log_file": "gemini_usage.jsonl",
         "rate_limit_enabled": True,
-        "rate_limit_requests_per_minute": 9,
+        "rate_limit_requests_per_minute": 6,
         "rate_limit_window_sec": 60.0,
-        "rate_limit_min_interval_sec": 6.8,
+        "rate_limit_min_interval_sec": 10.5,
         "connect_timeout_sec": 30,
         "request_timeout_sec": 420,
         "attach_video": True,
@@ -306,6 +314,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
 _LAST_RESERVE_REQUEST_TS = 0.0
 _LAST_GEMINI_REQUEST_TS = 0.0
 _GEMINI_REQUEST_TIMESTAMPS: List[float] = []
+_GEMINI_QUOTA_COOLDOWN_UNTIL_TS = 0.0
 _GEMINI_FALLBACK_USES = 0
 _SCRIPT_BUILD = "2026-02-27.0905"
 
@@ -2347,6 +2356,29 @@ def _reserve_rate_limited(page: Page) -> bool:
     return False
 
 
+def _room_has_no_reserved_episodes(page: Page, cfg: Dict[str, Any]) -> bool:
+    probe_timeout_ms = max(200, int(_cfg_get(cfg, "run.reserve_no_reserved_probe_timeout_ms", 900)))
+    reserve_btn_selector = str(_cfg_get(cfg, "atlas.selectors.reserve_episodes_button", "")).strip()
+    body = ""
+    try:
+        body = (page.inner_text("body") or "").lower()
+    except Exception:
+        body = ""
+    if not body:
+        return False
+    no_reserved_markers = (
+        "no episodes reserved",
+        "no episode reserved",
+    )
+    if not any(marker in body for marker in no_reserved_markers):
+        return False
+    if reserve_btn_selector:
+        reserve_loc = _first_visible_locator(page, reserve_btn_selector, timeout_ms=probe_timeout_ms)
+        if reserve_loc is not None:
+            return True
+    return "reserve" in body and "episode" in body
+
+
 def _release_all_reserved_episodes(page: Page, cfg: Dict[str, Any]) -> bool:
     room_url = str(_cfg_get(cfg, "atlas.room_url", "")).strip()
     release_btn = str(_cfg_get(cfg, "atlas.selectors.release_all_button", "")).strip()
@@ -2426,6 +2458,69 @@ def _compute_backoff_delay(cfg: Dict[str, Any], attempt: int) -> float:
     if jitter_max > 0:
         delay += random.uniform(0.0, jitter_max)
     return delay
+
+
+def _extract_retry_seconds_from_text(text: str, default_wait_sec: float = 0.0) -> float:
+    body = (text or "").lower()
+    if not body:
+        return max(0.0, float(default_wait_sec))
+
+    patterns: List[Tuple[str, float]] = [
+        (r"(?:retry|try again|please retry)\s+in\s*([0-9]+(?:\.[0-9]+)?)\s*(?:s|sec|secs|second|seconds)\b", 1.0),
+        (r"(?:retry|try again|please retry)\s+in\s*([0-9]+(?:\.[0-9]+)?)\s*(?:m|min|mins|minute|minutes)\b", 60.0),
+        (r"wait\s*([0-9]+(?:\.[0-9]+)?)\s*(?:s|sec|secs|second|seconds)\b", 1.0),
+        (r"wait\s*([0-9]+(?:\.[0-9]+)?)\s*(?:m|min|mins|minute|minutes)\b", 60.0),
+    ]
+    for pattern, multiplier in patterns:
+        m = re.search(pattern, body)
+        if not m:
+            continue
+        try:
+            amount = float(m.group(1))
+        except Exception:
+            continue
+        if amount > 0:
+            return amount * multiplier
+    return max(0.0, float(default_wait_sec))
+
+
+def _extract_retry_seconds_from_response(resp: requests.Response, default_wait_sec: float = 0.0) -> float:
+    retry_after = (resp.headers.get("Retry-After") or "").strip()
+    if retry_after:
+        try:
+            value = float(retry_after)
+            if value > 0:
+                return value
+        except Exception:
+            pass
+    return _extract_retry_seconds_from_text(resp.text or "", default_wait_sec=default_wait_sec)
+
+
+def _set_gemini_quota_cooldown(wait_sec: float) -> float:
+    global _GEMINI_QUOTA_COOLDOWN_UNTIL_TS
+    wait_sec = max(0.0, float(wait_sec))
+    if wait_sec <= 0:
+        return 0.0
+    until_ts = time.time() + wait_sec
+    if until_ts > _GEMINI_QUOTA_COOLDOWN_UNTIL_TS:
+        _GEMINI_QUOTA_COOLDOWN_UNTIL_TS = until_ts
+    return wait_sec
+
+
+def _respect_gemini_quota_cooldown(cfg: Dict[str, Any]) -> None:
+    global _GEMINI_QUOTA_COOLDOWN_UNTIL_TS
+    now = time.time()
+    if _GEMINI_QUOTA_COOLDOWN_UNTIL_TS <= now:
+        return
+    remaining = _GEMINI_QUOTA_COOLDOWN_UNTIL_TS - now
+    max_wait = max(0.0, float(_cfg_get(cfg, "gemini.quota_cooldown_max_wait_sec", 120.0)))
+    wait_sec = remaining if max_wait <= 0 else min(remaining, max_wait)
+    if wait_sec <= 0:
+        return
+    print(f"[gemini] quota cooldown active: sleeping {wait_sec:.1f}s.")
+    time.sleep(wait_sec)
+    if time.time() >= _GEMINI_QUOTA_COOLDOWN_UNTIL_TS - 0.05:
+        _GEMINI_QUOTA_COOLDOWN_UNTIL_TS = 0.0
 
 
 def _respect_gemini_rate_limit(cfg: Dict[str, Any]) -> None:
@@ -3294,8 +3389,15 @@ def goto_task_room(
         page.wait_for_timeout(1000)
         reserve_attempts = max(1, int(_cfg_get(cfg, "run.reserve_attempts_per_visit", 3)))
         label_wait_timeout_ms = max(1500, int(_cfg_get(cfg, "run.reserve_label_wait_timeout_ms", 12000)))
+        label_wait_after_reserve_timeout_ms = max(
+            1000, int(_cfg_get(cfg, "run.reserve_label_wait_timeout_after_reserve_ms", 3500))
+        )
         reserve_refresh_after_click = bool(_cfg_get(cfg, "run.reserve_refresh_after_click", True))
         reserve_wait_only_on_rate_limit = bool(_cfg_get(cfg, "run.reserve_wait_only_on_rate_limit", True))
+        reserve_immediate_when_no_reserved = bool(_cfg_get(cfg, "run.reserve_immediate_when_no_reserved", True))
+        reserve_skip_initial_label_scan_when_no_reserved = bool(
+            _cfg_get(cfg, "run.reserve_skip_initial_label_scan_when_no_reserved", True)
+        )
         skip_reserve_when_all_visible_blocked = bool(
             _cfg_get(cfg, "run.skip_reserve_when_all_visible_blocked", True)
         )
@@ -3303,17 +3405,19 @@ def goto_task_room(
         def _open_first_label_from_page(reason: str) -> bool:
             nonlocal release_requested_by_internal_error
             href_candidates = _all_task_label_hrefs_from_page(page)
+            attempted_unblocked_candidate = False
             for href_from_html in href_candidates:
                 tid = _task_id_from_url(href_from_html)
                 if tid and tid in blocked_task_ids:
                     continue
+                attempted_unblocked_candidate = True
                 target = href_from_html if href_from_html.startswith("http") else f"https://audit.atlascapture.io{href_from_html}"
                 if _open_label_target(target, reason=reason, log_label="html href"):
                     return True
                 if release_requested_by_internal_error:
                     return False
 
-            if blocked_task_ids:
+            if href_candidates and blocked_task_ids and not attempted_unblocked_candidate:
                 print(f"[atlas] all visible label tasks are blocked in this run ({len(blocked_task_ids)} blocked).")
                 if isinstance(status_out, dict):
                     status_out["all_visible_blocked"] = True
@@ -3365,9 +3469,16 @@ def goto_task_room(
                 return _open_label_target(target, reason=f"{reason}-href-fallback", log_label="href fallback")
             return False
 
-        if _open_first_label_from_page("open-label-html"):
+        no_reserved_episodes = reserve_immediate_when_no_reserved and _room_has_no_reserved_episodes(page, cfg)
+        if no_reserved_episodes:
+            print("[atlas] no reserved episodes detected; reserving immediately.")
+        try_initial_label_scan = not (no_reserved_episodes and reserve_skip_initial_label_scan_when_no_reserved)
+
+        if try_initial_label_scan and _open_first_label_from_page("open-label-html"):
             return True
         if (
+            try_initial_label_scan
+            and
             isinstance(status_out, dict)
             and bool(status_out.get("all_visible_blocked"))
             and skip_reserve_when_all_visible_blocked
@@ -3380,9 +3491,10 @@ def goto_task_room(
         for reserve_attempt in range(1, reserve_attempts + 1):
             reserved = False
             reserve_label = ""
-            _respect_reserve_min_interval(cfg)
-            if not reserve_wait_only_on_rate_limit:
-                _respect_reserve_cooldown(cfg)
+            if not no_reserved_episodes:
+                _respect_reserve_min_interval(cfg)
+                if not reserve_wait_only_on_rate_limit:
+                    _respect_reserve_cooldown(cfg)
             clicked, reserve_label = _click_reserve_button_dynamic(page, cfg, timeout_ms=2500)
             if clicked:
                 try:
@@ -3428,7 +3540,10 @@ def goto_task_room(
                         pass
 
             _safe_locator_click(page, label_button, timeout_ms=3500)
-            _wait_for_any(page, label_task_link, timeout_ms=label_wait_timeout_ms)
+            wait_timeout_ms = label_wait_after_reserve_timeout_ms if reserved else label_wait_timeout_ms
+            if no_reserved_episodes and not reserved:
+                wait_timeout_ms = min(wait_timeout_ms, 2500)
+            _wait_for_any(page, label_task_link, timeout_ms=wait_timeout_ms)
             page.wait_for_timeout(700)
             if _open_first_label_from_page("open-label-after-reserve"):
                 return True
@@ -3437,7 +3552,7 @@ def goto_task_room(
                 continue
 
             if reserve_attempt < reserve_attempts:
-                page.wait_for_timeout(900)
+                page.wait_for_timeout(250 if no_reserved_episodes else 900)
 
     return "/tasks/room/normal/label/" in page.url
 
@@ -4269,10 +4384,8 @@ def _upload_video_via_gemini_files_api(
     return file_uri, file_name
 
 
-def _is_gemini_quota_exceeded_429(resp: requests.Response) -> bool:
-    if resp.status_code != 429:
-        return False
-    body = (resp.text or "").lower()
+def _is_gemini_quota_error_text(text: str) -> bool:
+    body = (text or "").lower()
     quota_markers = (
         "quota exceeded",
         "exceeded your current quota",
@@ -4281,6 +4394,16 @@ def _is_gemini_quota_exceeded_429(resp: requests.Response) -> bool:
         "generate_content_free_tier_requests",
     )
     return any(marker in body for marker in quota_markers)
+
+
+def _is_gemini_quota_exceeded_429(resp: requests.Response) -> bool:
+    if resp.status_code != 429:
+        return False
+    return _is_gemini_quota_error_text(resp.text or "")
+
+
+def _is_gemini_quota_error(exc: Exception) -> bool:
+    return _is_gemini_quota_error_text(str(exc or ""))
 
 
 def _build_gemini_generation_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
@@ -4598,6 +4721,7 @@ def call_gemini_labels(
         if system_instruction:
             payload["systemInstruction"] = {"parts": [{"text": system_instruction}]}
         try:
+            _respect_gemini_quota_cooldown(cfg)
             _respect_gemini_rate_limit(cfg)
             headers = {"Content-Type": "application/json", "X-goog-api-key": active_api_key}
             resp = requests.post(
@@ -4656,8 +4780,22 @@ def call_gemini_labels(
 
         last_error = f"Gemini HTTP {resp.status_code}: {resp.text[:800]}"
         if _is_gemini_quota_exceeded_429(resp):
+            quota_default_wait = max(1.0, float(_cfg_get(cfg, "gemini.quota_retry_default_wait_sec", 12.0)))
+            quota_wait_sec = _extract_retry_seconds_from_response(resp, default_wait_sec=quota_default_wait)
             if _switch_to_secondary_key_for_quota():
                 continue
+            cooldown_wait = _set_gemini_quota_cooldown(quota_wait_sec)
+            retry_on_quota_429 = bool(_cfg_get(cfg, "gemini.retry_on_quota_429", False))
+            if retry_on_quota_429 and attempt < max_retries:
+                delay = max(cooldown_wait, _compute_backoff_delay(cfg, attempt))
+                print(f"[gemini] quota error 429, retrying in {delay:.1f}s")
+                time.sleep(delay)
+                continue
+            print(
+                "[gemini] quota error 429 detected; skipping extra retries for this request "
+                f"(cooldown={cooldown_wait:.1f}s)."
+            )
+            break
         if (
             include_video
             and not require_video
@@ -6561,19 +6699,29 @@ def run(cfg: Dict[str, Any], execute: bool) -> None:
                             segment_count=len(segments),
                         )
                     except Exception as exc:
-                        consecutive_episode_failures += 1
+                        quota_error = _is_gemini_quota_error(exc)
+                        if quota_error:
+                            consecutive_episode_failures = 0
+                        else:
+                            consecutive_episode_failures += 1
                         print(f"[run] episode {episode_no} failed during Gemini request: {exc}")
                         _capture_debug_artifacts(page, cfg, prefix="debug_episode_failure")
                         if task_id:
-                            current_failures = int(gemini_failures_by_task.get(task_id, 0)) + 1
-                            gemini_failures_by_task[task_id] = current_failures
-                            print(
-                                f"[run] gemini failure for task {task_id}: "
-                                f"{current_failures}/{max_gemini_failures_per_task}"
-                            )
-                            if current_failures >= max_gemini_failures_per_task:
-                                blocked_task_ids.add(task_id)
-                                print(f"[run] task blocked for this run due to repeated Gemini failures: {task_id}")
+                            if quota_error:
+                                print(
+                                    f"[run] gemini quota limit for task {task_id}; "
+                                    "task will not be blocked and will be retried later."
+                                )
+                            else:
+                                current_failures = int(gemini_failures_by_task.get(task_id, 0)) + 1
+                                gemini_failures_by_task[task_id] = current_failures
+                                print(
+                                    f"[run] gemini failure for task {task_id}: "
+                                    f"{current_failures}/{max_gemini_failures_per_task}"
+                                )
+                                if current_failures >= max_gemini_failures_per_task:
+                                    blocked_task_ids.add(task_id)
+                                    print(f"[run] task blocked for this run due to repeated Gemini failures: {task_id}")
                         if task_id and resume_from_artifacts:
                             task_state["last_error"] = str(exc)
                             _save_task_state(cfg, task_id, task_state)
@@ -6602,9 +6750,16 @@ def run(cfg: Dict[str, Any], execute: bool) -> None:
                                 )
                             except Exception:
                                 pass
-                        if episode_failure_retry_delay_sec > 0:
-                            print(f"[run] waiting {episode_failure_retry_delay_sec:.1f}s before retrying next episode.")
-                            time.sleep(episode_failure_retry_delay_sec)
+                        retry_delay_sec = episode_failure_retry_delay_sec
+                        if quota_error:
+                            quota_retry_delay_sec = max(
+                                0.0,
+                                float(_cfg_get(cfg, "run.gemini_quota_retry_delay_sec", 15.0)),
+                            )
+                            retry_delay_sec = max(retry_delay_sec, quota_retry_delay_sec)
+                        if retry_delay_sec > 0:
+                            print(f"[run] waiting {retry_delay_sec:.1f}s before retrying next episode.")
+                            time.sleep(retry_delay_sec)
                         continue
                     if execute and execute_require_video_context:
                         meta = labels_payload.get("_meta", {}) if isinstance(labels_payload, dict) else {}
@@ -6657,19 +6812,29 @@ def run(cfg: Dict[str, Any], execute: bool) -> None:
                                 segment_count=len(segments),
                             )
                         except Exception as exc:
-                            consecutive_episode_failures += 1
+                            quota_error = _is_gemini_quota_error(exc)
+                            if quota_error:
+                                consecutive_episode_failures = 0
+                            else:
+                                consecutive_episode_failures += 1
                             print(f"[run] episode {episode_no} failed during Gemini re-query: {exc}")
                             _capture_debug_artifacts(page, cfg, prefix="debug_episode_failure")
                             if task_id:
-                                current_failures = int(gemini_failures_by_task.get(task_id, 0)) + 1
-                                gemini_failures_by_task[task_id] = current_failures
-                                print(
-                                    f"[run] gemini re-query failure for task {task_id}: "
-                                    f"{current_failures}/{max_gemini_failures_per_task}"
-                                )
-                                if current_failures >= max_gemini_failures_per_task:
-                                    blocked_task_ids.add(task_id)
-                                    print(f"[run] task blocked for this run due to repeated Gemini failures: {task_id}")
+                                if quota_error:
+                                    print(
+                                        f"[run] gemini quota limit on re-query for task {task_id}; "
+                                        "task will not be blocked and will be retried later."
+                                    )
+                                else:
+                                    current_failures = int(gemini_failures_by_task.get(task_id, 0)) + 1
+                                    gemini_failures_by_task[task_id] = current_failures
+                                    print(
+                                        f"[run] gemini re-query failure for task {task_id}: "
+                                        f"{current_failures}/{max_gemini_failures_per_task}"
+                                    )
+                                    if current_failures >= max_gemini_failures_per_task:
+                                        blocked_task_ids.add(task_id)
+                                        print(f"[run] task blocked for this run due to repeated Gemini failures: {task_id}")
                             if task_id and resume_from_artifacts:
                                 task_state["last_error"] = str(exc)
                                 _save_task_state(cfg, task_id, task_state)
@@ -6698,9 +6863,16 @@ def run(cfg: Dict[str, Any], execute: bool) -> None:
                                     )
                                 except Exception:
                                     pass
-                            if episode_failure_retry_delay_sec > 0:
-                                print(f"[run] waiting {episode_failure_retry_delay_sec:.1f}s before retrying next episode.")
-                                time.sleep(episode_failure_retry_delay_sec)
+                            retry_delay_sec = episode_failure_retry_delay_sec
+                            if quota_error:
+                                quota_retry_delay_sec = max(
+                                    0.0,
+                                    float(_cfg_get(cfg, "run.gemini_quota_retry_delay_sec", 15.0)),
+                                )
+                                retry_delay_sec = max(retry_delay_sec, quota_retry_delay_sec)
+                            if retry_delay_sec > 0:
+                                print(f"[run] waiting {retry_delay_sec:.1f}s before retrying next episode.")
+                                time.sleep(retry_delay_sec)
                             continue
                         if execute and execute_require_video_context:
                             meta = labels_payload.get("_meta", {}) if isinstance(labels_payload, dict) else {}
