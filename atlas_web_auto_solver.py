@@ -48,6 +48,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "proxy_username": "",
         "proxy_password": "",
         "proxy_bypass": "",
+        "force_disable_proxy": True,
         "clear_env_proxy_for_backend_requests": True,
         "chrome_channel": "chrome",
         "executable_path": "",
@@ -334,6 +335,11 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "split_upload_reencode_fps": 12.0,
         "split_upload_inline_total_max_mb": 12.0,
         "split_upload_overlap_sec": 0.6,
+        "vision_preencode_enabled": True,
+        "vision_preencode_only_if_larger_mb": 20.0,
+        "vision_preencode_max_width": 1280,
+        "vision_preencode_fps": 12.0,
+        "vision_preencode_crf": 26,
         "reference_frames_enabled": True,
         "reference_frames_always": False,
         "reference_frame_attach_when_video_mb_le": 2.5,
@@ -1636,7 +1642,7 @@ def _split_video_for_upload(video_file: Path, cfg: Dict[str, Any]) -> List[Path]
 
     size_bytes = int(video_file.stat().st_size)
     size_mb = size_bytes / (1024 * 1024)
-    trigger_mb = max(1.0, float(_cfg_get(cfg, "gemini.split_upload_only_if_larger_mb", 14.0)))
+    trigger_mb = max(1.0, float(_cfg_get(cfg, "gemini.split_upload_only_if_larger_mb", 5.0)))
     if size_mb <= trigger_mb:
         return []
 
@@ -2062,6 +2068,95 @@ def _transcode_video_ffmpeg(
             stderr_snippet = stderr_snippet.splitlines()[-1]
         last_err = stderr_snippet or f"ffmpeg exit code {proc.returncode}"
     return False, last_err
+
+
+def _maybe_preencode_video_for_vision(video_file: Path, cfg: Dict[str, Any]) -> Path:
+    if video_file is None or not video_file.exists():
+        return video_file
+    if not bool(_cfg_get(cfg, "gemini.vision_preencode_enabled", True)):
+        return video_file
+
+    size_bytes = int(video_file.stat().st_size)
+    size_mb = size_bytes / (1024 * 1024)
+    trigger_mb = max(1.0, float(_cfg_get(cfg, "gemini.vision_preencode_only_if_larger_mb", 20.0)))
+    if size_mb <= trigger_mb:
+        return video_file
+
+    ffmpeg_bin = _resolve_ffmpeg_binary()
+    if not ffmpeg_bin:
+        return video_file
+
+    max_width = max(640, int(_cfg_get(cfg, "gemini.vision_preencode_max_width", 1280)))
+    target_fps = max(6.0, float(_cfg_get(cfg, "gemini.vision_preencode_fps", 12.0)))
+    crf = int(_cfg_get(cfg, "gemini.vision_preencode_crf", 26))
+    crf = max(18, min(35, crf))
+    out_file = video_file.with_name(f"{video_file.stem}_vision_pre.mp4")
+
+    if out_file.exists() and out_file.stat().st_size > 0 and _is_probably_mp4(out_file):
+        try:
+            out_size_mb = out_file.stat().st_size / (1024 * 1024)
+            print(
+                f"[video] using cached vision pre-encode: {out_file.name} "
+                f"({out_size_mb:.1f} MB)"
+            )
+            return out_file
+        except Exception:
+            pass
+
+    filter_expr = f"scale='if(gt(iw,{max_width}),{max_width},iw)':-2,fps={target_fps:.3f}"
+    cmd = [
+        ffmpeg_bin,
+        "-y",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-i",
+        str(video_file),
+        "-an",
+        "-sn",
+        "-dn",
+        "-vf",
+        filter_expr,
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-crf",
+        str(crf),
+        "-pix_fmt",
+        "yuv420p",
+        "-movflags",
+        "+faststart",
+        str(out_file),
+    ]
+    try:
+        proc = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            text=True,
+            timeout=600,
+        )
+    except Exception:
+        return video_file
+    if proc.returncode != 0 or not out_file.exists() or out_file.stat().st_size <= 0:
+        return video_file
+    if not _is_probably_mp4(out_file):
+        return video_file
+
+    out_size_bytes = int(out_file.stat().st_size)
+    out_size_mb = out_size_bytes / (1024 * 1024)
+    if out_size_bytes >= int(size_bytes * 0.98):
+        print(
+            f"[video] vision pre-encode not smaller enough ({out_size_mb:.1f} MB); using original."
+        )
+        return video_file
+    print(
+        f"[video] vision pre-encode ready: {out_file.name} "
+        f"({size_mb:.1f} MB -> {out_size_mb:.1f} MB, {max_width}px/{target_fps:.1f}fps/crf{crf})"
+    )
+    return out_file
 
 
 def _transcode_video_cv2(
@@ -5129,6 +5224,7 @@ def call_gemini_labels(
     prepared_video_file = video_file
     prepared_video_files: List[Path] = []
     if attach_video and prepared_video_file is not None and prepared_video_file.exists():
+        prepared_video_file = _maybe_preencode_video_for_vision(prepared_video_file, cfg)
         split_files = _split_video_for_upload(prepared_video_file, cfg)
         if split_files:
             prepared_video_files = split_files
@@ -5713,8 +5809,8 @@ def _request_labels_with_optional_segment_chunking(
     task_id: str = "",
 ) -> Dict[str, Any]:
     chunking_enabled = bool(_cfg_get(cfg, "run.segment_chunking_enabled", True))
-    min_segments_for_chunking = max(2, int(_cfg_get(cfg, "run.segment_chunking_min_segments", 16)))
-    min_video_sec_for_chunking = max(0.0, float(_cfg_get(cfg, "run.segment_chunking_min_video_sec", 60.0)))
+    min_segments_for_chunking = max(2, int(_cfg_get(cfg, "run.segment_chunking_min_segments", 2)))
+    min_video_sec_for_chunking = max(0.0, float(_cfg_get(cfg, "run.segment_chunking_min_video_sec", 0.0)))
     max_segments_per_chunk = max(2, int(_cfg_get(cfg, "run.segment_chunking_max_segments_per_request", 2)))
     chunking_disable_operations = bool(_cfg_get(cfg, "run.segment_chunking_disable_operations", True))
     chunking_video_pad_sec = max(0.0, float(_cfg_get(cfg, "run.segment_chunking_video_pad_sec", 1.0)))
@@ -7519,6 +7615,11 @@ def _apply_global_gemini_video_policy(cfg: Dict[str, Any]) -> None:
         "split_upload_reencode_fps": 12.0,
         "split_upload_inline_total_max_mb": 12.0,
         "split_upload_overlap_sec": 0.6,
+        "vision_preencode_enabled": True,
+        "vision_preencode_only_if_larger_mb": 20.0,
+        "vision_preencode_max_width": 1280,
+        "vision_preencode_fps": 12.0,
+        "vision_preencode_crf": 26,
         "reference_frames_enabled": True,
         "reference_frames_always": False,
         "reference_frame_attach_when_video_mb_le": 2.5,
@@ -7566,6 +7667,42 @@ def _apply_global_gemini_video_policy(cfg: Dict[str, Any]) -> None:
     if not bool(gem.get("split_upload_force_reencode", True)):
         gem["split_upload_force_reencode"] = True
         print("[policy] gemini.split_upload_force_reencode forced ON.")
+
+    if not bool(gem.get("vision_preencode_enabled", True)):
+        gem["vision_preencode_enabled"] = True
+        print("[policy] gemini.vision_preencode_enabled forced ON.")
+
+    try:
+        vision_preencode_trigger_mb = float(gem.get("vision_preencode_only_if_larger_mb", 20.0))
+    except Exception:
+        vision_preencode_trigger_mb = 20.0
+    if vision_preencode_trigger_mb < 8.0 or vision_preencode_trigger_mb > 40.0:
+        gem["vision_preencode_only_if_larger_mb"] = 20.0
+        print("[policy] gemini.vision_preencode_only_if_larger_mb forced to 20.0.")
+
+    try:
+        vision_preencode_max_width = int(gem.get("vision_preencode_max_width", 1280))
+    except Exception:
+        vision_preencode_max_width = 1280
+    if vision_preencode_max_width < 960 or vision_preencode_max_width > 1920:
+        gem["vision_preencode_max_width"] = 1280
+        print("[policy] gemini.vision_preencode_max_width forced to 1280.")
+
+    try:
+        vision_preencode_fps = float(gem.get("vision_preencode_fps", 12.0))
+    except Exception:
+        vision_preencode_fps = 12.0
+    if vision_preencode_fps < 8.0 or vision_preencode_fps > 15.0:
+        gem["vision_preencode_fps"] = 12.0
+        print("[policy] gemini.vision_preencode_fps forced to 12.0.")
+
+    try:
+        vision_preencode_crf = int(gem.get("vision_preencode_crf", 26))
+    except Exception:
+        vision_preencode_crf = 26
+    if vision_preencode_crf < 22 or vision_preencode_crf > 30:
+        gem["vision_preencode_crf"] = 26
+        print("[policy] gemini.vision_preencode_crf forced to 26.")
 
     try:
         overlap_sec = float(gem.get("split_upload_overlap_sec", 0.6))
@@ -7673,6 +7810,10 @@ def _apply_global_run_policy(cfg: Dict[str, Any]) -> None:
     if not isinstance(run, dict):
         cfg["run"] = {}
         run = cfg["run"]
+    browser = cfg.setdefault("browser", {})
+    if not isinstance(browser, dict):
+        cfg["browser"] = {}
+        browser = cfg["browser"]
 
     run.setdefault("auto_continuity_merge_enabled", True)
     run.setdefault("auto_continuity_merge_min_run_segments", 3)
@@ -7713,6 +7854,11 @@ def _apply_global_run_policy(cfg: Dict[str, Any]) -> None:
     run["gemini_quota_global_pause_step_sec"] = 5.0
     # Disable long global quota pauses; keep short per-task cooldown instead.
     run["gemini_quota_global_pause_min_sec"] = 999999.0
+    browser["force_disable_proxy"] = True
+    for proxy_key in ("proxy_server", "proxy_username", "proxy_password", "proxy_bypass"):
+        if str(browser.get(proxy_key, "") or "").strip():
+            browser[proxy_key] = ""
+            print(f"[policy] browser.{proxy_key} cleared (direct server IP mode).")
     if not bool(run.get("execute_require_video_context", True)):
         run["execute_require_video_context"] = True
         print("[policy] run.execute_require_video_context forced ON.")
@@ -7778,22 +7924,30 @@ def run(cfg: Dict[str, Any], execute: bool) -> None:
         chrome_profile_directory = ""
     else:
         chrome_profile_directory = chrome_profile_directory_raw or "Default"
-    proxy_server_raw = (
-        str(_cfg_get(cfg, "browser.proxy_server", "")).strip()
-        or os.environ.get("ATLAS_PROXY_SERVER", "").strip()
-    )
-    proxy_username = (
-        str(_cfg_get(cfg, "browser.proxy_username", "")).strip()
-        or os.environ.get("ATLAS_PROXY_USERNAME", "").strip()
-    )
-    proxy_password = (
-        str(_cfg_get(cfg, "browser.proxy_password", "")).strip()
-        or os.environ.get("ATLAS_PROXY_PASSWORD", "").strip()
-    )
-    proxy_bypass = (
-        str(_cfg_get(cfg, "browser.proxy_bypass", "")).strip()
-        or os.environ.get("ATLAS_PROXY_BYPASS", "").strip()
-    )
+    force_disable_proxy = bool(_cfg_get(cfg, "browser.force_disable_proxy", True))
+    if force_disable_proxy:
+        proxy_server_raw = ""
+        proxy_username = ""
+        proxy_password = ""
+        proxy_bypass = ""
+        print("[browser] proxy disabled by policy; using server IP directly.")
+    else:
+        proxy_server_raw = (
+            str(_cfg_get(cfg, "browser.proxy_server", "")).strip()
+            or os.environ.get("ATLAS_PROXY_SERVER", "").strip()
+        )
+        proxy_username = (
+            str(_cfg_get(cfg, "browser.proxy_username", "")).strip()
+            or os.environ.get("ATLAS_PROXY_USERNAME", "").strip()
+        )
+        proxy_password = (
+            str(_cfg_get(cfg, "browser.proxy_password", "")).strip()
+            or os.environ.get("ATLAS_PROXY_PASSWORD", "").strip()
+        )
+        proxy_bypass = (
+            str(_cfg_get(cfg, "browser.proxy_bypass", "")).strip()
+            or os.environ.get("ATLAS_PROXY_BYPASS", "").strip()
+        )
     clear_env_proxy_for_backend_requests = bool(
         _cfg_get(cfg, "browser.clear_env_proxy_for_backend_requests", True)
     )
@@ -7817,6 +7971,10 @@ def run(cfg: Dict[str, Any], execute: bool) -> None:
             "http_proxy",
             "https_proxy",
             "all_proxy",
+            "ATLAS_PROXY_SERVER",
+            "ATLAS_PROXY_USERNAME",
+            "ATLAS_PROXY_PASSWORD",
+            "ATLAS_PROXY_BYPASS",
         ):
             if os.environ.pop(env_name, None):
                 cleared_proxy_env.append(env_name)
