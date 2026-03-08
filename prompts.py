@@ -36,6 +36,10 @@ Strict rules:
 - place should include location
 - attach every verb to an object (no "pick up and place box"; use "pick up box, place box ...")
 - if lift then place both happen in the same segment, include both actions
+- if draft phrasing violates Tier-3 rules, rewrite the label from scratch (do not patch bad shorthand)
+- no shortcuts: do not merge distinct physical interactions into one invalid phrase
+- if two adjacent segments are one continuous coarse action (no disengagement), merge them into one segment
+- avoid body-part wording (hands/fingers/body parts) unless unavoidable
 - if uncertain, use general nouns (tool/container/cloth/item)
 - do not keep placeholder/default labels
 - do not hallucinate hidden actions
