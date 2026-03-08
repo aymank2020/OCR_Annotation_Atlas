@@ -7261,6 +7261,27 @@ def _apply_global_gemini_video_policy(cfg: Dict[str, Any]) -> None:
         )
 
 
+def _apply_global_run_policy(cfg: Dict[str, Any]) -> None:
+    """
+    Enforce safe run-level defaults that prevent known quality failures
+    across older account YAML files.
+    """
+    run = cfg.setdefault("run", {})
+    if not isinstance(run, dict):
+        cfg["run"] = {}
+        run = cfg["run"]
+
+    run.setdefault("auto_continuity_merge_enabled", True)
+    run.setdefault("auto_continuity_merge_min_run_segments", 3)
+    run.setdefault("auto_continuity_merge_min_token_overlap", 1)
+    run.setdefault("segment_chunking_min_video_sec", 60.0)
+
+    # Merge must stay enabled for continuity fixes to work.
+    if not bool(run.get("structural_allow_merge", True)):
+        run["structural_allow_merge"] = True
+        print("[policy] run.structural_allow_merge forced ON for continuity safety.")
+
+
 def load_config(path: Path) -> Dict[str, Any]:
     if not path.exists():
         raise FileNotFoundError(f"Config file not found: {path}")
@@ -7269,6 +7290,7 @@ def load_config(path: Path) -> Dict[str, Any]:
         raise ValueError("Config root must be YAML object")
     cfg = _deep_merge(DEFAULT_CONFIG, raw)
     _apply_global_gemini_video_policy(cfg)
+    _apply_global_run_policy(cfg)
     return cfg
 
 
@@ -8403,13 +8425,63 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Apply labels to Atlas. Without this flag, script runs in dry-run mode.",
     )
+    parser.add_argument(
+        "--max-episodes",
+        type=int,
+        default=None,
+        help="Override run.max_episodes_per_run for this process only.",
+    )
+    parser.add_argument(
+        "--gemini-model",
+        type=str,
+        default="",
+        help="Override gemini.model for this process only (e.g., gemini-2.5-pro).",
+    )
+    parser.add_argument(
+        "--use-fallback-key",
+        action="store_true",
+        help="Use GEMINI_API_KEY_FALLBACK as primary key for this process only.",
+    )
     return parser.parse_args()
+
+
+def _apply_cli_overrides(cfg: Dict[str, Any], args: argparse.Namespace) -> None:
+    run_cfg = cfg.setdefault("run", {})
+    gem_cfg = cfg.setdefault("gemini", {})
+    if not isinstance(run_cfg, dict):
+        cfg["run"] = {}
+        run_cfg = cfg["run"]
+    if not isinstance(gem_cfg, dict):
+        cfg["gemini"] = {}
+        gem_cfg = cfg["gemini"]
+
+    if args.max_episodes is not None:
+        run_cfg["max_episodes_per_run"] = max(1, int(args.max_episodes))
+        print(f"[cli] override: run.max_episodes_per_run={run_cfg['max_episodes_per_run']}")
+
+    model_override = str(args.gemini_model or "").strip()
+    if model_override:
+        gem_cfg["model"] = model_override
+        print(f"[cli] override: gemini.model={model_override}")
+
+    if bool(args.use_fallback_key):
+        fallback_key = _resolve_gemini_fallback_key(str(gem_cfg.get("fallback_api_key", "") or ""))
+        if not fallback_key:
+            raise RuntimeError(
+                "--use-fallback-key requested but no fallback key found. "
+                "Set GEMINI_API_KEY_FALLBACK (or gemini.fallback_api_key)."
+            )
+        gem_cfg["api_key"] = fallback_key
+        gem_cfg["fallback_api_key"] = ""
+        gem_cfg["quota_fallback_enabled"] = False
+        print("[cli] override: using fallback Gemini API key as primary for this run.")
 
 
 def main() -> None:
     print(f"[build] atlas_web_auto_solver {_SCRIPT_BUILD}")
     args = parse_args()
     cfg = load_config(Path(args.config))
+    _apply_cli_overrides(cfg, args)
     run(cfg, execute=bool(args.execute))
 
 
