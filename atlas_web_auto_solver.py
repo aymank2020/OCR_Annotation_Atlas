@@ -88,6 +88,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "reserve_refresh_after_click": True,
         "reserve_rate_limit_wait_sec": 5,
         "release_all_on_internal_error": True,
+        "release_and_reserve_on_all_visible_blocked": True,
+        "release_and_reserve_on_submit_unverified": True,
         "recycle_after_max_episodes": True,
         "release_all_after_batch": True,
         "release_all_wait_sec": 5,
@@ -7411,6 +7413,8 @@ def _apply_global_run_policy(cfg: Dict[str, Any]) -> None:
     run["reserve_wait_only_on_rate_limit"] = True
     run["reserve_attempts_per_visit"] = max(3, int(run.get("reserve_attempts_per_visit", 3) or 3))
     run["reserve_rate_limit_wait_sec"] = 5
+    run["release_and_reserve_on_all_visible_blocked"] = True
+    run["release_and_reserve_on_submit_unverified"] = True
     run["no_task_retry_delay_sec"] = 5.0
     run["no_task_backoff_factor"] = 1.0
     run["no_task_max_delay_sec"] = 5.0
@@ -7740,6 +7744,12 @@ def run(cfg: Dict[str, Any], execute: bool) -> None:
             clear_blocked_tasks_every_retry = bool(
                 _cfg_get(cfg, "run.clear_blocked_tasks_every_retry", True)
             )
+            release_and_reserve_on_all_visible_blocked = bool(
+                _cfg_get(cfg, "run.release_and_reserve_on_all_visible_blocked", True)
+            )
+            release_and_reserve_on_submit_unverified = bool(
+                _cfg_get(cfg, "run.release_and_reserve_on_submit_unverified", True)
+            )
             keep_alive_when_idle = bool(_cfg_get(cfg, "run.keep_alive_when_idle", True))
             keep_alive_idle_cycle_pause_sec = max(
                 0.0, float(_cfg_get(cfg, "run.keep_alive_idle_cycle_pause_sec", 5.0))
@@ -7778,6 +7788,34 @@ def run(cfg: Dict[str, Any], execute: bool) -> None:
                 if consecutive_episode_failures > max_episode_failures_per_run:
                     return "stop"
                 return "continue"
+
+            def _release_then_reserve_cycle(reason: str) -> bool:
+                nonlocal no_task_hits, all_visible_blocked_hits, duplicate_hits
+                print(f"[run] {reason}; triggering release-all + reserve-new cycle.")
+                released = _release_all_reserved_episodes(page, cfg)
+                if not released:
+                    print("[run] release-all cycle skipped (button not found).")
+                    return False
+                blocked_task_ids.clear()
+                seen_task_ids.clear()
+                video_prepare_failures_by_task.clear()
+                gemini_failures_by_task.clear()
+                no_task_hits = 0
+                all_visible_blocked_hits = 0
+                duplicate_hits = 0
+                if room_url:
+                    try:
+                        _goto_with_retry(
+                            page,
+                            room_url,
+                            wait_until="domcontentloaded",
+                            timeout_ms=45000,
+                            cfg=cfg,
+                            reason="room-after-release-reserve-cycle",
+                        )
+                    except Exception:
+                        pass
+                return True
 
             while True:
                 if max_episodes_per_run > 0 and episode_no >= max_episodes_per_run:
@@ -7839,6 +7877,9 @@ def run(cfg: Dict[str, Any], execute: bool) -> None:
                         all_visible_blocked_hits = 0
                     if bool(open_status.get("all_visible_blocked")):
                         all_visible_blocked_hits += 1
+                        if release_and_reserve_on_all_visible_blocked and all_visible_blocked_hits >= 1:
+                            if _release_then_reserve_cycle("all visible tasks are blocked"):
+                                continue
                         if blocked_task_ids and all_visible_blocked_hits >= clear_blocked_after_hits:
                             print(
                                 "[run] all visible tasks stayed blocked across idle checks; "
@@ -8526,6 +8567,10 @@ def run(cfg: Dict[str, Any], execute: bool) -> None:
                         print(f"  - {item}")
                 elif not result.get("completed"):
                     print("[run] episode submit could not be fully verified (Complete/Quality confirmation not fully observed).")
+                    if release_and_reserve_on_submit_unverified:
+                        _release_then_reserve_cycle("submit could not be fully verified")
+                    if task_id:
+                        blocked_task_ids.add(task_id)
                 elif task_id and resume_from_artifacts:
                     task_state["episode_submitted"] = True
                     _save_task_state(cfg, task_id, task_state)
