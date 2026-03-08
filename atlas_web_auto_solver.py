@@ -7815,6 +7815,18 @@ def run(cfg: Dict[str, Any], execute: bool) -> None:
                         )
                     except Exception:
                         pass
+                try:
+                    immediate_status: Dict[str, Any] = {}
+                    opened_now = goto_task_room(
+                        page,
+                        cfg,
+                        skip_task_ids=set(),
+                        status_out=immediate_status,
+                    )
+                    if opened_now:
+                        print("[run] release+reserve cycle opened a new episode immediately.")
+                except Exception:
+                    pass
                 return True
 
             while True:
