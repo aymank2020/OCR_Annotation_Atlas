@@ -4241,6 +4241,8 @@ def build_prompt(
         "GOOD: pick up stack of paper from desk, place stack of paper into cardboard box\n"
         "BAD: place bag\n"
         "GOOD: place bag in cabinet\n"
+        "BAD: seg1='move saw to cut wood board' + seg2='finish cutting wood board' while interaction is continuous\n"
+        "GOOD: merge into one segment label 'cut wood board with saw'\n"
         "If a segment timestamp is wrong, correct start_sec/end_sec.\n"
         "Label rules: imperative style, concise, minimum 2 words, maximum 20 words.\n"
         "Use \"No Action\" only as standalone label.\n"

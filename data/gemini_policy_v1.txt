@@ -43,6 +43,12 @@
 - Example: hallucinated pickup
   Draft: "pick up folded shirt" when action is only folding on table
   Correct: "fold shirt on table"
+- Example: over-segmentation that must be merged
+  Draft:
+  Seg 1 (0:00-0:10): "move saw to cut wood board"
+  Seg 2 (0:10-0:15): "finish cutting wood board"
+  Correct operation: merge Seg 1 + Seg 2
+  Correct segment (0:00-0:15): "cut wood board with saw"
 
 ## 5. OUTPUT CONTRACT (STRICT JSON)
 - Return raw JSON only. No markdown, no commentary.
@@ -55,7 +61,7 @@
 
 # BEGIN_DISCORD_LIVE_UPDATES
 # AUTO-GENERATED FROM DISCORD UPDATES
-# generated_at: 2026-03-07T23:20:58.790701
+# generated_at: 2026-03-08T03:21:51.088071
 # source_messages: 0
 
 - No new actionable policy updates detected in this cycle.
