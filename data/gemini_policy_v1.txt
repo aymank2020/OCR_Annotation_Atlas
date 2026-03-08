@@ -27,6 +27,10 @@
 - CONTINUITY RULE (NO OVER-SEGMENTATION):
   If the same coarse goal continues without dropping/disengaging from the object
   (e.g., sanding/wiping/stirring), merge into one coarse segment.
+- CONTINUITY (CRITICAL OVER-SEGMENTATION RULE):
+  If draft has multiple consecutive segments of the SAME continuous action
+  and ego never drops the object/tool, you MUST use merge operation.
+  Never keep 3+ consecutive segments with the same action goal.
 - COARSE GOAL VERBS:
   Do not describe mechanical muscle motions (e.g., "move saw back and forth", "rub sandpaper").
   Use the task-goal verb (e.g., "cut wood board with saw", "sand wooden board with sandpaper").
@@ -66,6 +70,13 @@
   Seg 2 (0:10-0:15): "No Action" (tool still held)
   Seg 3 (0:15-0:20): "adjust sanding strip"
   Correct operation: merge/relabel Seg 2 into surrounding task action (do not keep No Action).
+- Example: merging micro-actions into the main goal
+  Draft:
+  Seg 1 (0:00-0:10): "paint chair with paintbrush"
+  Seg 2 (0:10-0:12): "dip paintbrush into paint can"
+  Seg 3 (0:12-0:20): "paint chair with paintbrush"
+  Rule: reloading/dipping tool is a micro-action of the same main task when tool is never dropped.
+  Correct operation: merge all into one segment "paint chair with paintbrush" (0:00-0:20).
 
 ## 5. OUTPUT CONTRACT (STRICT JSON)
 - Return raw JSON only. No markdown, no commentary.
