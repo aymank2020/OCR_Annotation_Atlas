@@ -268,9 +268,9 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "gemini": {
         "api_key": "",
         "fallback_api_key": "",
-        "prefer_fallback_key_as_primary": True,
-        "quota_fallback_enabled": False,
-        "quota_fallback_max_uses_per_run": 1,
+        "prefer_fallback_key_as_primary": False,
+        "quota_fallback_enabled": True,
+        "quota_fallback_max_uses_per_run": 1000,
         "model": "gemini-3.1-pro-preview",
         "retry_with_quota_fallback_model": True,
         "quota_fallback_model": "gemini-3-pro-preview",
@@ -4930,7 +4930,7 @@ def call_gemini_labels(
     configured_primary_key = _resolve_gemini_key(str(_cfg_get(cfg, "gemini.api_key", "")))
     configured_fallback_key = _resolve_gemini_fallback_key(str(_cfg_get(cfg, "gemini.fallback_api_key", "")))
     prefer_fallback_key_as_primary = bool(
-        _cfg_get(cfg, "gemini.prefer_fallback_key_as_primary", True)
+        _cfg_get(cfg, "gemini.prefer_fallback_key_as_primary", False)
     )
     primary_api_key = configured_primary_key
     fallback_api_key = configured_fallback_key
@@ -7427,11 +7427,40 @@ def _apply_global_gemini_video_policy(cfg: Dict[str, Any]) -> None:
         gem.setdefault(key, value)
 
     preferred_model = "gemini-3.1-pro-preview"
+    quota_fallback_model = "gemini-3-pro-preview"
     configured_model = str(gem.get("model", "") or "").strip()
-    if configured_model in {"", "gemini-2.5-flash", "gemini-2.5-pro"}:
-        if configured_model != preferred_model:
-            gem["model"] = preferred_model
-            print(f"[policy] gemini.model forced to {preferred_model}.")
+    if configured_model != preferred_model:
+        gem["model"] = preferred_model
+        print(f"[policy] gemini.model forced to {preferred_model}.")
+
+    configured_quota_fallback_model = str(gem.get("quota_fallback_model", "") or "").strip()
+    if configured_quota_fallback_model != quota_fallback_model:
+        gem["quota_fallback_model"] = quota_fallback_model
+        print(f"[policy] gemini.quota_fallback_model forced to {quota_fallback_model}.")
+
+    configured_quota_sources = gem.get("quota_fallback_from_models")
+    if not isinstance(configured_quota_sources, list) or [str(x).strip().lower() for x in configured_quota_sources] != [preferred_model]:
+        gem["quota_fallback_from_models"] = [preferred_model]
+
+    if not bool(gem.get("retry_with_quota_fallback_model", True)):
+        gem["retry_with_quota_fallback_model"] = True
+        print("[policy] gemini.retry_with_quota_fallback_model forced ON.")
+
+    if not bool(gem.get("quota_fallback_enabled", True)):
+        gem["quota_fallback_enabled"] = True
+        print("[policy] gemini.quota_fallback_enabled forced ON.")
+
+    if bool(gem.get("prefer_fallback_key_as_primary", False)):
+        gem["prefer_fallback_key_as_primary"] = False
+        print("[policy] gemini.prefer_fallback_key_as_primary forced OFF (primary key first).")
+
+    try:
+        quota_fallback_uses = int(gem.get("quota_fallback_max_uses_per_run", 0) or 0)
+    except Exception:
+        quota_fallback_uses = 0
+    if quota_fallback_uses < 1000:
+        gem["quota_fallback_max_uses_per_run"] = 1000
+        print("[policy] gemini.quota_fallback_max_uses_per_run raised to 1000.")
 
     # Keep upload cost low while avoiding aggressive visual degradation.
     split_upload_enabled = bool(gem.get("split_upload_enabled", True))
