@@ -34,7 +34,10 @@ DEFAULTS: Dict[str, Any] = {
         "chrome_profile_directory": "Default",
     },
     "gemini": {
-        "model": "gemini-2.5-flash",
+        "api_key": "",
+        "fallback_api_key": "",
+        "prefer_fallback_key_as_primary": True,
+        "model": "gemini-3.1-pro-preview",
         "connect_timeout_sec": 30,
         "request_timeout_sec": 300,
         "temperature": 0.0,
@@ -434,14 +437,36 @@ def copy_matches(matches: List[Path], dest: Path) -> List[str]:
 
 
 def resolve_gemini_key(cfg: Dict[str, Any]) -> str:
-    explicit = str(cfg_get(cfg, "gemini.api_key", "")).strip()
-    if explicit:
-        return explicit
-    for env_name in ["GEMINI_API_KEY", "GOOGLE_API_KEY"]:
-        val = os.environ.get(env_name, "").strip()
-        if val:
-            return val
-    return ""
+    prefer_fallback = bool(cfg_get(cfg, "gemini.prefer_fallback_key_as_primary", True))
+    explicit_primary = str(cfg_get(cfg, "gemini.api_key", "")).strip()
+    explicit_fallback = str(cfg_get(cfg, "gemini.fallback_api_key", "")).strip()
+
+    primary = explicit_primary
+    if not primary:
+        for env_name in ["GEMINI_API_KEY", "GOOGLE_API_KEY"]:
+            val = os.environ.get(env_name, "").strip()
+            if val:
+                primary = val
+                break
+
+    fallback = explicit_fallback
+    if not fallback:
+        for env_name in [
+            "GEMINI_API_KEY_FALLBACK",
+            "GOOGLE_API_KEY_FALLBACK",
+            "GEMINI_API_KEY_SECONDARY",
+            "GOOGLE_API_KEY_SECONDARY",
+        ]:
+            val = os.environ.get(env_name, "").strip()
+            if val:
+                fallback = val
+                break
+
+    if prefer_fallback and fallback:
+        return fallback
+    if primary:
+        return primary
+    return fallback
 
 
 def _extract_gemini_text(data: Dict[str, Any]) -> str:
@@ -535,7 +560,7 @@ def call_gemini_progress_review(cfg: Dict[str, Any], prompt_text: str) -> Dict[s
     key = resolve_gemini_key(cfg)
     if not key:
         raise RuntimeError("Missing Gemini API key in env (GEMINI_API_KEY/GOOGLE_API_KEY).")
-    model = str(cfg_get(cfg, "gemini.model", "gemini-2.5-flash"))
+    model = str(cfg_get(cfg, "gemini.model", "gemini-3.1-pro-preview"))
     connect_timeout = int(cfg_get(cfg, "gemini.connect_timeout_sec", 30))
     request_timeout = int(cfg_get(cfg, "gemini.request_timeout_sec", 300))
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
@@ -576,7 +601,7 @@ def call_gemini_t4_lessons(cfg: Dict[str, Any], prompt_text: str) -> Dict[str, A
     key = resolve_gemini_key(cfg)
     if not key:
         raise RuntimeError("Missing Gemini API key in env (GEMINI_API_KEY/GOOGLE_API_KEY).")
-    model = str(cfg_get(cfg, "gemini.model", "gemini-2.5-flash"))
+    model = str(cfg_get(cfg, "gemini.model", "gemini-3.1-pro-preview"))
     connect_timeout = int(cfg_get(cfg, "gemini.connect_timeout_sec", 30))
     request_timeout = int(cfg_get(cfg, "gemini.request_timeout_sec", 300))
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
@@ -616,7 +641,7 @@ def call_gemini_alignment_review(cfg: Dict[str, Any], prompt_text: str) -> Dict[
     key = resolve_gemini_key(cfg)
     if not key:
         raise RuntimeError("Missing Gemini API key in env (GEMINI_API_KEY/GOOGLE_API_KEY).")
-    model = str(cfg_get(cfg, "gemini.model", "gemini-2.5-flash"))
+    model = str(cfg_get(cfg, "gemini.model", "gemini-3.1-pro-preview"))
     connect_timeout = int(cfg_get(cfg, "gemini.connect_timeout_sec", 30))
     request_timeout = int(cfg_get(cfg, "gemini.request_timeout_sec", 300))
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
