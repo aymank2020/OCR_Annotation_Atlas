@@ -101,11 +101,11 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "continue_on_episode_error": True,
         "max_episode_failures_per_run": 3,
         "episode_failure_retry_delay_sec": 4.0,
-        "gemini_quota_retry_delay_sec": 15.0,
-        "gemini_quota_global_pause_min_sec": 60.0,
-        "gemini_quota_global_pause_step_sec": 60.0,
-        "gemini_quota_task_block_max_wait_sec": 21600.0,
-        "gemini_quota_zero_retry_delay_sec": 1800.0,
+        "gemini_quota_retry_delay_sec": 5.0,
+        "gemini_quota_global_pause_min_sec": 999999.0,
+        "gemini_quota_global_pause_step_sec": 5.0,
+        "gemini_quota_task_block_max_wait_sec": 5.0,
+        "gemini_quota_zero_retry_delay_sec": 5.0,
         "gemini_quota_zero_release_all_on_pause": True,
         "max_video_prepare_failures_per_task": 2,
         "max_gemini_failures_per_task": 1,
@@ -7636,6 +7636,12 @@ def _apply_global_run_policy(cfg: Dict[str, Any]) -> None:
     run["no_task_max_delay_sec"] = 5.0
     run["keep_alive_idle_cycle_pause_sec"] = 5.0
     run["release_all_wait_sec"] = 5.0
+    run["gemini_quota_retry_delay_sec"] = 5.0
+    run["gemini_quota_task_block_max_wait_sec"] = 5.0
+    run["gemini_quota_zero_retry_delay_sec"] = 5.0
+    run["gemini_quota_global_pause_step_sec"] = 5.0
+    # Disable long global quota pauses; keep short per-task cooldown instead.
+    run["gemini_quota_global_pause_min_sec"] = 999999.0
     if not bool(run.get("execute_require_video_context", True)):
         run["execute_require_video_context"] = True
         print("[policy] run.execute_require_video_context forced ON.")
@@ -7999,7 +8005,7 @@ def run(cfg: Dict[str, Any], execute: bool) -> None:
                 5.0, float(_cfg_get(cfg, "run.gemini_quota_task_block_max_wait_sec", 21600.0))
             )
             gemini_quota_zero_retry_delay_sec = max(
-                30.0, float(_cfg_get(cfg, "run.gemini_quota_zero_retry_delay_sec", 1800.0))
+                1.0, float(_cfg_get(cfg, "run.gemini_quota_zero_retry_delay_sec", 5.0))
             )
             gemini_quota_zero_release_all_on_pause = bool(
                 _cfg_get(cfg, "run.gemini_quota_zero_release_all_on_pause", True)
