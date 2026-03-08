@@ -16,9 +16,14 @@
 
 ## 2. VERB AND CONTINUITY RULES
 - Forbidden verbs: reach, inspect, check, look, examine, grab.
+- NO "-ING" VERBS:
+  Strictly use imperative commands only (e.g., "turn mold", not "turning the mold").
 - Prefer "adjust" for small corrective repositioning.
 - "place" must include location (on/in/into/onto/at/to/inside/under/over).
 - If a segment includes lift then placement, include both actions.
+- TIMESTAMP STRICTNESS:
+  Describe only what happens inside each exact start_sec/end_sec segment.
+  Do not shift actions into neighboring segments.
 - CONTINUITY RULE (NO OVER-SEGMENTATION):
   If the same coarse goal continues without dropping/disengaging from the object
   (e.g., sanding/wiping/stirring), merge into one coarse segment.

@@ -151,7 +151,12 @@ def is_imperative_like(label: str) -> bool:
     if any(re.search(p, l) for p in INTENT_PATTERNS):
         return False
     bad_starts = ("a ", "an ", "the ", "person ", "ego ", "he ", "she ", "they ")
-    return not l.startswith(bad_starts)
+    if l.startswith(bad_starts):
+        return False
+    first_word = re.split(r"\s+", l.strip())[0] if l.strip() else ""
+    if len(first_word) > 4 and first_word.endswith("ing"):
+        return False
+    return True
 
 
 def has_intent_only_language(label: str) -> bool:
