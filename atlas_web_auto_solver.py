@@ -389,10 +389,40 @@ def _cfg_get(cfg: Dict[str, Any], path: str, default: Any = None) -> Any:
 
 
 def _resolve_secret(explicit: str, env_names: List[str]) -> str:
+    def _sanitize_secret_value(raw: str) -> str:
+        val = str(raw or "").strip()
+        if not val:
+            return ""
+        if "=" in val:
+            left, right = val.split("=", 1)
+            left_norm = left.strip().upper()
+            if left_norm in {
+                "GEMINI_API_KEY",
+                "GOOGLE_API_KEY",
+                "GEMINI_API_KEY_FALLBACK",
+                "GOOGLE_API_KEY_FALLBACK",
+                "GEMINI_API_KEY_SECONDARY",
+                "GOOGLE_API_KEY_SECONDARY",
+            }:
+                val = right.strip()
+        val = val.strip().strip("'").strip('"').strip()
+        if "#" in val:
+            val = val.split("#", 1)[0].strip()
+        if val.lower().startswith("api_key "):
+            val = val.split(" ", 1)[1].strip()
+        if val.lower().startswith("apikey "):
+            val = val.split(" ", 1)[1].strip()
+        if any(ch.isspace() for ch in val):
+            val = val.split()[0].strip()
+        match = re.search(r"(AIza[0-9A-Za-z_-]{20,})", val)
+        if match:
+            return match.group(1).strip()
+        return val.strip()
+
     if explicit and explicit.strip():
-        return explicit.strip()
+        return _sanitize_secret_value(explicit)
     for name in env_names:
-        value = os.environ.get(name, "").strip()
+        value = _sanitize_secret_value(os.environ.get(name, ""))
         if value:
             return value
     return ""
@@ -4913,6 +4943,9 @@ def _upload_video_via_gemini_files_api(
                 break
             snippet = (start_resp.text or "")[:300]
             last_start_err = f"HTTP {start_resp.status_code}: {snippet}"
+            if _is_gemini_api_key_invalid_text(snippet):
+                # Invalid key will not recover with retry/backoff.
+                break
         except requests.exceptions.RequestException as exc:
             last_start_err = str(exc)
         if attempt < chunk_retries:
@@ -5048,6 +5081,24 @@ def _is_gemini_quota_error_text(text: str) -> bool:
         "generate_content_free_tier_requests",
     )
     return any(marker in body for marker in quota_markers)
+
+
+def _is_gemini_api_key_invalid_text(text: str) -> bool:
+    body = (text or "").lower()
+    markers = (
+        "api_key_invalid",
+        "api key not found",
+        "api key is not valid",
+        "invalid api key",
+        "api key invalid",
+    )
+    return any(marker in body for marker in markers)
+
+
+def _is_gemini_api_key_invalid_response(resp: requests.Response) -> bool:
+    if resp.status_code not in {400, 401, 403}:
+        return False
+    return _is_gemini_api_key_invalid_text(resp.text or "")
 
 
 def _is_gemini_quota_hard_zero_error_text(text: str) -> bool:
@@ -5430,7 +5481,7 @@ def call_gemini_labels(
     used_video_in_success = False
     fallback_used = False
 
-    def _switch_to_secondary_key_for_quota() -> bool:
+    def _switch_to_secondary_key(reason: str) -> bool:
         nonlocal active_api_key, active_key_name
         nonlocal include_video, video_parts, video_transport_used, fallback_used
         nonlocal prepared_video_files, prepared_video_file
@@ -5447,7 +5498,7 @@ def call_gemini_labels(
         _GEMINI_FALLBACK_USES += 1
         fallback_used = True
         print(
-            "[gemini] primary key quota exhausted; switching to secondary key "
+            f"[gemini] primary key {reason}; switching to secondary key "
             f"({ _GEMINI_FALLBACK_USES }/{quota_fallback_max_uses_per_run}) for this request."
         )
 
@@ -5560,7 +5611,7 @@ def call_gemini_labels(
         if _is_gemini_quota_exceeded_429(resp):
             quota_default_wait = max(1.0, float(_cfg_get(cfg, "gemini.quota_retry_default_wait_sec", 12.0)))
             quota_wait_sec = _extract_retry_seconds_from_response(resp, default_wait_sec=quota_default_wait)
-            if _switch_to_secondary_key_for_quota():
+            if _switch_to_secondary_key("quota exhausted"):
                 continue
             cooldown_wait = _set_gemini_quota_cooldown(quota_wait_sec)
             retry_on_quota_429 = bool(_cfg_get(cfg, "gemini.retry_on_quota_429", False))
@@ -5573,6 +5624,11 @@ def call_gemini_labels(
                 "[gemini] quota error 429 detected; skipping extra retries for this request "
                 f"(cooldown={cooldown_wait:.1f}s)."
             )
+            break
+        if _is_gemini_api_key_invalid_response(resp):
+            if _switch_to_secondary_key("API key was rejected"):
+                continue
+            print("[gemini] API key rejected and no secondary key is available.")
             break
         if (
             include_video
