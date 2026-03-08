@@ -99,7 +99,14 @@ def load_config(path: Path) -> Dict[str, Any]:
         raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     if not isinstance(raw, dict):
         raw = {}
-    return deep_merge(DEFAULTS, raw)
+    cfg = deep_merge(DEFAULTS, raw)
+    gem = cfg.get("gemini", {})
+    if isinstance(gem, dict):
+        preferred_model = "gemini-3.1-pro-preview"
+        configured_model = str(gem.get("model", "") or "").strip()
+        if configured_model in {"", "gemini-2.5-flash", "gemini-2.5-pro"}:
+            gem["model"] = preferred_model
+    return cfg
 
 
 def first_visible(page: Page, selectors: List[str], timeout_ms: int = 1500):

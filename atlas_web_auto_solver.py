@@ -7224,6 +7224,13 @@ def _apply_global_gemini_video_policy(cfg: Dict[str, Any]) -> None:
     for key, value in defaults.items():
         gem.setdefault(key, value)
 
+    preferred_model = "gemini-3.1-pro-preview"
+    configured_model = str(gem.get("model", "") or "").strip()
+    if configured_model in {"", "gemini-2.5-flash", "gemini-2.5-pro"}:
+        if configured_model != preferred_model:
+            gem["model"] = preferred_model
+            print(f"[policy] gemini.model forced to {preferred_model}.")
+
     # Keep upload cost low while avoiding aggressive visual degradation.
     split_upload_enabled = bool(gem.get("split_upload_enabled", True))
     target_cap_mb = 8.0 if split_upload_enabled else 4.0
