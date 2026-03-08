@@ -134,6 +134,10 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "skip_policy_lexical_checks_on_unchanged_labels": True,
         "ignore_timestamp_policy_errors_when_adjust_disabled": True,
         "ignore_no_action_standalone_policy_error": True,
+        "no_action_pause_rewrite_enabled": True,
+        "no_action_pause_rewrite_max_sec": 12.0,
+        "no_action_pause_rewrite_min_overlap_tokens": 1,
+        "no_action_pause_rewrite_prefer_next_adjust": True,
         "min_label_words": 2,
         "max_label_words": 20,
         "max_atomic_actions_per_label": 2,
@@ -4231,6 +4235,8 @@ def build_prompt(
         "If surface type/elevation is unclear (floor mat vs table/shelf), do not guess raised furniture.\n"
         "Use neutral location wording (on surface/on mat/on floor) unless elevation is clearly visible.\n"
         "Use 'place' only with explicit location (on/in/into/onto/at/to/inside/under/over).\n"
+        "No-Action pause rule: if ego still holds the task object/tool during a pause, do not use 'No Action'. "
+        "Keep/merge it with surrounding action.\n"
         "Attach verbs to objects: do not write 'pick up and place box' or 'pick up box and place under desk'; "
         "write 'pick up box, place box under desk'.\n"
         "If the segment clearly includes lift then placement, include both actions (pick up ..., place ...).\n"
@@ -4245,6 +4251,8 @@ def build_prompt(
         "GOOD: place bag in cabinet\n"
         "BAD: seg1='move saw to cut wood board' + seg2='finish cutting wood board' while interaction is continuous\n"
         "GOOD: merge into one segment label 'cut wood board with saw'\n"
+        "BAD: seg='No Action' while tool is still held between polish/adjust segments\n"
+        "GOOD: merge/relabel pause into surrounding action; do not isolate No Action.\n"
         "If a segment timestamp is wrong, correct start_sec/end_sec.\n"
         "Label rules: imperative style, concise, minimum 2 words, maximum 20 words.\n"
         "Use \"No Action\" only as standalone label.\n"
@@ -5799,6 +5807,84 @@ def _label_main_verb(label: str) -> str:
         return ""
     m = re.match(r"([a-z]+)", text)
     return m.group(1) if m else ""
+
+
+def _is_no_action_label(label: str) -> bool:
+    normalized = re.sub(r"[\s_-]+", " ", (label or "").strip()).lower()
+    return normalized in {"no action", "noaction"}
+
+
+_LABEL_TOKEN_RE = re.compile(r"[a-z]+")
+_LABEL_OVERLAP_STOPWORDS: set[str] = {
+    "no",
+    "action",
+    "with",
+    "on",
+    "in",
+    "into",
+    "onto",
+    "at",
+    "to",
+    "from",
+    "under",
+    "over",
+    "inside",
+}
+
+
+def _label_content_tokens(label: str) -> set[str]:
+    text = re.sub(r"\s+", " ", (label or "").strip()).lower()
+    if not text:
+        return set()
+    tokens = set(_LABEL_TOKEN_RE.findall(text))
+    return {tok for tok in tokens if tok and tok not in _LABEL_OVERLAP_STOPWORDS}
+
+
+def _rewrite_no_action_pauses_in_plan(segment_plan: Dict[int, Dict[str, Any]], cfg: Dict[str, Any]) -> int:
+    if not bool(_cfg_get(cfg, "run.no_action_pause_rewrite_enabled", True)):
+        return 0
+    max_pause_sec = max(0.0, float(_cfg_get(cfg, "run.no_action_pause_rewrite_max_sec", 12.0)))
+    min_overlap = max(1, int(_cfg_get(cfg, "run.no_action_pause_rewrite_min_overlap_tokens", 1)))
+    prefer_next_adjust = bool(_cfg_get(cfg, "run.no_action_pause_rewrite_prefer_next_adjust", True))
+
+    ordered_indices = sorted(segment_plan.keys())
+    rewrites = 0
+    for pos, idx in enumerate(ordered_indices):
+        item = segment_plan.get(idx, {})
+        label = str(item.get("label", "")).strip()
+        if not _is_no_action_label(label):
+            continue
+        start_sec = _safe_float(item.get("start_sec", 0.0), 0.0)
+        end_sec = _safe_float(item.get("end_sec", start_sec), start_sec)
+        if (end_sec - start_sec) > max_pause_sec:
+            continue
+        if pos == 0 or pos >= len(ordered_indices) - 1:
+            continue
+
+        prev_item = segment_plan.get(ordered_indices[pos - 1], {})
+        next_item = segment_plan.get(ordered_indices[pos + 1], {})
+        prev_label = str(prev_item.get("label", "")).strip()
+        next_label = str(next_item.get("label", "")).strip()
+        if not prev_label or not next_label:
+            continue
+        if _is_no_action_label(prev_label) or _is_no_action_label(next_label):
+            continue
+
+        overlap = len(_label_content_tokens(prev_label).intersection(_label_content_tokens(next_label)))
+        if overlap < min_overlap:
+            continue
+
+        replacement = prev_label
+        if prefer_next_adjust and _label_main_verb(next_label) == "adjust":
+            replacement = next_label
+        elif _label_main_verb(prev_label) == _label_main_verb(next_label):
+            replacement = prev_label
+
+        if replacement and replacement != label:
+            item["label"] = replacement
+            segment_plan[idx] = item
+            rewrites += 1
+    return rewrites
 
 
 _NUM_WORDS_0_TO_19 = [
@@ -7859,6 +7945,9 @@ def run(cfg: Dict[str, Any], execute: bool) -> None:
                 _save_outputs(cfg, segments, prompt, labels_payload, task_id=task_id)
 
                 segment_plan = _normalize_segment_plan(labels_payload, segments, cfg=cfg)
+                no_action_rewrites = _rewrite_no_action_pauses_in_plan(segment_plan, cfg)
+                if no_action_rewrites:
+                    print(f"[policy] rewrote short no-action pauses: {no_action_rewrites}")
                 if task_id:
                     _save_task_text_files(cfg, task_id, segments, segment_plan)
 
@@ -7917,6 +8006,12 @@ def run(cfg: Dict[str, Any], execute: bool) -> None:
                                 print(f"[gemini] stronger-model retry has video context ({retry_mode}).")
 
                             retry_plan = _normalize_segment_plan(retry_payload, segments, cfg=cfg)
+                            retry_no_action_rewrites = _rewrite_no_action_pauses_in_plan(retry_plan, cfg)
+                            if retry_no_action_rewrites:
+                                print(
+                                    "[policy] stronger-model pass rewrote short no-action pauses: "
+                                    f"{retry_no_action_rewrites}"
+                                )
                             retry_validation_report = _validate_segment_plan_against_policy(cfg, segments, retry_plan)
                             retry_raw_errors = [
                                 str(e).strip()

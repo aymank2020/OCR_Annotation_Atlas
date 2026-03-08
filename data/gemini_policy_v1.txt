@@ -25,6 +25,9 @@
 - COARSE GOAL VERBS:
   Do not describe mechanical muscle motions (e.g., "move saw back and forth", "rub sandpaper").
   Use the task-goal verb (e.g., "cut wood board with saw", "sand wooden board with sandpaper").
+- NO-PAUSE "NO ACTION":
+  If ego is still holding the task object/tool, "No Action" is forbidden.
+  Do not split solely to isolate short pauses; merge/relabel with surrounding task action.
 
 ## 3. CONSISTENCY AND DEFENSIBILITY
 - Use one consistent noun per object through the episode.
@@ -52,6 +55,12 @@
   Seg 2 (0:10-0:15): "finish cutting wood board"
   Correct operation: merge Seg 1 + Seg 2
   Correct segment (0:00-0:15): "cut wood board with saw"
+- Example: destroying illegal "No Action" pause
+  Draft:
+  Seg 1 (0:00-0:10): "polish guitar frets with sanding strip"
+  Seg 2 (0:10-0:15): "No Action" (tool still held)
+  Seg 3 (0:15-0:20): "adjust sanding strip"
+  Correct operation: merge/relabel Seg 2 into surrounding task action (do not keep No Action).
 
 ## 5. OUTPUT CONTRACT (STRICT JSON)
 - Return raw JSON only. No markdown, no commentary.
