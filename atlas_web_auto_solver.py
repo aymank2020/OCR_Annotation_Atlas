@@ -14,6 +14,7 @@ import base64
 import html
 import imaplib
 import json
+import math
 import random
 import os
 import re
@@ -113,6 +114,14 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "execute_force_fresh_gemini": True,
         "execute_force_live_segments": True,
         "execute_require_video_context": True,
+        "segment_chunking_enabled": True,
+        "segment_chunking_min_segments": 16,
+        "segment_chunking_max_segments_per_request": 8,
+        "segment_chunking_video_pad_sec": 1.0,
+        "segment_chunking_keep_temp_files": False,
+        "segment_chunking_include_previous_labels_context": True,
+        "segment_chunking_max_previous_labels": 12,
+        "segment_chunking_disable_operations": True,
         "use_task_scoped_artifacts": True,
         "enable_quality_review_submit": True,
         "loop_off_on_episode_open": True,
@@ -290,6 +299,12 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "optimize_video_scale_candidates": [0.75, 0.6, 0.5, 0.4, 0.33, 0.25, 0.2],
         "inline_retry_target_mb": [4.0, 2.5, 1.5, 1.0],
         "max_inline_video_mb": 20.0,
+        "split_upload_enabled": True,
+        "split_upload_only_if_larger_mb": 8.0,
+        "split_upload_chunk_max_mb": 6.0,
+        "split_upload_max_chunks": 4,
+        "split_upload_reencode_on_copy_fail": True,
+        "split_upload_inline_total_max_mb": 12.0,
         "reference_frames_enabled": True,
         "reference_frames_always": False,
         "reference_frame_attach_when_video_mb_le": 2.5,
@@ -1504,6 +1519,357 @@ def _resolve_ffmpeg_binary() -> Optional[str]:
         except Exception:
             continue
     return None
+
+
+def _resolve_ffprobe_binary(ffmpeg_bin: Optional[str] = None) -> Optional[str]:
+    if ffmpeg_bin:
+        try:
+            ffmpeg_path = Path(ffmpeg_bin)
+            probe_name = "ffprobe.exe" if ffmpeg_path.suffix.lower() == ".exe" else "ffprobe"
+            sibling = ffmpeg_path.with_name(probe_name)
+            if sibling.exists() and sibling.is_file():
+                return str(sibling)
+        except Exception:
+            pass
+    candidates = [
+        "ffprobe",
+        "ffprobe.exe",
+        "/usr/bin/ffprobe",
+        "/usr/local/bin/ffprobe",
+        "C:\\ffmpeg\\bin\\ffprobe.exe",
+    ]
+    for candidate in candidates:
+        resolved = shutil.which(candidate)
+        if resolved:
+            return resolved
+        try:
+            p = Path(candidate)
+            if p.exists() and p.is_file():
+                return str(p)
+        except Exception:
+            continue
+    return None
+
+
+def _probe_video_duration_seconds(video_file: Path, ffmpeg_bin: Optional[str] = None) -> float:
+    if video_file is None or not video_file.exists():
+        return 0.0
+
+    try:
+        _, _, fps, frames = _probe_video_stream_meta(video_file)
+        if fps > 0 and frames > 0:
+            duration = float(frames) / float(fps)
+            if duration > 0.2:
+                return duration
+    except Exception:
+        pass
+
+    ffprobe_bin = _resolve_ffprobe_binary(ffmpeg_bin=ffmpeg_bin)
+    if not ffprobe_bin:
+        return 0.0
+    cmd = [
+        ffprobe_bin,
+        "-v",
+        "error",
+        "-show_entries",
+        "format=duration",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
+        str(video_file),
+    ]
+    try:
+        proc = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            text=True,
+            timeout=60,
+        )
+        if proc.returncode != 0:
+            return 0.0
+        out = (proc.stdout or "").strip().splitlines()
+        if not out:
+            return 0.0
+        duration = float(out[-1].strip())
+        if duration > 0.2:
+            return duration
+    except Exception:
+        return 0.0
+    return 0.0
+
+
+def _split_video_for_upload(video_file: Path, cfg: Dict[str, Any]) -> List[Path]:
+    if video_file is None or not video_file.exists():
+        return []
+    if not bool(_cfg_get(cfg, "gemini.split_upload_enabled", True)):
+        return []
+
+    size_bytes = int(video_file.stat().st_size)
+    size_mb = size_bytes / (1024 * 1024)
+    trigger_mb = max(1.0, float(_cfg_get(cfg, "gemini.split_upload_only_if_larger_mb", 14.0)))
+    if size_mb <= trigger_mb:
+        return []
+
+    chunk_max_mb = max(2.0, float(_cfg_get(cfg, "gemini.split_upload_chunk_max_mb", 6.0)))
+    max_chunks = max(2, int(_cfg_get(cfg, "gemini.split_upload_max_chunks", 4)))
+    split_count = int(math.ceil(size_mb / chunk_max_mb))
+    split_count = max(2, min(max_chunks, split_count))
+    if split_count <= 1:
+        return []
+
+    ffmpeg_bin = _resolve_ffmpeg_binary()
+    if not ffmpeg_bin:
+        print("[video] split upload skipped: ffmpeg not available.")
+        return []
+
+    duration_sec = _probe_video_duration_seconds(video_file, ffmpeg_bin=ffmpeg_bin)
+    if duration_sec <= 0.2:
+        print("[video] split upload skipped: could not determine video duration.")
+        return []
+
+    stem = video_file.stem
+    parent = video_file.parent
+    out_files = [parent / f"{stem}_upload_part{i + 1:02d}.mp4" for i in range(split_count)]
+    if all(p.exists() and p.stat().st_size > 0 and _is_probably_mp4(p) for p in out_files):
+        total_mb = sum(float(p.stat().st_size) for p in out_files) / (1024 * 1024)
+        print(
+            f"[video] using cached split upload parts: {len(out_files)} parts "
+            f"({total_mb:.1f} MB total)."
+        )
+        return out_files
+
+    # Remove stale parts before generating a fresh set.
+    for stale in parent.glob(f"{stem}_upload_part*.mp4"):
+        try:
+            stale.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+    chunk_duration = duration_sec / float(split_count)
+    use_reencode_on_copy_fail = bool(_cfg_get(cfg, "gemini.split_upload_reencode_on_copy_fail", True))
+    print(
+        f"[video] splitting upload video into {split_count} parts "
+        f"(source={size_mb:.1f} MB, duration={duration_sec:.1f}s)."
+    )
+    produced: List[Path] = []
+    for idx, out_path in enumerate(out_files):
+        start_sec = idx * chunk_duration
+        if idx == split_count - 1:
+            dur_sec = max(0.2, duration_sec - start_sec)
+        else:
+            dur_sec = max(0.2, chunk_duration)
+
+        cmd_copy = [
+            ffmpeg_bin,
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-ss",
+            f"{start_sec:.3f}",
+            "-t",
+            f"{dur_sec:.3f}",
+            "-i",
+            str(video_file),
+            "-map",
+            "0:v:0",
+            "-an",
+            "-sn",
+            "-dn",
+            "-c:v",
+            "copy",
+            "-movflags",
+            "+faststart",
+            str(out_path),
+        ]
+        ok = False
+        try:
+            proc = subprocess.run(
+                cmd_copy,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+                text=True,
+                timeout=240,
+            )
+            ok = proc.returncode == 0 and out_path.exists() and out_path.stat().st_size > 0 and _is_probably_mp4(out_path)
+        except Exception:
+            ok = False
+
+        if not ok and use_reencode_on_copy_fail:
+            cmd_enc = [
+                ffmpeg_bin,
+                "-y",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-ss",
+                f"{start_sec:.3f}",
+                "-t",
+                f"{dur_sec:.3f}",
+                "-i",
+                str(video_file),
+                "-an",
+                "-sn",
+                "-dn",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "faster",
+                "-crf",
+                "21",
+                "-movflags",
+                "+faststart",
+                str(out_path),
+            ]
+            try:
+                proc = subprocess.run(
+                    cmd_enc,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    check=False,
+                    text=True,
+                    timeout=240,
+                )
+                ok = proc.returncode == 0 and out_path.exists() and out_path.stat().st_size > 0 and _is_probably_mp4(out_path)
+            except Exception:
+                ok = False
+
+        if not ok:
+            print(f"[video] split chunk failed at part {idx + 1}; falling back to single-file flow.")
+            for p in out_files:
+                try:
+                    p.unlink(missing_ok=True)
+                except Exception:
+                    pass
+            return []
+
+        produced.append(out_path)
+        try:
+            part_mb = out_path.stat().st_size / (1024 * 1024)
+            print(f"[video] split part {idx + 1}/{split_count}: {out_path.name} ({part_mb:.1f} MB)")
+        except Exception:
+            pass
+
+    if len(produced) != split_count:
+        return []
+    return produced
+
+
+def _segment_chunks(segments: List[Dict[str, Any]], max_per_chunk: int) -> List[List[Dict[str, Any]]]:
+    if not segments:
+        return []
+    step = max(1, int(max_per_chunk))
+    chunks: List[List[Dict[str, Any]]] = []
+    for i in range(0, len(segments), step):
+        chunks.append(segments[i : i + step])
+    return chunks
+
+
+def _extract_video_window(
+    src_video: Path,
+    out_video: Path,
+    start_sec: float,
+    end_sec: float,
+    ffmpeg_bin: Optional[str] = None,
+) -> bool:
+    ffmpeg_path = ffmpeg_bin or _resolve_ffmpeg_binary()
+    if not ffmpeg_path:
+        return False
+    if src_video is None or not src_video.exists():
+        return False
+    if end_sec <= start_sec:
+        return False
+
+    duration = max(0.2, float(end_sec - start_sec))
+    try:
+        _ensure_parent(out_video)
+        if out_video.exists():
+            out_video.unlink()
+    except Exception:
+        pass
+
+    copy_cmd = [
+        ffmpeg_path,
+        "-y",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-ss",
+        f"{max(0.0, start_sec):.3f}",
+        "-t",
+        f"{duration:.3f}",
+        "-i",
+        str(src_video),
+        "-map",
+        "0:v:0",
+        "-an",
+        "-sn",
+        "-dn",
+        "-c:v",
+        "copy",
+        "-movflags",
+        "+faststart",
+        str(out_video),
+    ]
+    try:
+        proc = subprocess.run(
+            copy_cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            text=True,
+            timeout=240,
+        )
+        if proc.returncode == 0 and out_video.exists() and out_video.stat().st_size > 0 and _is_probably_mp4(out_video):
+            return True
+    except Exception:
+        pass
+
+    # Fallback re-encode for better cut accuracy when stream-copy fails.
+    encode_cmd = [
+        ffmpeg_path,
+        "-y",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-ss",
+        f"{max(0.0, start_sec):.3f}",
+        "-t",
+        f"{duration:.3f}",
+        "-i",
+        str(src_video),
+        "-an",
+        "-sn",
+        "-dn",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "fast",
+        "-crf",
+        "22",
+        "-movflags",
+        "+faststart",
+        str(out_video),
+    ]
+    try:
+        proc = subprocess.run(
+            encode_cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            text=True,
+            timeout=300,
+        )
+        return bool(
+            proc.returncode == 0
+            and out_video.exists()
+            and out_video.stat().st_size > 0
+            and _is_probably_mp4(out_video)
+        )
+    except Exception:
+        return False
 
 
 def _transcode_video_ffmpeg(
@@ -4517,7 +4883,7 @@ def call_gemini_labels(
 
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
     parts: List[Dict[str, Any]] = [{"text": prompt}]
-    video_part: Optional[Dict[str, Any]] = None
+    video_parts: List[Dict[str, Any]] = []
     frame_parts: List[Dict[str, Any]] = []
     reference_frame_bytes = 0
     reference_frame_count_used = 0
@@ -4528,20 +4894,79 @@ def call_gemini_labels(
     def _rebuild_parts() -> None:
         nonlocal parts
         parts = [{"text": prompt}]
-        if video_part is not None:
-            parts.append(video_part)
+        if video_parts:
+            if len(video_parts) > 1:
+                parts.append(
+                    {
+                        "text": (
+                            f"Video context is split into {len(video_parts)} sequential chunks. "
+                            "Use all chunks together as one continuous episode timeline."
+                        )
+                    }
+                )
+            parts.extend(video_parts)
             if frame_parts:
                 parts.extend(frame_parts)
 
     prepared_video_file = video_file
+    prepared_video_files: List[Path] = []
     if attach_video and prepared_video_file is not None and prepared_video_file.exists():
-        prepared_video_file = _maybe_optimize_video_for_upload(prepared_video_file, cfg)
+        split_files = _split_video_for_upload(prepared_video_file, cfg)
+        if split_files:
+            prepared_video_files = split_files
+            print(f"[video] split upload enabled: using {len(prepared_video_files)} video chunks.")
+        else:
+            prepared_video_file = _maybe_optimize_video_for_upload(prepared_video_file, cfg)
+            if prepared_video_file is not None and prepared_video_file.exists():
+                prepared_video_files = [prepared_video_file]
     source_video_for_retry = video_file if (video_file is not None and video_file.exists()) else prepared_video_file
+    split_inline_total_max_mb = float(_cfg_get(cfg, "gemini.split_upload_inline_total_max_mb", 12.0))
     inline_retry_target_idx = 0
 
+    def _build_files_api_video_parts(api_key: str) -> List[Dict[str, Any]]:
+        built: List[Dict[str, Any]] = []
+        total = len(prepared_video_files)
+        for idx, vfile in enumerate(prepared_video_files, start=1):
+            file_uri, file_name = _upload_video_via_gemini_files_api(
+                api_key=api_key,
+                video_file=vfile,
+                cfg=cfg,
+                connect_timeout_sec=connect_timeout_sec,
+                request_timeout_sec=request_timeout_sec,
+            )
+            built.append({"file_data": {"mime_type": "video/mp4", "file_uri": file_uri}})
+            if total > 1:
+                print(f"[gemini] attached video chunk {idx}/{total} via Files API: {file_name or file_uri}")
+            else:
+                print(f"[gemini] attached video via Files API: {file_name or file_uri}")
+        return built
+
+    def _build_inline_video_parts(files: List[Path]) -> Optional[List[Dict[str, Any]]]:
+        if not files:
+            return None
+        try:
+            total_mb = sum(float(p.stat().st_size) for p in files) / (1024 * 1024)
+        except Exception:
+            total_mb = 0.0
+        if len(files) > 1 and split_inline_total_max_mb > 0 and total_mb > split_inline_total_max_mb:
+            return None
+        built: List[Dict[str, Any]] = []
+        for p in files:
+            try:
+                part_mb = p.stat().st_size / (1024 * 1024)
+            except Exception:
+                return None
+            if part_mb > max_inline_video_mb:
+                return None
+            data = base64.b64encode(p.read_bytes()).decode("ascii")
+            built.append({"inline_data": {"mime_type": "video/mp4", "data": data}})
+        return built
+
     def _switch_to_smaller_inline_video() -> bool:
-        nonlocal prepared_video_file, video_part, include_video, fallback_used, inline_retry_target_idx
+        nonlocal prepared_video_file, prepared_video_files, video_parts, include_video, fallback_used, inline_retry_target_idx
         nonlocal frame_parts, reference_frame_bytes, reference_frame_count_used
+        if len(prepared_video_files) != 1:
+            return False
         if source_video_for_retry is None or not source_video_for_retry.exists():
             return False
         if prepared_video_file is None or not prepared_video_file.exists():
@@ -4574,8 +4999,11 @@ def call_gemini_labels(
             if candidate_size <= 0 or candidate_size >= current_size:
                 continue
             prepared_video_file = candidate
-            b64_video = base64.b64encode(prepared_video_file.read_bytes()).decode("ascii")
-            video_part = {"inline_data": {"mime_type": "video/mp4", "data": b64_video}}
+            prepared_video_files = [prepared_video_file]
+            built_inline = _build_inline_video_parts(prepared_video_files)
+            if not built_inline:
+                continue
+            video_parts = built_inline
             include_video = True
             fallback_used = True
             frame_source = source_video_for_retry if source_video_for_retry.exists() else prepared_video_file
@@ -4593,8 +5021,12 @@ def call_gemini_labels(
             return True
         return False
 
-    if attach_video and prepared_video_file is not None and prepared_video_file.exists():
-        size_mb = prepared_video_file.stat().st_size / (1024 * 1024)
+    if attach_video and prepared_video_files:
+        total_size_mb = 0.0
+        try:
+            total_size_mb = sum(float(p.stat().st_size) for p in prepared_video_files) / (1024 * 1024)
+        except Exception:
+            total_size_mb = 0.0
         wants_files_api = video_transport in {"auto", "files_api", "files"}
         inline_allowed = video_transport in {"auto", "inline"} or (
             wants_files_api and files_api_fallback_to_inline
@@ -4602,16 +5034,8 @@ def call_gemini_labels(
 
         if wants_files_api:
             try:
-                file_uri, file_name = _upload_video_via_gemini_files_api(
-                    api_key=active_api_key,
-                    video_file=prepared_video_file,
-                    cfg=cfg,
-                    connect_timeout_sec=connect_timeout_sec,
-                    request_timeout_sec=request_timeout_sec,
-                )
-                video_part = {"file_data": {"mime_type": "video/mp4", "file_uri": file_uri}}
-                video_transport_used = "files_api"
-                print(f"[gemini] attached video via Files API: {file_name or file_uri}")
+                video_parts = _build_files_api_video_parts(active_api_key)
+                video_transport_used = "files_api-multi" if len(video_parts) > 1 else "files_api"
             except Exception as exc:
                 print(f"[gemini] files API upload failed: {exc}")
                 if not inline_allowed or not files_api_fallback_to_inline:
@@ -4621,20 +5045,33 @@ def call_gemini_labels(
                 else:
                     print("[gemini] falling back to inline video attachment after Files API failure.")
 
-        if video_part is None and inline_allowed:
-            if size_mb > max_inline_video_mb:
+        if not video_parts and inline_allowed:
+            if len(prepared_video_files) == 1 and total_size_mb > max_inline_video_mb:
                 msg = (
-                    f"Video is {size_mb:.1f} MB which exceeds max_inline_video_mb={max_inline_video_mb:.1f}. "
+                    f"Video is {total_size_mb:.1f} MB which exceeds max_inline_video_mb={max_inline_video_mb:.1f}. "
                     "Increase gemini.max_inline_video_mb or provide smaller video."
                 )
                 if require_video:
                     raise RuntimeError(msg)
                     print(f"[video] {msg} Proceeding without attachment.")
             else:
-                b64_video = base64.b64encode(prepared_video_file.read_bytes()).decode("ascii")
-                video_part = {"inline_data": {"mime_type": "video/mp4", "data": b64_video}}
-                video_transport_used = "inline"
-                print(f"[gemini] attached video inline ({size_mb:.1f} MB).")
+                built_inline = _build_inline_video_parts(prepared_video_files)
+                if built_inline:
+                    video_parts = built_inline
+                    video_transport_used = "inline-multi" if len(video_parts) > 1 else "inline"
+                    if len(video_parts) > 1:
+                        print(
+                            f"[gemini] attached split video inline ({len(video_parts)} parts, "
+                            f"{total_size_mb:.1f} MB total)."
+                        )
+                    else:
+                        print(f"[gemini] attached video inline ({total_size_mb:.1f} MB).")
+                elif require_video:
+                    raise RuntimeError(
+                        "Split video inline payload exceeds limits; reduce split chunk size or use Files API."
+                    )
+                else:
+                    print("[gemini] split inline video is too large; continuing without video attachment.")
     else:
         if not attach_video and video_file is not None:
             if video_attach_block_reason == "short_episode_threshold":
@@ -4643,17 +5080,24 @@ def call_gemini_labels(
                 print("[gemini] video attachment disabled by config (gemini.attach_video=false).")
         elif require_video:
             raise RuntimeError("gemini.require_video=true but no downloadable video file was prepared.")
-    include_video = video_part is not None
+    include_video = bool(video_parts)
     if include_video:
         try:
-            trigger_mb = (
-                (prepared_video_file.stat().st_size / (1024 * 1024))
-                if (prepared_video_file is not None and prepared_video_file.exists())
-                else 0.0
-            )
+            if prepared_video_file is not None and prepared_video_file.exists():
+                trigger_mb = prepared_video_file.stat().st_size / (1024 * 1024)
+            elif prepared_video_files:
+                trigger_mb = sum(float(p.stat().st_size) for p in prepared_video_files) / (1024 * 1024)
+            else:
+                trigger_mb = 0.0
         except Exception:
             trigger_mb = 0.0
-        frame_source = source_video_for_retry if (source_video_for_retry is not None and source_video_for_retry.exists()) else prepared_video_file
+        frame_source = (
+            source_video_for_retry
+            if (source_video_for_retry is not None and source_video_for_retry.exists())
+            else prepared_video_file
+        )
+        if (frame_source is None or not frame_source.exists()) and prepared_video_files:
+            frame_source = prepared_video_files[0]
         if frame_source is not None and frame_source.exists():
             frame_parts, reference_frame_bytes = _extract_reference_frame_inline_parts(
                 frame_source,
@@ -4674,7 +5118,8 @@ def call_gemini_labels(
 
     def _switch_to_secondary_key_for_quota() -> bool:
         nonlocal active_api_key, active_key_name
-        nonlocal include_video, video_part, video_transport_used, fallback_used
+        nonlocal include_video, video_parts, video_transport_used, fallback_used
+        nonlocal prepared_video_files, prepared_video_file
         nonlocal frame_parts, reference_frame_bytes, reference_frame_count_used
         global _GEMINI_FALLBACK_USES
         if not quota_fallback_enabled or not can_use_secondary:
@@ -4693,19 +5138,30 @@ def call_gemini_labels(
         )
 
         # Files API uploads are scoped to the key/project. Rebuild attachment for secondary key.
-        if include_video and video_transport_used == "files_api":
-            if prepared_video_file is not None and prepared_video_file.exists():
-                size_mb = prepared_video_file.stat().st_size / (1024 * 1024)
-                if size_mb <= max_inline_video_mb:
-                    b64_video = base64.b64encode(prepared_video_file.read_bytes()).decode("ascii")
-                    video_part = {"inline_data": {"mime_type": "video/mp4", "data": b64_video}}
+        if include_video and video_transport_used.startswith("files_api"):
+            rebuilt = []
+            try:
+                rebuilt = _build_files_api_video_parts(active_api_key)
+            except Exception as exc:
+                print(f"[gemini] secondary-key Files API re-upload failed: {exc}")
+                rebuilt = []
+            if rebuilt:
+                video_parts = rebuilt
+                include_video = True
+                video_transport_used = "files_api-multi" if len(video_parts) > 1 else "files_api"
+                _rebuild_parts()
+                print("[gemini] rebuilt Files API video attachment with secondary key.")
+            else:
+                inline_parts = _build_inline_video_parts(prepared_video_files)
+                if inline_parts:
+                    video_parts = inline_parts
                     include_video = True
-                    video_transport_used = "inline"
+                    video_transport_used = "inline-multi" if len(video_parts) > 1 else "inline"
                     _rebuild_parts()
                     print("[gemini] switched to inline video payload after secondary-key fallback.")
                 elif not require_video and allow_text_fallback:
                     include_video = False
-                    video_part = None
+                    video_parts = []
                     frame_parts = []
                     reference_frame_bytes = 0
                     reference_frame_count_used = 0
@@ -4738,10 +5194,11 @@ def call_gemini_labels(
             )
         except requests.exceptions.RequestException as exc:
             last_error = f"Gemini network error: {exc}"
-            if include_video and video_transport_used == "inline" and _switch_to_smaller_inline_video():
+            if include_video and video_transport_used.startswith("inline") and _switch_to_smaller_inline_video():
                 continue
             if include_video and not require_video and allow_text_fallback:
                 include_video = False
+                video_parts = []
                 frame_parts = []
                 reference_frame_bytes = 0
                 reference_frame_count_used = 0
@@ -4776,6 +5233,7 @@ def call_gemini_labels(
                     "mode": "with-video" if used_video_in_success else "text-only",
                     "fallback_used": bool(fallback_used),
                     "video_transport": video_transport_used,
+                    "video_parts_count": int(len(video_parts)) if used_video_in_success else 0,
                     "reference_frames_attached": int(reference_frame_count_used),
                     "reference_frames_total_kb": round(reference_frame_bytes / 1024, 1),
                     "api_key_source": active_key_name,
@@ -4809,6 +5267,7 @@ def call_gemini_labels(
             and resp.status_code in {400, 408, 413, 422}
         ):
             include_video = False
+            video_parts = []
             frame_parts = []
             reference_frame_bytes = 0
             reference_frame_count_used = 0
@@ -4818,7 +5277,7 @@ def call_gemini_labels(
                 f"[gemini] HTTP {resp.status_code} while using video; switching to text-only fallback."
             )
             continue
-        if include_video and video_transport_used == "inline" and resp.status_code in {400, 408, 413, 422}:
+        if include_video and video_transport_used.startswith("inline") and resp.status_code in {400, 408, 413, 422}:
             if _switch_to_smaller_inline_video():
                 continue
         if resp.status_code in {429, 500, 502, 503, 504} and attempt < max_retries:
@@ -4828,6 +5287,206 @@ def call_gemini_labels(
             continue
         break
     raise RuntimeError(last_error or "Gemini request failed")
+
+
+def _request_labels_with_optional_segment_chunking(
+    cfg: Dict[str, Any],
+    segments: List[Dict[str, Any]],
+    prompt: str,
+    video_file: Optional[Path],
+    allow_operations: bool,
+    model_override: str = "",
+    task_id: str = "",
+) -> Dict[str, Any]:
+    chunking_enabled = bool(_cfg_get(cfg, "run.segment_chunking_enabled", True))
+    min_segments_for_chunking = max(2, int(_cfg_get(cfg, "run.segment_chunking_min_segments", 16)))
+    max_segments_per_chunk = max(2, int(_cfg_get(cfg, "run.segment_chunking_max_segments_per_request", 8)))
+    chunking_disable_operations = bool(_cfg_get(cfg, "run.segment_chunking_disable_operations", True))
+    chunking_video_pad_sec = max(0.0, float(_cfg_get(cfg, "run.segment_chunking_video_pad_sec", 1.0)))
+    chunking_keep_temp_files = bool(_cfg_get(cfg, "run.segment_chunking_keep_temp_files", False))
+    include_previous_labels_context = bool(
+        _cfg_get(cfg, "run.segment_chunking_include_previous_labels_context", True)
+    )
+    max_previous_labels = max(0, int(_cfg_get(cfg, "run.segment_chunking_max_previous_labels", 12)))
+
+    should_chunk = bool(
+        chunking_enabled
+        and video_file is not None
+        and video_file.exists()
+        and len(segments) >= min_segments_for_chunking
+        and max_segments_per_chunk < len(segments)
+    )
+    if not should_chunk:
+        return call_gemini_labels(
+            cfg,
+            prompt,
+            video_file=video_file,
+            segment_count=len(segments),
+            model_override=model_override,
+        )
+
+    ffmpeg_bin = _resolve_ffmpeg_binary()
+    if not ffmpeg_bin:
+        print("[gemini] segment chunking skipped: ffmpeg not found; using single-request flow.")
+        return call_gemini_labels(
+            cfg,
+            prompt,
+            video_file=video_file,
+            segment_count=len(segments),
+            model_override=model_override,
+        )
+
+    chunks = _segment_chunks(segments, max_segments_per_chunk)
+    if len(chunks) <= 1:
+        return call_gemini_labels(
+            cfg,
+            prompt,
+            video_file=video_file,
+            segment_count=len(segments),
+            model_override=model_override,
+        )
+
+    extra_base = str(_cfg_get(cfg, "gemini.extra_instructions", "") or "").strip()
+    out_dir = Path(str(_cfg_get(cfg, "run.output_dir", "outputs")))
+    out_dir.mkdir(parents=True, exist_ok=True)
+    temp_chunk_files: List[Path] = []
+    collected_labels: Dict[int, str] = {}
+    prior_labels: List[str] = []
+    meta_key_sources: List[str] = []
+    meta_models: List[str] = []
+    chunk_count = len(chunks)
+    print(
+        f"[gemini] segment chunking enabled: total_segments={len(segments)} "
+        f"chunks={chunk_count} max_per_chunk={max_segments_per_chunk}"
+    )
+    try:
+        for chunk_idx, chunk_segments in enumerate(chunks, start=1):
+            window_start = max(
+                0.0,
+                min(_safe_float(seg.get("start_sec"), 0.0) for seg in chunk_segments) - chunking_video_pad_sec,
+            )
+            window_end = max(_safe_float(seg.get("end_sec"), 0.0) for seg in chunk_segments) + chunking_video_pad_sec
+            if window_end <= window_start:
+                window_end = window_start + 1.0
+
+            chunk_video_path = out_dir / f"video_{task_id or 'chunked'}_segchunk_{chunk_idx:02d}.mp4"
+            clipped = _extract_video_window(
+                src_video=video_file,
+                out_video=chunk_video_path,
+                start_sec=window_start,
+                end_sec=window_end,
+                ffmpeg_bin=ffmpeg_bin,
+            )
+            effective_video = chunk_video_path if clipped else video_file
+            if clipped:
+                temp_chunk_files.append(chunk_video_path)
+            elif chunk_video_path.exists():
+                try:
+                    chunk_video_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
+
+            chunk_extra_parts: List[str] = []
+            if extra_base:
+                chunk_extra_parts.append(extra_base)
+            chunk_extra_parts.append(
+                f"This clip covers approximately {window_start:.1f}s to {window_end:.1f}s of the full episode timeline."
+            )
+            chunk_extra_parts.append(
+                "Label only the listed segment_index rows in this chunk; do not invent extra rows."
+            )
+            if include_previous_labels_context and max_previous_labels > 0 and prior_labels:
+                context_labels = prior_labels[-max_previous_labels:]
+                chunk_extra_parts.append(
+                    "Consistency context from previous chunks (keep object naming stable): "
+                    + " | ".join(context_labels)
+                )
+
+            chunk_allow_operations = allow_operations and (not chunking_disable_operations)
+            chunk_prompt = build_prompt(
+                chunk_segments,
+                "\n".join(chunk_extra_parts),
+                allow_operations=chunk_allow_operations,
+            )
+            print(
+                f"[gemini] chunk request {chunk_idx}/{chunk_count}: "
+                f"segments={len(chunk_segments)} window={window_start:.1f}-{window_end:.1f}s "
+                f"video={effective_video.name if effective_video is not None else 'none'}"
+            )
+            chunk_payload = call_gemini_labels(
+                cfg,
+                chunk_prompt,
+                video_file=effective_video,
+                segment_count=len(chunk_segments),
+                model_override=model_override,
+            )
+            chunk_plan = _normalize_segment_plan(chunk_payload, chunk_segments, cfg=cfg)
+            for seg in chunk_segments:
+                idx = int(seg.get("segment_index", 0))
+                item = chunk_plan.get(idx, {})
+                label = str(item.get("label", "")).strip()
+                if not label:
+                    label = str(seg.get("current_label", "")).strip()
+                if label:
+                    collected_labels[idx] = label
+                    prior_labels.append(label)
+                    if len(prior_labels) > 128:
+                        prior_labels = prior_labels[-128:]
+
+            meta = chunk_payload.get("_meta", {}) if isinstance(chunk_payload, dict) else {}
+            key_source = str(meta.get("api_key_source", "")).strip()
+            if key_source:
+                meta_key_sources.append(key_source)
+            model_name = str(meta.get("model", "")).strip()
+            if model_name:
+                meta_models.append(model_name)
+
+        combined_segments: List[Dict[str, Any]] = []
+        for seg in segments:
+            idx = int(seg.get("segment_index", 0))
+            label = collected_labels.get(idx, str(seg.get("current_label", "")).strip())
+            if bool(_cfg_get(cfg, "run.tier3_label_rewrite", True)):
+                label = _rewrite_label_tier3(label)
+            label = _normalize_label_min_safety(label)
+            combined_segments.append(
+                {
+                    "segment_index": idx,
+                    "start_sec": round(_safe_float(seg.get("start_sec"), 0.0), 3),
+                    "end_sec": round(_safe_float(seg.get("end_sec"), 0.0), 3),
+                    "label": label,
+                }
+            )
+
+        key_source_meta = "primary"
+        if "secondary" in meta_key_sources:
+            key_source_meta = "secondary"
+        model_meta = meta_models[-1] if meta_models else str(
+            model_override or _cfg_get(cfg, "gemini.model", "gemini-2.5-flash")
+        )
+        result: Dict[str, Any] = {
+            "operations": [],
+            "segments": combined_segments,
+            "_meta": {
+                "video_attached": True,
+                "mode": "with-video",
+                "fallback_used": False,
+                "video_transport": "chunked-window",
+                "video_parts_count": 1,
+                "chunked": True,
+                "chunk_count": chunk_count,
+                "api_key_source": key_source_meta,
+                "model": model_meta,
+            },
+        }
+        print(f"[gemini] chunked labels merged: {len(combined_segments)} segments from {chunk_count} chunks.")
+        return result
+    finally:
+        if not chunking_keep_temp_files:
+            for p in temp_chunk_files:
+                try:
+                    p.unlink(missing_ok=True)
+                except Exception:
+                    continue
 
 
 def _safe_float(value: Any, default: float) -> float:
@@ -6008,6 +6667,12 @@ def _apply_global_gemini_video_policy(cfg: Dict[str, Any]) -> None:
         "optimize_video_min_fps": 8.0,
         "optimize_video_min_width": 320,
         "optimize_video_min_short_side": 320,
+        "split_upload_enabled": True,
+        "split_upload_only_if_larger_mb": 8.0,
+        "split_upload_chunk_max_mb": 6.0,
+        "split_upload_max_chunks": 4,
+        "split_upload_reencode_on_copy_fail": True,
+        "split_upload_inline_total_max_mb": 12.0,
         "reference_frames_enabled": True,
         "reference_frames_always": False,
         "reference_frame_attach_when_video_mb_le": 2.5,
@@ -6020,12 +6685,14 @@ def _apply_global_gemini_video_policy(cfg: Dict[str, Any]) -> None:
     for key, value in defaults.items():
         gem.setdefault(key, value)
 
-    # Keep upload cost low (target <= 4MB), while avoiding aggressive visual degradation.
+    # Keep upload cost low while avoiding aggressive visual degradation.
+    split_upload_enabled = bool(gem.get("split_upload_enabled", True))
+    target_cap_mb = 8.0 if split_upload_enabled else 4.0
     try:
         target_mb = float(gem.get("optimize_video_target_mb", 4.0))
     except Exception:
         target_mb = 4.0
-    gem["optimize_video_target_mb"] = min(4.0, max(1.0, target_mb))
+    gem["optimize_video_target_mb"] = min(target_cap_mb, max(1.0, target_mb))
 
     try:
         target_fps = float(gem.get("optimize_video_target_fps", 10.0))
@@ -6704,11 +7371,13 @@ def run(cfg: Dict[str, Any], execute: bool) -> None:
                 if labels_payload is None:
                     print("[run] requesting labels from Gemini...")
                     try:
-                        labels_payload = call_gemini_labels(
+                        labels_payload = _request_labels_with_optional_segment_chunking(
                             cfg,
+                            segments,
                             prompt,
-                            video_file=video_file,
-                            segment_count=len(segments),
+                            video_file,
+                            allow_operations=True,
+                            task_id=task_id,
                         )
                     except Exception as exc:
                         quota_error = _is_gemini_quota_error(exc)
@@ -6817,11 +7486,13 @@ def run(cfg: Dict[str, Any], execute: bool) -> None:
                             allow_operations=False,
                         )
                         try:
-                            labels_payload = call_gemini_labels(
+                            labels_payload = _request_labels_with_optional_segment_chunking(
                                 cfg,
+                                segments,
                                 prompt,
-                                video_file=video_file,
-                                segment_count=len(segments),
+                                video_file,
+                                allow_operations=False,
+                                task_id=task_id,
                             )
                         except Exception as exc:
                             quota_error = _is_gemini_quota_error(exc)
@@ -6947,12 +7618,14 @@ def run(cfg: Dict[str, Any], execute: bool) -> None:
                             f"({current_model} -> {policy_retry_model})..."
                         )
                         try:
-                            retry_payload = call_gemini_labels(
+                            retry_payload = _request_labels_with_optional_segment_chunking(
                                 cfg,
+                                segments,
                                 prompt,
-                                video_file=video_file,
-                                segment_count=len(segments),
+                                video_file,
+                                allow_operations=False,
                                 model_override=policy_retry_model,
+                                task_id=task_id,
                             )
                             if execute and execute_require_video_context:
                                 retry_meta = retry_payload.get("_meta", {}) if isinstance(retry_payload, dict) else {}
