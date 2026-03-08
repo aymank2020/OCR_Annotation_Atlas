@@ -116,6 +116,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "execute_require_video_context": True,
         "segment_chunking_enabled": True,
         "segment_chunking_min_segments": 16,
+        "segment_chunking_min_video_sec": 60.0,
         "segment_chunking_max_segments_per_request": 8,
         "segment_chunking_video_pad_sec": 1.0,
         "segment_chunking_keep_temp_files": False,
@@ -4223,6 +4224,9 @@ def build_prompt(
         "Continuity rule: if same coarse goal continues without disengaging from the object, keep one coarse segment.\n"
         "Coarse-goal verbs: avoid mechanical muscle-motion phrasing (e.g., 'move saw back and forth'). "
         "Use task-goal verbs (e.g., 'cut wood with saw', 'sand board with sandpaper').\n"
+        "No '-ing' verbs: use imperative commands only (e.g., 'turn mold', not 'turning the mold').\n"
+        "Timestamp strictness: describe only what happens inside each exact segment start_sec/end_sec; "
+        "do not shift actions into neighboring segments.\n"
         "Use coarse single-goal labels for repetitive actions; use dense labels only when needed.\n"
         "Dense labels may include multiple atomic actions separated by commas/and.\n"
         "Do not exceed 20 words or 2 atomic actions per label (typically one separator: a single comma or one 'and').\n"
@@ -5506,6 +5510,7 @@ def _request_labels_with_optional_segment_chunking(
 ) -> Dict[str, Any]:
     chunking_enabled = bool(_cfg_get(cfg, "run.segment_chunking_enabled", True))
     min_segments_for_chunking = max(2, int(_cfg_get(cfg, "run.segment_chunking_min_segments", 16)))
+    min_video_sec_for_chunking = max(0.0, float(_cfg_get(cfg, "run.segment_chunking_min_video_sec", 60.0)))
     max_segments_per_chunk = max(2, int(_cfg_get(cfg, "run.segment_chunking_max_segments_per_request", 8)))
     chunking_disable_operations = bool(_cfg_get(cfg, "run.segment_chunking_disable_operations", True))
     chunking_video_pad_sec = max(0.0, float(_cfg_get(cfg, "run.segment_chunking_video_pad_sec", 1.0)))
@@ -5523,13 +5528,28 @@ def _request_labels_with_optional_segment_chunking(
         _cfg_get(cfg, "run.segment_chunking_consistency_normalize_labels", True)
     )
 
-    should_chunk = bool(
+    can_chunk_by_shape = bool(
         chunking_enabled
         and video_file is not None
         and video_file.exists()
         and len(segments) >= min_segments_for_chunking
         and max_segments_per_chunk < len(segments)
     )
+    short_video_for_chunking = False
+    video_duration_sec_for_chunking = 0.0
+    if can_chunk_by_shape and min_video_sec_for_chunking > 0 and video_file is not None and video_file.exists():
+        video_duration_sec_for_chunking = _probe_video_duration_seconds(video_file)
+        short_video_for_chunking = (
+            video_duration_sec_for_chunking > 0.2 and video_duration_sec_for_chunking < min_video_sec_for_chunking
+        )
+        if short_video_for_chunking:
+            print(
+                "[gemini] segment chunking skipped: short video "
+                f"({video_duration_sec_for_chunking:.1f}s < {min_video_sec_for_chunking:.1f}s); "
+                "using single-request flow."
+            )
+
+    should_chunk = bool(can_chunk_by_shape and not short_video_for_chunking)
     if not should_chunk:
         return call_gemini_labels(
             cfg,
@@ -5887,6 +5907,44 @@ def _rewrite_no_action_pauses_in_plan(segment_plan: Dict[int, Dict[str, Any]], c
     return rewrites
 
 
+_ING_TO_BASE_VERB_MAP: Dict[str, str] = {
+    "positioning": "position",
+    "scraping": "scrape",
+    "lifting": "lift",
+    "turning": "turn",
+    "setting": "set",
+    "placing": "place",
+    "moving": "move",
+    "polishing": "polish",
+    "sanding": "sand",
+    "leveling": "level",
+    "dislodging": "dislodge",
+    "adjusting": "adjust",
+    "opening": "open",
+    "closing": "close",
+    "cutting": "cut",
+    "pulling": "pull",
+    "pushing": "push",
+    "holding": "hold",
+    "inserting": "insert",
+    "removing": "remove",
+    "twisting": "twist",
+    "pouring": "pour",
+    "scooping": "scoop",
+    "filling": "fill",
+    "compacting": "compact",
+}
+
+
+def _normalize_ing_verbs_to_imperative(text: str) -> str:
+    out = text or ""
+    if not out:
+        return out
+    for src, dst in _ING_TO_BASE_VERB_MAP.items():
+        out = re.sub(rf"\b{re.escape(src)}\b", dst, out, flags=re.IGNORECASE)
+    return re.sub(r"\s+", " ", out).strip()
+
+
 _NUM_WORDS_0_TO_19 = [
     "zero",
     "one",
@@ -6063,6 +6121,7 @@ def _rewrite_label_tier3(label: str) -> str:
     text = re.sub(r"\brotate(?:d|s|ing)?\b", "adjust", text, flags=re.IGNORECASE)
     text = re.sub(r"\bturn(?:ed|s|ing)?\b", "adjust", text, flags=re.IGNORECASE)
     text = re.sub(r"\bgrab(?:bed|s|bing)?\b", "pick up", text, flags=re.IGNORECASE)
+    text = _normalize_ing_verbs_to_imperative(text)
     text = _normalize_mechanical_motion_to_goal(text)
     text = _normalize_gripper_terms(text)
     text = _replace_numerals_with_words(text)
@@ -6097,6 +6156,8 @@ def _normalize_label_min_safety(label: str) -> str:
     # Always enforce this minimal safety rewrite before policy gate.
     text = re.sub(r"\brotate(?:d|s|ing)?\b", "adjust", text, flags=re.IGNORECASE)
     text = re.sub(r"\bturn(?:ed|s|ing)?\b", "adjust", text, flags=re.IGNORECASE)
+    text = re.sub(r"\brelocate(?:d|s|ing)?\b", "move", text, flags=re.IGNORECASE)
+    text = _normalize_ing_verbs_to_imperative(text)
     text = _normalize_mechanical_motion_to_goal(text)
     text = _normalize_gripper_terms(text)
     text = _replace_numerals_with_words(text)

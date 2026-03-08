@@ -28,6 +28,7 @@ Strict rules:
 - never use tool terms like "mechanical arm", "robotic arm", "robot arm", "manipulator", "claw arm"
 - imperative voice only
 - forbidden verbs: inspect, check, reach (except truncated-end edge case)
+- no "-ing" verb starts; use imperative commands (e.g., "turn mold", not "turning mold")
 - no numerals in labels
 - never mix dense/coarse in one segment
 - max 2 atomic actions per segment label (usually one comma or one "and")
@@ -41,6 +42,7 @@ Strict rules:
 - if two adjacent segments are one continuous coarse action (no disengagement), merge them into one segment
 - avoid mechanical-motion phrasing like "move saw back and forth"; use coarse goal verbs like "cut wood with saw"
 - if ego is still holding tool/object, "No Action" is forbidden; merge/relabel short pauses into surrounding action
+- timestamp strictness: label only what happens inside each exact segment start/end window; do not shift actions
 - avoid body-part wording (hands/fingers/body parts) unless unavoidable
 - if uncertain, use general nouns (tool/container/cloth/item)
 - do not keep placeholder/default labels
