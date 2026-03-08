@@ -40,6 +40,8 @@ Strict rules:
 - if draft phrasing violates Tier-3 rules, rewrite the label from scratch (do not patch bad shorthand)
 - no shortcuts: do not merge distinct physical interactions into one invalid phrase
 - if two adjacent segments are one continuous coarse action (no disengagement), merge them into one segment
+- if 3+ consecutive segments are the same ongoing action and tool/object is never dropped, merge them aggressively
+- treat short tool reloading actions (dip/reload brush, wet sponge, etc.) as micro-actions of the same main goal
 - avoid mechanical-motion phrasing like "move saw back and forth"; use coarse goal verbs like "cut wood with saw"
 - if ego is still holding tool/object, "No Action" is forbidden; merge/relabel short pauses into surrounding action
 - timestamp strictness: label only what happens inside each exact segment start/end window; do not shift actions
