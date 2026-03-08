@@ -127,6 +127,9 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "segment_chunking_consistency_memory_limit": 40,
         "segment_chunking_consistency_prompt_terms": 16,
         "segment_chunking_consistency_normalize_labels": True,
+        "auto_continuity_merge_enabled": True,
+        "auto_continuity_merge_min_run_segments": 3,
+        "auto_continuity_merge_min_token_overlap": 1,
         "use_task_scoped_artifacts": True,
         "enable_quality_review_submit": True,
         "loop_off_on_episode_open": True,
@@ -147,7 +150,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "tier3_label_rewrite": True,
         "enable_structural_actions": True,
         "structural_allow_split": False,
-        "structural_allow_merge": False,
+        "structural_allow_merge": True,
         "structural_allow_delete": False,
         "requery_after_structural_actions": True,
         "max_structural_operations": 12,
@@ -5870,6 +5873,96 @@ def _label_content_tokens(label: str) -> set[str]:
     return {tok for tok in tokens if tok and tok not in _LABEL_OVERLAP_STOPWORDS}
 
 
+_MICRO_ACTION_VERBS: set[str] = {"dip", "reload", "wet"}
+
+
+def _label_action_clauses(label: str) -> List[str]:
+    text = re.sub(r"\s+", " ", (label or "").strip())
+    if not text:
+        return []
+    parts: List[str] = []
+    for chunk in text.split(","):
+        subs = [s.strip() for s in re.split(r"\band\b", chunk, flags=re.IGNORECASE) if s.strip()]
+        parts.extend(subs)
+    return parts
+
+
+def _label_goal_key(label: str) -> str:
+    """
+    Build a coarse goal key for continuity merge detection.
+    Prefer the last non-micro verb; fallback to last verb.
+    """
+    if _is_no_action_label(label):
+        return ""
+    clauses = _label_action_clauses(label)
+    if not clauses:
+        return ""
+    verbs: List[str] = []
+    for clause in clauses:
+        v = _label_main_verb(clause)
+        if v:
+            verbs.append(v)
+    if not verbs:
+        return ""
+    non_micro = [v for v in verbs if v not in _MICRO_ACTION_VERBS]
+    return (non_micro[-1] if non_micro else verbs[-1]).strip().lower()
+
+
+def _build_auto_continuity_merge_operations(
+    segment_plan: Dict[int, Dict[str, Any]],
+    cfg: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    if not bool(_cfg_get(cfg, "run.auto_continuity_merge_enabled", True)):
+        return []
+    if not bool(_cfg_get(cfg, "run.structural_allow_merge", True)):
+        return []
+
+    min_run = max(3, int(_cfg_get(cfg, "run.auto_continuity_merge_min_run_segments", 3)))
+    min_overlap = max(0, int(_cfg_get(cfg, "run.auto_continuity_merge_min_token_overlap", 1)))
+
+    ordered = sorted(int(k) for k in segment_plan.keys())
+    if len(ordered) < min_run:
+        return []
+
+    def same_goal(i1: int, i2: int) -> bool:
+        a = segment_plan.get(i1, {})
+        b = segment_plan.get(i2, {})
+        la = str(a.get("label", "")).strip()
+        lb = str(b.get("label", "")).strip()
+        ka = _label_goal_key(la)
+        kb = _label_goal_key(lb)
+        if not ka or not kb or ka != kb:
+            return False
+        overlap = len(_label_content_tokens(la).intersection(_label_content_tokens(lb)))
+        return overlap >= min_overlap
+
+    runs: List[Tuple[int, int]] = []
+    run_start = ordered[0]
+    run_end = ordered[0]
+    for idx in ordered[1:]:
+        if idx == run_end + 1 and same_goal(run_end, idx):
+            run_end = idx
+            continue
+        if (run_end - run_start + 1) >= min_run:
+            runs.append((run_start, run_end))
+        run_start = idx
+        run_end = idx
+    if (run_end - run_start + 1) >= min_run:
+        runs.append((run_start, run_end))
+
+    if not runs:
+        return []
+
+    merge_indices: List[int] = []
+    for start_idx, end_idx in runs:
+        # Descending indices to keep operation row references stable.
+        for idx in range(end_idx, start_idx, -1):
+            merge_indices.append(idx)
+
+    merge_indices = sorted(set(merge_indices), reverse=True)
+    return [{"action": "merge", "segment_index": int(idx)} for idx in merge_indices]
+
+
 def _rewrite_no_action_pauses_in_plan(segment_plan: Dict[int, Dict[str, Any]], cfg: Dict[str, Any]) -> int:
     if not bool(_cfg_get(cfg, "run.no_action_pause_rewrite_enabled", True)):
         return 0
@@ -7899,6 +7992,17 @@ def run(cfg: Dict[str, Any], execute: bool) -> None:
                         _save_task_state(cfg, task_id, task_state)
 
                 operations = _normalize_operations(labels_payload, cfg=cfg)
+                if not operations and execute and enable_structural_actions:
+                    try:
+                        merge_plan_preview = _normalize_segment_plan(labels_payload, segments, cfg=cfg)
+                        auto_merge_ops = _build_auto_continuity_merge_operations(merge_plan_preview, cfg)
+                        if auto_merge_ops:
+                            operations = auto_merge_ops
+                            print(
+                                f"[policy] auto-generated merge operations for continuity: {len(auto_merge_ops)}"
+                            )
+                    except Exception as auto_merge_exc:
+                        print(f"[policy] auto continuity-merge skipped: {auto_merge_exc}")
                 if operations:
                     ops_text = ", ".join([f"{op['action']}#{op['segment_index']}" for op in operations[:20]])
                     print(f"[gemini] suggested operations ({len(operations)}): {ops_text}")
