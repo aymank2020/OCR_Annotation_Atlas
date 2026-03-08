@@ -4230,6 +4230,7 @@ def build_prompt(
         "and tool/object is never dropped, you MUST merge them.\n"
         "Coarse-goal verbs: avoid mechanical muscle-motion phrasing (e.g., 'move saw back and forth'). "
         "Use task-goal verbs (e.g., 'cut wood with saw', 'sand board with sandpaper').\n"
+        "No token stuttering: never repeat words/phrases like 'detangle detangle' or 'pull loosened pull loosened'.\n"
         "No '-ing' verbs: use imperative commands only (e.g., 'turn mold', not 'turning the mold').\n"
         "Timestamp strictness: describe only what happens inside each exact segment start_sec/end_sec; "
         "do not shift actions into neighboring segments.\n"
@@ -4265,6 +4266,10 @@ def build_prompt(
         "GOOD: merge/relabel pause into surrounding action; do not isolate No Action.\n"
         "BAD: paint chair -> dip paintbrush -> paint chair in separate short consecutive segments\n"
         "GOOD: merge micro-actions into one segment label 'paint chair with paintbrush' when tool is never dropped.\n"
+        "BAD: move comb through wig to detangle\n"
+        "GOOD: detangle wig with comb\n"
+        "BAD: move hair straightener to press wig section\n"
+        "GOOD: straighten wig section with hair straightener\n"
         "If a segment timestamp is wrong, correct start_sec/end_sec.\n"
         "Label rules: imperative style, concise, minimum 2 words, maximum 20 words.\n"
         "Use \"No Action\" only as standalone label.\n"
@@ -4385,6 +4390,15 @@ def _validate_segment_plan_against_policy(
         r"\b(hand|hands|finger|fingers|thumb|thumbs|palm|palms|wrist|wrists)\b",
         re.IGNORECASE,
     )
+    token_stuttering_pattern = re.compile(
+        r"\b([a-z]+(?:\s+[a-z]+){0,2})\s+\1\b",
+        re.IGNORECASE,
+    )
+    mechanical_motion_pattern = re.compile(
+        r"\bmove\s+(?:comb(?:\s+tail)?|hair\s+straightener)\b|"
+        r"\bmove\s+\w+\s+back\s+and\s+forth\b",
+        re.IGNORECASE,
+    )
 
     source_by_idx: Dict[int, Dict[str, Any]] = {}
     for seg in source_segments:
@@ -4440,6 +4454,10 @@ def _validate_segment_plan_against_policy(
                     errors.append(f"segment {idx}: label contains numerals")
                 if body_part_reference_pattern.search(label):
                     errors.append(f"segment {idx}: avoid body-part wording unless unavoidable")
+                if token_stuttering_pattern.search(label):
+                    errors.append(f"segment {idx}: repeated token/phrase detected (stuttering)")
+                if mechanical_motion_pattern.search(label):
+                    errors.append(f"segment {idx}: mechanical-motion phrasing detected (use coarse goal verb)")
                 if "place" in label_l and not place_location_pattern.search(label):
                     errors.append(f"segment {idx}: 'place' missing explicit location")
                 if chained_verb_without_object_pattern.search(label):
@@ -6222,7 +6240,89 @@ def _normalize_mechanical_motion_to_goal(text: str) -> str:
         flags=re.IGNORECASE,
     )
 
+    def _norm_hair_obj(value: str) -> str:
+        obj = _norm_obj(value)
+        obj = re.sub(r"\bsection\s+hair\b", "wig", obj, flags=re.IGNORECASE)
+        obj = re.sub(r"\bwig\s+hair\b", "wig", obj, flags=re.IGNORECASE)
+        obj = re.sub(r"\bhair\b", "wig", obj, flags=re.IGNORECASE)
+        obj = re.sub(r"\s+", " ", obj).strip(" ,.;:")
+        return obj or "wig"
+
+    def _comb_section_repl(match: re.Match[str]) -> str:
+        obj = _norm_hair_obj(str(match.group("obj") or "wig"))
+        return f"section {obj} with comb"
+
+    # move comb/tail through wig to section hair -> section wig with comb
+    out = re.sub(
+        r"\bmove\s+comb(?:\s+tail)?\s+through\s+(?P<obj>[^,]+?)\s+to\s+section(?:\s+hair)?\b",
+        _comb_section_repl,
+        out,
+        flags=re.IGNORECASE,
+    )
+
+    def _comb_detangle_repl(match: re.Match[str]) -> str:
+        obj = _norm_hair_obj(str(match.group("obj") or "wig"))
+        return f"detangle {obj} with comb"
+
+    out = re.sub(
+        r"\bmove\s+comb\s+through\s+(?P<obj>[^,]+?)\s+to\s+detangle\b",
+        _comb_detangle_repl,
+        out,
+        flags=re.IGNORECASE,
+    )
+
+    def _comb_style_repl(match: re.Match[str]) -> str:
+        obj = _norm_hair_obj(str(match.group("obj") or "wig"))
+        return f"comb {obj}"
+
+    out = re.sub(
+        r"\bmove\s+comb\s+through\s+(?P<obj>[^,]+?)\s+to\s+style\b",
+        _comb_style_repl,
+        out,
+        flags=re.IGNORECASE,
+    )
+
+    def _comb_generic_repl(match: re.Match[str]) -> str:
+        obj = _norm_hair_obj(str(match.group("obj") or "wig"))
+        return f"comb {obj}"
+
+    # move comb through wig -> comb wig
+    out = re.sub(
+        r"\bmove\s+comb\s+through\s+(?P<obj>[^,]+)\b",
+        _comb_generic_repl,
+        out,
+        flags=re.IGNORECASE,
+    )
+
+    def _straightener_repl(match: re.Match[str]) -> str:
+        obj = _norm_hair_obj(str(match.group("obj") or "wig"))
+        return f"straighten {obj} with hair straightener"
+
+    # move hair straightener to press wig section -> straighten wig with hair straightener
+    out = re.sub(
+        r"\bmove\s+hair\s+straightener\s+(?:to\s+)?(?:press|straighten)\s+(?P<obj>[^,]+)\b",
+        _straightener_repl,
+        out,
+        flags=re.IGNORECASE,
+    )
+
     return re.sub(r"\s+", " ", out).strip(" ,")
+
+
+def _collapse_adjacent_duplicate_tokens(text: str) -> str:
+    out = re.sub(r"\s+", " ", (text or "").strip())
+    if not out:
+        return out
+    repeated_phrase = re.compile(r"\b([a-z]+(?:\s+[a-z]+){1,2})\s+\1\b", re.IGNORECASE)
+    repeated_word = re.compile(r"\b([a-z]+)\s+\1\b", re.IGNORECASE)
+    for _ in range(6):
+        prev = out
+        out = repeated_phrase.sub(r"\1", out)
+        out = repeated_word.sub(r"\1", out)
+        out = re.sub(r"\s+", " ", out).strip(" ,")
+        if out == prev:
+            break
+    return out
 
 
 def _rewrite_label_tier3(label: str) -> str:
@@ -6244,6 +6344,7 @@ def _rewrite_label_tier3(label: str) -> str:
     text = re.sub(r"\bgrab(?:bed|s|bing)?\b", "pick up", text, flags=re.IGNORECASE)
     text = _normalize_ing_verbs_to_imperative(text)
     text = _normalize_mechanical_motion_to_goal(text)
+    text = _collapse_adjacent_duplicate_tokens(text)
     text = _normalize_gripper_terms(text)
     text = _replace_numerals_with_words(text)
     text = _expand_verb_object_attachment_patterns(text)
@@ -6280,6 +6381,7 @@ def _normalize_label_min_safety(label: str) -> str:
     text = re.sub(r"\brelocate(?:d|s|ing)?\b", "move", text, flags=re.IGNORECASE)
     text = _normalize_ing_verbs_to_imperative(text)
     text = _normalize_mechanical_motion_to_goal(text)
+    text = _collapse_adjacent_duplicate_tokens(text)
     text = _normalize_gripper_terms(text)
     text = _replace_numerals_with_words(text)
     text = _expand_verb_object_attachment_patterns(text)
