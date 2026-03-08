@@ -40,6 +40,7 @@ Strict rules:
 - no shortcuts: do not merge distinct physical interactions into one invalid phrase
 - if two adjacent segments are one continuous coarse action (no disengagement), merge them into one segment
 - avoid mechanical-motion phrasing like "move saw back and forth"; use coarse goal verbs like "cut wood with saw"
+- if ego is still holding tool/object, "No Action" is forbidden; merge/relabel short pauses into surrounding action
 - avoid body-part wording (hands/fingers/body parts) unless unavoidable
 - if uncertain, use general nouns (tool/container/cloth/item)
 - do not keep placeholder/default labels
