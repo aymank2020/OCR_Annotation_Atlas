@@ -324,11 +324,12 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "inline_retry_target_mb": [4.0, 2.5, 1.5, 1.0],
         "max_inline_video_mb": 20.0,
         "split_upload_enabled": True,
-        "split_upload_only_if_larger_mb": 8.0,
-        "split_upload_chunk_max_mb": 6.0,
-        "split_upload_max_chunks": 4,
+        "split_upload_only_if_larger_mb": 5.0,
+        "split_upload_chunk_max_mb": 5.0,
+        "split_upload_max_chunks": 32,
         "split_upload_reencode_on_copy_fail": True,
         "split_upload_inline_total_max_mb": 12.0,
+        "split_upload_overlap_sec": 0.6,
         "reference_frames_enabled": True,
         "reference_frames_always": False,
         "reference_frame_attach_when_video_mb_le": 2.5,
@@ -1635,10 +1636,17 @@ def _split_video_for_upload(video_file: Path, cfg: Dict[str, Any]) -> List[Path]
     if size_mb <= trigger_mb:
         return []
 
-    chunk_max_mb = max(2.0, float(_cfg_get(cfg, "gemini.split_upload_chunk_max_mb", 6.0)))
-    max_chunks = max(2, int(_cfg_get(cfg, "gemini.split_upload_max_chunks", 4)))
-    split_count = int(math.ceil(size_mb / chunk_max_mb))
-    split_count = max(2, min(max_chunks, split_count))
+    chunk_max_mb = max(2.0, float(_cfg_get(cfg, "gemini.split_upload_chunk_max_mb", 5.0)))
+    max_chunks = max(2, int(_cfg_get(cfg, "gemini.split_upload_max_chunks", 32)))
+    overlap_sec = max(0.0, float(_cfg_get(cfg, "gemini.split_upload_overlap_sec", 0.6)))
+    overlap_sec = min(2.0, overlap_sec)
+    split_count_target = int(math.ceil(size_mb / chunk_max_mb))
+    split_count = max(2, min(max_chunks, split_count_target))
+    if split_count_target > max_chunks:
+        print(
+            f"[video] split target exceeds max chunks: target={split_count_target}, "
+            f"using max_chunks={max_chunks}."
+        )
     if split_count <= 1:
         return []
 
@@ -1654,75 +1662,51 @@ def _split_video_for_upload(video_file: Path, cfg: Dict[str, Any]) -> List[Path]
 
     stem = video_file.stem
     parent = video_file.parent
-    out_files = [parent / f"{stem}_upload_part{i + 1:02d}.mp4" for i in range(split_count)]
-    if all(p.exists() and p.stat().st_size > 0 and _is_probably_mp4(p) for p in out_files):
-        total_mb = sum(float(p.stat().st_size) for p in out_files) / (1024 * 1024)
-        print(
-            f"[video] using cached split upload parts: {len(out_files)} parts "
-            f"({total_mb:.1f} MB total)."
-        )
-        return out_files
-
-    # Remove stale parts before generating a fresh set.
-    for stale in parent.glob(f"{stem}_upload_part*.mp4"):
-        try:
-            stale.unlink(missing_ok=True)
-        except Exception:
-            pass
-
-    chunk_duration = duration_sec / float(split_count)
     use_reencode_on_copy_fail = bool(_cfg_get(cfg, "gemini.split_upload_reencode_on_copy_fail", True))
-    print(
-        f"[video] splitting upload video into {split_count} parts "
-        f"(source={size_mb:.1f} MB, duration={duration_sec:.1f}s)."
-    )
-    produced: List[Path] = []
-    for idx, out_path in enumerate(out_files):
-        start_sec = idx * chunk_duration
-        if idx == split_count - 1:
-            dur_sec = max(0.2, duration_sec - start_sec)
-        else:
-            dur_sec = max(0.2, chunk_duration)
+    max_part_tolerance_mb = max(chunk_max_mb + 0.5, chunk_max_mb * 1.35)
 
-        cmd_copy = [
-            ffmpeg_bin,
-            "-y",
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-ss",
-            f"{start_sec:.3f}",
-            "-t",
-            f"{dur_sec:.3f}",
-            "-i",
-            str(video_file),
-            "-map",
-            "0:v:0",
-            "-an",
-            "-sn",
-            "-dn",
-            "-c:v",
-            "copy",
-            "-movflags",
-            "+faststart",
-            str(out_path),
-        ]
-        ok = False
-        try:
-            proc = subprocess.run(
-                cmd_copy,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                check=False,
-                text=True,
-                timeout=240,
+    while True:
+        out_files = [parent / f"{stem}_upload_part{i + 1:02d}.mp4" for i in range(split_count)]
+        if all(p.exists() and p.stat().st_size > 0 and _is_probably_mp4(p) for p in out_files):
+            total_mb = sum(float(p.stat().st_size) for p in out_files) / (1024 * 1024)
+            max_part_mb = max(float(p.stat().st_size) for p in out_files) / (1024 * 1024)
+            if max_part_mb <= max_part_tolerance_mb or split_count >= max_chunks:
+                print(
+                    f"[video] using cached split upload parts: {len(out_files)} parts "
+                    f"({total_mb:.1f} MB total)."
+                )
+                return out_files
+            print(
+                f"[video] cached split parts exceed target chunk size "
+                f"(max_part={max_part_mb:.1f} MB, target~{chunk_max_mb:.1f} MB); regenerating."
             )
-            ok = proc.returncode == 0 and out_path.exists() and out_path.stat().st_size > 0 and _is_probably_mp4(out_path)
-        except Exception:
-            ok = False
 
-        if not ok and use_reencode_on_copy_fail:
-            cmd_enc = [
+        # Remove stale parts before generating a fresh set.
+        for stale in parent.glob(f"{stem}_upload_part*.mp4"):
+            try:
+                stale.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+        chunk_duration = duration_sec / float(split_count)
+        print(
+            f"[video] splitting upload video into {split_count} parts "
+            f"(source={size_mb:.1f} MB, duration={duration_sec:.1f}s, target~{chunk_max_mb:.1f} MB/part)."
+        )
+        produced: List[Path] = []
+        produced_part_mbs: List[float] = []
+        for idx, out_path in enumerate(out_files):
+            start_base = idx * chunk_duration
+            end_base = duration_sec if idx == split_count - 1 else (idx + 1) * chunk_duration
+            if overlap_sec > 0:
+                if idx > 0:
+                    start_base = max(0.0, start_base - overlap_sec)
+                if idx < split_count - 1:
+                    end_base = min(duration_sec, end_base + overlap_sec)
+            start_sec = max(0.0, start_base)
+            dur_sec = max(0.2, end_base - start_sec)
+
+            cmd_copy = [
                 ffmpeg_bin,
                 "-y",
                 "-hide_banner",
@@ -1734,22 +1718,21 @@ def _split_video_for_upload(video_file: Path, cfg: Dict[str, Any]) -> List[Path]
                 f"{dur_sec:.3f}",
                 "-i",
                 str(video_file),
+                "-map",
+                "0:v:0",
                 "-an",
                 "-sn",
                 "-dn",
                 "-c:v",
-                "libx264",
-                "-preset",
-                "faster",
-                "-crf",
-                "21",
+                "copy",
                 "-movflags",
                 "+faststart",
                 str(out_path),
             ]
+            ok = False
             try:
                 proc = subprocess.run(
-                    cmd_enc,
+                    cmd_copy,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     check=False,
@@ -1760,25 +1743,89 @@ def _split_video_for_upload(video_file: Path, cfg: Dict[str, Any]) -> List[Path]
             except Exception:
                 ok = False
 
-        if not ok:
-            print(f"[video] split chunk failed at part {idx + 1}; falling back to single-file flow.")
-            for p in out_files:
+            if not ok and use_reencode_on_copy_fail:
+                cmd_enc = [
+                    ffmpeg_bin,
+                    "-y",
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-ss",
+                    f"{start_sec:.3f}",
+                    "-t",
+                    f"{dur_sec:.3f}",
+                    "-i",
+                    str(video_file),
+                    "-an",
+                    "-sn",
+                    "-dn",
+                    "-c:v",
+                    "libx264",
+                    "-preset",
+                    "faster",
+                    "-crf",
+                    "21",
+                    "-movflags",
+                    "+faststart",
+                    str(out_path),
+                ]
                 try:
-                    p.unlink(missing_ok=True)
+                    proc = subprocess.run(
+                        cmd_enc,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        check=False,
+                        text=True,
+                        timeout=240,
+                    )
+                    ok = proc.returncode == 0 and out_path.exists() and out_path.stat().st_size > 0 and _is_probably_mp4(out_path)
                 except Exception:
-                    pass
+                    ok = False
+
+            if not ok:
+                print(f"[video] split chunk failed at part {idx + 1}; falling back to single-file flow.")
+                for p in out_files:
+                    try:
+                        p.unlink(missing_ok=True)
+                    except Exception:
+                        pass
+                return []
+
+            produced.append(out_path)
+            try:
+                part_mb = out_path.stat().st_size / (1024 * 1024)
+            except Exception:
+                part_mb = 0.0
+            produced_part_mbs.append(part_mb)
+            try:
+                print(f"[video] split part {idx + 1}/{split_count}: {out_path.name} ({part_mb:.1f} MB)")
+            except Exception:
+                pass
+
+        if len(produced) != split_count:
             return []
 
-        produced.append(out_path)
-        try:
-            part_mb = out_path.stat().st_size / (1024 * 1024)
-            print(f"[video] split part {idx + 1}/{split_count}: {out_path.name} ({part_mb:.1f} MB)")
-        except Exception:
-            pass
+        max_part_mb = max(produced_part_mbs) if produced_part_mbs else 0.0
+        if max_part_mb <= max_part_tolerance_mb or split_count >= max_chunks:
+            if max_part_mb > max_part_tolerance_mb and split_count >= max_chunks:
+                print(
+                    f"[video] split reached max_chunks={max_chunks}; largest part is {max_part_mb:.1f} MB "
+                    f"(target~{chunk_max_mb:.1f} MB)."
+                )
+            return produced
 
-    if len(produced) != split_count:
-        return []
-    return produced
+        proposed_split_count = max(
+            split_count + 1,
+            int(math.ceil(split_count * (max_part_mb / max(0.5, chunk_max_mb)))),
+        )
+        proposed_split_count = min(max_chunks, proposed_split_count)
+        if proposed_split_count <= split_count:
+            return produced
+        print(
+            f"[video] split parts are still large (max={max_part_mb:.1f} MB); "
+            f"increasing part count {split_count} -> {proposed_split_count}."
+        )
+        split_count = proposed_split_count
 
 
 def _segment_chunks(segments: List[Dict[str, Any]], max_per_chunk: int) -> List[List[Dict[str, Any]]]:
@@ -7409,11 +7456,12 @@ def _apply_global_gemini_video_policy(cfg: Dict[str, Any]) -> None:
         "optimize_video_min_width": 320,
         "optimize_video_min_short_side": 320,
         "split_upload_enabled": True,
-        "split_upload_only_if_larger_mb": 8.0,
-        "split_upload_chunk_max_mb": 6.0,
-        "split_upload_max_chunks": 4,
+        "split_upload_only_if_larger_mb": 5.0,
+        "split_upload_chunk_max_mb": 5.0,
+        "split_upload_max_chunks": 32,
         "split_upload_reencode_on_copy_fail": True,
         "split_upload_inline_total_max_mb": 12.0,
+        "split_upload_overlap_sec": 0.6,
         "reference_frames_enabled": True,
         "reference_frames_always": False,
         "reference_frame_attach_when_video_mb_le": 2.5,
@@ -7425,6 +7473,38 @@ def _apply_global_gemini_video_policy(cfg: Dict[str, Any]) -> None:
     }
     for key, value in defaults.items():
         gem.setdefault(key, value)
+
+    try:
+        split_trigger_mb = float(gem.get("split_upload_only_if_larger_mb", 5.0))
+    except Exception:
+        split_trigger_mb = 5.0
+    if abs(split_trigger_mb - 5.0) > 1e-6:
+        gem["split_upload_only_if_larger_mb"] = 5.0
+        print("[policy] gemini.split_upload_only_if_larger_mb forced to 5.0.")
+
+    try:
+        split_chunk_mb = float(gem.get("split_upload_chunk_max_mb", 5.0))
+    except Exception:
+        split_chunk_mb = 5.0
+    if abs(split_chunk_mb - 5.0) > 1e-6:
+        gem["split_upload_chunk_max_mb"] = 5.0
+        print("[policy] gemini.split_upload_chunk_max_mb forced to 5.0.")
+
+    try:
+        split_max_chunks = int(gem.get("split_upload_max_chunks", 32))
+    except Exception:
+        split_max_chunks = 32
+    if split_max_chunks < 32:
+        gem["split_upload_max_chunks"] = 32
+        print("[policy] gemini.split_upload_max_chunks raised to 32.")
+
+    try:
+        overlap_sec = float(gem.get("split_upload_overlap_sec", 0.6))
+    except Exception:
+        overlap_sec = 0.6
+    if overlap_sec < 0.6:
+        gem["split_upload_overlap_sec"] = 0.6
+        print("[policy] gemini.split_upload_overlap_sec raised to 0.6.")
 
     preferred_model = "gemini-3.1-pro-preview"
     quota_fallback_model = "gemini-3-pro-preview"
