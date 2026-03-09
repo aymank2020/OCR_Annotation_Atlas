@@ -43,6 +43,79 @@ OBJECT_EXPECTING_VERBS = {
     "flip",
 }
 
+ALLOWED_LABEL_START_VERBS = (
+    "pick up",
+    "put down",
+    "set down",
+    "take out",
+    "take off",
+    "turn on",
+    "turn off",
+    "plug in",
+    "pick",
+    "place",
+    "move",
+    "adjust",
+    "hold",
+    "align",
+    "relocate",
+    "tighten",
+    "loosen",
+    "wipe",
+    "clean",
+    "paint",
+    "dip",
+    "remove",
+    "insert",
+    "pull",
+    "push",
+    "turn",
+    "open",
+    "close",
+    "unscrew",
+    "screw",
+    "lift",
+    "set",
+    "attach",
+    "detach",
+    "apply",
+    "cut",
+    "drill",
+    "measure",
+    "fold",
+    "press",
+    "slide",
+    "stack",
+    "pack",
+    "unpack",
+    "straighten",
+    "comb",
+    "spread",
+    "shake",
+    "pour",
+    "spray",
+    "peel",
+    "wrap",
+    "lock",
+    "unlock",
+    "grasp",
+    "position",
+    "fit",
+    "mount",
+    "unmount",
+    "clip",
+    "unclip",
+    "twist",
+    "untwist",
+    "raise",
+    "lower",
+)
+ALLOWED_LABEL_START_VERB_TOKEN_PATTERNS = sorted(
+    [tuple(re.findall(r"[a-z]+", v.lower())) for v in ALLOWED_LABEL_START_VERBS],
+    key=len,
+    reverse=True,
+)
+
 INTENT_PATTERNS = [
     r"\bprepare to\b",
     r"\btry to\b",
@@ -184,6 +257,19 @@ def split_actions(label: str) -> List[str]:
     return [p for p in parts if p]
 
 
+def starts_with_allowed_action_verb(action_phrase: str) -> bool:
+    words = re.findall(r"[a-z]+", lower(action_phrase))
+    if not words:
+        return False
+    for pattern in ALLOWED_LABEL_START_VERB_TOKEN_PATTERNS:
+        if not pattern:
+            continue
+        n = len(pattern)
+        if len(words) >= n and tuple(words[:n]) == pattern:
+            return True
+    return False
+
+
 def count_atomic_actions(label: str) -> int:
     l = normalize_spaces(label)
     if not l:
@@ -278,6 +364,7 @@ def classify_audit_risk(reasons: Sequence[str]) -> str:
         return "low"
     high_markers = {
         "forbidden_verbs",
+        "verb_start_not_allowed",
         "disallowed_tool_terms",
         "no_action_mixed",
         "too_many_atomic_actions",
@@ -467,6 +554,15 @@ def validate_segment(seg: Dict[str, Any], video_duration_sec: float) -> Tuple[Di
             errors.append("min_two_words_failed")
         if not is_imperative_like(label):
             errors.append("imperative_voice_failed")
+        if label != NO_ACTION_LABEL:
+            actions = split_actions(label)
+            if not actions:
+                errors.append("verb_start_not_allowed")
+            else:
+                for action in actions:
+                    if not starts_with_allowed_action_verb(action):
+                        errors.append("verb_start_not_allowed")
+                        break
         if has_numerals(label):
             errors.append("numerals_present")
         if has_intent_only_language(label):
@@ -528,6 +624,7 @@ def validate_segment(seg: Dict[str, Any], video_duration_sec: float) -> Tuple[Di
 
     derived_rule_checks = {
         "imperative_voice": "imperative_voice_failed" not in errors,
+        "starts_with_allowed_action_verb": "verb_start_not_allowed" not in errors,
         "min_two_words": "min_two_words_failed" not in errors,
         "no_numerals": "numerals_present" not in errors,
         "no_forbidden_verbs": "forbidden_verbs" not in errors,
@@ -549,6 +646,8 @@ def validate_segment(seg: Dict[str, Any], video_duration_sec: float) -> Tuple[Di
 
     audit_reasons: List[str] = []
     if "forbidden_verbs" in errors:
+        audit_reasons.append("verb_choice_ambiguous")
+    if "verb_start_not_allowed" in errors:
         audit_reasons.append("verb_choice_ambiguous")
     if "verbs_not_attached_to_objects" in errors:
         audit_reasons.append("verb_choice_ambiguous")
@@ -637,6 +736,8 @@ def validate_episode(annotation: Dict[str, Any]) -> Dict[str, Any]:
         errs = set(report["errors"])
         if "forbidden_verbs" in errs:
             major_fail_triggers.append("forbidden_verbs_used")
+        if "verb_start_not_allowed" in errs:
+            major_fail_triggers.append("verb_start_not_allowed")
         if "verbs_not_attached_to_objects" in errs:
             major_fail_triggers.append("verbs_not_attached_to_objects")
         if "disallowed_tool_terms" in errs:

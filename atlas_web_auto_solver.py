@@ -154,6 +154,75 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "min_label_words": 2,
         "max_label_words": 20,
         "max_atomic_actions_per_label": 2,
+        "require_action_verb_start": True,
+        "allowed_label_start_verbs": [
+            "pick up",
+            "put down",
+            "set down",
+            "take out",
+            "take off",
+            "turn on",
+            "turn off",
+            "plug in",
+            "unplug",
+            "pick",
+            "place",
+            "move",
+            "adjust",
+            "hold",
+            "align",
+            "relocate",
+            "tighten",
+            "loosen",
+            "wipe",
+            "clean",
+            "paint",
+            "dip",
+            "remove",
+            "insert",
+            "pull",
+            "push",
+            "turn",
+            "open",
+            "close",
+            "unscrew",
+            "screw",
+            "lift",
+            "set",
+            "attach",
+            "detach",
+            "apply",
+            "cut",
+            "drill",
+            "measure",
+            "fold",
+            "press",
+            "slide",
+            "stack",
+            "pack",
+            "unpack",
+            "straighten",
+            "comb",
+            "spread",
+            "shake",
+            "pour",
+            "spray",
+            "peel",
+            "wrap",
+            "lock",
+            "unlock",
+            "grasp",
+            "position",
+            "fit",
+            "mount",
+            "unmount",
+            "clip",
+            "unclip",
+            "twist",
+            "untwist",
+            "raise",
+            "lower",
+        ],
         "forbidden_label_verbs": ["inspect", "check", "look", "examine", "reach", "rotate", "grab", "relocate"],
         "forbidden_narrative_words": ["another", "then", "next", "continue", "again"],
         "tier3_label_rewrite": True,
@@ -4631,6 +4700,117 @@ def _count_atomic_actions_in_label(label: str) -> int:
     return max(1, count)
 
 
+_DEFAULT_ALLOWED_LABEL_START_VERBS: Tuple[str, ...] = (
+    "pick up",
+    "put down",
+    "set down",
+    "take out",
+    "take off",
+    "turn on",
+    "turn off",
+    "plug in",
+    "pick",
+    "place",
+    "move",
+    "adjust",
+    "hold",
+    "align",
+    "relocate",
+    "tighten",
+    "loosen",
+    "wipe",
+    "clean",
+    "paint",
+    "dip",
+    "remove",
+    "insert",
+    "pull",
+    "push",
+    "turn",
+    "open",
+    "close",
+    "unscrew",
+    "screw",
+    "lift",
+    "set",
+    "attach",
+    "detach",
+    "apply",
+    "cut",
+    "drill",
+    "measure",
+    "fold",
+    "press",
+    "slide",
+    "stack",
+    "pack",
+    "unpack",
+    "straighten",
+    "comb",
+    "spread",
+    "shake",
+    "pour",
+    "spray",
+    "peel",
+    "wrap",
+    "lock",
+    "unlock",
+    "grasp",
+    "position",
+    "fit",
+    "mount",
+    "unmount",
+    "clip",
+    "unclip",
+    "twist",
+    "untwist",
+    "raise",
+    "lower",
+)
+
+
+def _normalize_allowed_label_start_verbs(raw: Any) -> List[str]:
+    if isinstance(raw, list):
+        candidates = [str(v or "") for v in raw]
+    else:
+        text = str(raw or "").strip()
+        candidates = re.split(r"[\n,;|]+", text) if text else []
+
+    values: List[str] = []
+    seen: set[str] = set()
+    for item in candidates:
+        phrase = re.sub(r"\s+", " ", str(item or "").strip().lower())
+        if not phrase:
+            continue
+        if phrase in seen:
+            continue
+        seen.add(phrase)
+        values.append(phrase)
+
+    if values:
+        return values
+    return list(_DEFAULT_ALLOWED_LABEL_START_VERBS)
+
+
+def _split_label_atomic_actions_for_policy(label: str) -> List[str]:
+    text = str(label or "").strip()
+    if not text:
+        return []
+    if text.lower() == "no action":
+        return ["No Action"]
+    actions: List[str] = []
+    for part in re.split(r"\s*,\s*", text):
+        chunk = part.strip()
+        if not chunk:
+            continue
+        subparts = [p.strip() for p in re.split(r"\band\b", chunk, flags=re.IGNORECASE) if p.strip()]
+        if subparts:
+            actions.extend(subparts)
+        else:
+            actions.append(chunk)
+    return actions
+
+
 _DISALLOWED_TOOL_TERMS = (
     "mechanical arm",
     "robotic arm",
@@ -4656,6 +4836,15 @@ def _validate_segment_plan_against_policy(
     min_words = max(1, int(_cfg_get(cfg, "run.min_label_words", 2)))
     max_words = max(min_words, int(_cfg_get(cfg, "run.max_label_words", 20)))
     max_atomic_actions = max(1, int(_cfg_get(cfg, "run.max_atomic_actions_per_label", 2)))
+    require_action_verb_start = bool(_cfg_get(cfg, "run.require_action_verb_start", True))
+    allowed_label_start_verbs = _normalize_allowed_label_start_verbs(
+        _cfg_get(cfg, "run.allowed_label_start_verbs", list(_DEFAULT_ALLOWED_LABEL_START_VERBS))
+    )
+    allowed_label_start_verb_tokens = sorted(
+        [tuple(re.findall(r"[a-z]+", item.lower())) for item in allowed_label_start_verbs if item.strip()],
+        key=len,
+        reverse=True,
+    )
     forbidden_verbs_raw = _cfg_get(cfg, "run.forbidden_label_verbs", [])
     forbidden_verbs = [str(v).strip().lower() for v in forbidden_verbs_raw if str(v).strip()]
     forbidden_narrative_raw = _cfg_get(cfg, "run.forbidden_narrative_words", [])
@@ -4715,6 +4904,19 @@ def _validate_segment_plan_against_policy(
             errors.append(f"segment {idx}: empty label")
         else:
             words = [w for w in re.split(r"\s+", label) if w]
+
+            def _starts_with_allowed_action_verb(action_text: str) -> Tuple[bool, str]:
+                tokens = re.findall(r"[a-z]+", str(action_text or "").lower())
+                if not tokens:
+                    return False, ""
+                for allowed_tokens in allowed_label_start_verb_tokens:
+                    if not allowed_tokens:
+                        continue
+                    n = len(allowed_tokens)
+                    if len(tokens) >= n and tuple(tokens[:n]) == allowed_tokens:
+                        return True, " ".join(allowed_tokens)
+                return False, tokens[0]
+
             if label_unchanged_from_source and skip_unchanged_lexical:
                 # Avoid blocking whole episodes on legacy/source labels that were not edited now.
                 pass
@@ -4746,6 +4948,21 @@ def _validate_segment_plan_against_policy(
                     errors.append(f"segment {idx}: mechanical-motion phrasing detected (use coarse goal verb)")
                 if "place" in label_l and not place_location_pattern.search(label):
                     errors.append(f"segment {idx}: 'place' missing explicit location")
+                if require_action_verb_start:
+                    atomic_actions = _split_label_atomic_actions_for_policy(label)
+                    if not atomic_actions:
+                        errors.append(
+                            f"segment {idx}: label/action must start with an allowed action verb"
+                        )
+                    else:
+                        for action_phrase in atomic_actions:
+                            ok_start, bad_token = _starts_with_allowed_action_verb(action_phrase)
+                            if not ok_start:
+                                errors.append(
+                                    f"segment {idx}: label/action must start with allowed action verb "
+                                    f"(found '{bad_token}' in '{action_phrase}')"
+                                )
+                                break
                 if chained_verb_without_object_pattern.search(label):
                     errors.append(
                         f"segment {idx}: verbs must attach to objects (avoid '<verb> and <verb>' chaining)"
@@ -7993,6 +8210,14 @@ def _apply_global_run_policy(cfg: Dict[str, Any]) -> None:
     if not bool(run.get("execute_require_video_context", True)):
         run["execute_require_video_context"] = True
         print("[policy] run.execute_require_video_context forced ON.")
+    if not bool(run.get("require_action_verb_start", True)):
+        run["require_action_verb_start"] = True
+        print("[policy] run.require_action_verb_start forced ON.")
+    allowed_verbs_raw = run.get("allowed_label_start_verbs", list(_DEFAULT_ALLOWED_LABEL_START_VERBS))
+    allowed_verbs = _normalize_allowed_label_start_verbs(allowed_verbs_raw)
+    if not isinstance(allowed_verbs_raw, list) or not allowed_verbs_raw:
+        print("[policy] run.allowed_label_start_verbs defaulted for strict verb-start gate.")
+    run["allowed_label_start_verbs"] = allowed_verbs
 
     # Merge must stay enabled for continuity fixes to work.
     if not bool(run.get("structural_allow_merge", True)):
