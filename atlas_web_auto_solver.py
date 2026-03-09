@@ -136,6 +136,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "segment_chunking_consistency_memory_limit": 40,
         "segment_chunking_consistency_prompt_terms": 16,
         "segment_chunking_consistency_normalize_labels": True,
+        "policy_autofix_enabled": True,
         "auto_continuity_merge_enabled": True,
         "auto_continuity_merge_min_run_segments": 3,
         "auto_continuity_merge_min_token_overlap": 1,
@@ -348,9 +349,9 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "retry_with_quota_fallback_model": True,
         "quota_fallback_model": "gemini-3-pro-preview",
         "quota_fallback_from_models": ["gemini-3.1-pro-preview"],
-        "policy_retry_model": "gemini-2.5-pro",
+        "policy_retry_model": "gemini-3-pro-preview",
         "retry_with_stronger_model_on_policy_fail": True,
-        "policy_retry_only_if_flash": True,
+        "policy_retry_only_if_flash": False,
         "system_instruction_file": "",
         "system_instruction_text": "",
         "temperature": 0.0,
@@ -5006,6 +5007,263 @@ def _validate_segment_plan_against_policy(
     }
 
 
+def _build_segment_policy_error_map(errors: List[str]) -> Dict[int, List[str]]:
+    out: Dict[int, List[str]] = {}
+    for raw in errors:
+        msg = str(raw or "").strip()
+        m = re.match(r"^segment\s+(\d+)\s*:\s*(.+)$", msg, flags=re.IGNORECASE)
+        if not m:
+            continue
+        idx = int(m.group(1))
+        detail = m.group(2).strip()
+        out.setdefault(idx, []).append(detail)
+    return out
+
+
+def _label_starts_with_allowed_action_verb(
+    label: str, allowed_verb_token_patterns: List[Tuple[str, ...]]
+) -> bool:
+    tokens = re.findall(r"[a-z]+", str(label or "").lower())
+    if not tokens:
+        return False
+    for pattern in allowed_verb_token_patterns:
+        if not pattern:
+            continue
+        n = len(pattern)
+        if len(tokens) >= n and tuple(tokens[:n]) == pattern:
+            return True
+    return False
+
+
+def _contains_forbidden_verb_in_label(label: str, forbidden_verbs: List[str]) -> bool:
+    l = str(label or "").strip().lower()
+    for verb in forbidden_verbs:
+        if re.search(rf"\b{re.escape(verb)}\b", l):
+            return True
+    return False
+
+
+def _strip_forbidden_verbs_for_autofix(label: str, forbidden_verbs: List[str]) -> str:
+    out = str(label or "")
+    for verb in forbidden_verbs:
+        out = re.sub(rf"\b{re.escape(verb)}\b", " ", out, flags=re.IGNORECASE)
+    out = re.sub(r"\b(and|then)\b", " ", out, flags=re.IGNORECASE)
+    out = re.sub(r"\s+", " ", out).strip(" ,")
+    return out
+
+
+def _heuristic_autofix_verb_from_text(text: str) -> str:
+    t = str(text or "").lower()
+    if re.search(r"\b(cloth|towel|rag|wipe)\b", t):
+        return "wipe"
+    if re.search(r"\b(paint|brush|roller)\b", t):
+        return "paint"
+    if re.search(r"\b(screw|screwdriver|bolt|nut)\b", t):
+        return "tighten"
+    if re.search(r"\b(cable|wire|connector|plug|socket|port)\b", t):
+        return "insert"
+    if re.search(r"\b(lid|cap|door|drawer)\b", t):
+        return "open"
+    return "pick up"
+
+
+_AUTOFIX_OBJECT_EXPECTING_VERBS: Tuple[Tuple[str, ...], ...] = (
+    ("pick", "up"),
+    ("place",),
+    ("move",),
+    ("relocate",),
+    ("adjust",),
+    ("hold",),
+    ("align",),
+    ("insert",),
+    ("remove",),
+    ("wipe",),
+    ("tighten",),
+    ("loosen",),
+)
+
+
+def _action_phrase_missing_object_for_autofix(action_phrase: str) -> bool:
+    tokens = re.findall(r"[a-z]+", str(action_phrase or "").lower())
+    if not tokens:
+        return True
+    for verb_tokens in _AUTOFIX_OBJECT_EXPECTING_VERBS:
+        n = len(verb_tokens)
+        if len(tokens) >= n and tuple(tokens[:n]) == verb_tokens:
+            # Require at least one token after the verb phrase.
+            if len(tokens) <= n:
+                return True
+            return False
+    return False
+
+
+def _autofix_label_candidate(
+    cfg: Dict[str, Any],
+    label: str,
+    source_label: str,
+    forbidden_verbs: List[str],
+    allowed_verb_token_patterns: List[Tuple[str, ...]],
+) -> str:
+    min_words = max(1, int(_cfg_get(cfg, "run.min_label_words", 2)))
+    max_words = max(min_words, int(_cfg_get(cfg, "run.max_label_words", 20)))
+
+    def _normalize(x: str) -> str:
+        out = _normalize_label_min_safety(x)
+        out = _strip_forbidden_verbs_for_autofix(out, forbidden_verbs)
+        out = re.sub(r"\s+", " ", out).strip(" ,")
+        return out
+
+    def _valid_candidate(x: str) -> bool:
+        if not x or x.lower() == "no action":
+            return False
+        if not _label_starts_with_allowed_action_verb(x, allowed_verb_token_patterns):
+            return False
+        if _contains_forbidden_verb_in_label(x, forbidden_verbs):
+            return False
+        if _action_phrase_missing_object_for_autofix(x):
+            return False
+        return True
+
+    for base in (label, source_label):
+        actions = _split_label_atomic_actions_for_policy(base)
+        for action in actions:
+            candidate = _normalize(action)
+            if _valid_candidate(candidate):
+                words = [w for w in candidate.split() if w]
+                if len(words) < min_words:
+                    candidate = f"{candidate} item".strip()
+                words = [w for w in candidate.split() if w]
+                if len(words) > max_words:
+                    candidate = " ".join(words[:max_words])
+                return candidate
+
+    base_text = _normalize(label or source_label or "")
+    base_tokens = re.findall(r"[a-z]+", base_text.lower())
+    object_tokens = list(base_tokens)
+    for pattern in allowed_verb_token_patterns:
+        n = len(pattern)
+        if n > 0 and len(base_tokens) >= n and tuple(base_tokens[:n]) == pattern:
+            object_tokens = base_tokens[n:]
+            break
+    object_tokens = [t for t in object_tokens if t not in {"and", "then"}]
+    object_phrase = " ".join(object_tokens).strip() or "item"
+    verb = _heuristic_autofix_verb_from_text(base_text)
+    candidate = _normalize(f"{verb} {object_phrase}")
+    if not _label_starts_with_allowed_action_verb(candidate, allowed_verb_token_patterns):
+        candidate = _normalize(f"pick up {object_phrase}")
+    if not candidate:
+        candidate = "pick up item"
+    words = [w for w in candidate.split() if w]
+    if len(words) < min_words:
+        candidate = f"{candidate} item".strip()
+    words = [w for w in candidate.split() if w]
+    if len(words) > max_words:
+        candidate = " ".join(words[:max_words])
+    return candidate
+
+
+def _auto_fix_segment_plan_labels(
+    cfg: Dict[str, Any],
+    source_segments: List[Dict[str, Any]],
+    segment_plan: Dict[int, Dict[str, Any]],
+    validation_errors: List[str],
+) -> Tuple[int, List[str]]:
+    if not bool(_cfg_get(cfg, "run.policy_autofix_enabled", True)):
+        return 0, []
+    if not validation_errors:
+        return 0, []
+
+    error_map = _build_segment_policy_error_map(validation_errors)
+    if not error_map:
+        return 0, []
+
+    forbidden_verbs_raw = _cfg_get(cfg, "run.forbidden_label_verbs", [])
+    forbidden_verbs = [str(v).strip().lower() for v in forbidden_verbs_raw if str(v).strip()]
+    allowed_verbs = _normalize_allowed_label_start_verbs(
+        _cfg_get(cfg, "run.allowed_label_start_verbs", list(_DEFAULT_ALLOWED_LABEL_START_VERBS))
+    )
+    allowed_verb_token_patterns = sorted(
+        [tuple(re.findall(r"[a-z]+", item.lower())) for item in allowed_verbs if item.strip()],
+        key=len,
+        reverse=True,
+    )
+    if not allowed_verb_token_patterns:
+        return 0, []
+
+    lexical_markers = (
+        "label/action must start with allowed action verb",
+        "forbidden verb",
+        "verbs must attach to objects",
+        "label has fewer than",
+        "label has more than",
+        "repeated token/phrase",
+        "disallowed tool term",
+    )
+    source_by_idx: Dict[int, Dict[str, Any]] = {}
+    for seg in source_segments:
+        try:
+            source_by_idx[int(seg.get("segment_index", 0))] = seg
+        except Exception:
+            continue
+
+    fixed_count = 0
+    fix_notes: List[str] = []
+    for idx in sorted(error_map.keys()):
+        messages = error_map.get(idx, [])
+        if not any(any(marker in msg for marker in lexical_markers) for msg in messages):
+            continue
+        item = segment_plan.get(idx)
+        if not isinstance(item, dict):
+            continue
+        old_label = str(item.get("label", "")).strip()
+        if not old_label or old_label.lower() == "no action":
+            continue
+        src_item = source_by_idx.get(idx) or {}
+        source_label = str(src_item.get("current_label", "")).strip()
+        new_label = _autofix_label_candidate(
+            cfg=cfg,
+            label=old_label,
+            source_label=source_label,
+            forbidden_verbs=forbidden_verbs,
+            allowed_verb_token_patterns=allowed_verb_token_patterns,
+        )
+        if not new_label or new_label == old_label:
+            continue
+        item["label"] = new_label
+        segment_plan[idx] = item
+        fixed_count += 1
+        fix_notes.append(f"segment {idx}: '{old_label}' -> '{new_label}'")
+
+    return fixed_count, fix_notes
+
+
+def _sync_labels_payload_with_segment_plan(
+    labels_payload: Dict[str, Any],
+    segment_plan: Dict[int, Dict[str, Any]],
+) -> None:
+    if not isinstance(labels_payload, dict):
+        return
+    items = labels_payload.get("segments")
+    if not isinstance(items, list):
+        return
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        idx_raw = item.get("segment_index", item.get("index"))
+        try:
+            idx = int(idx_raw)
+        except Exception:
+            continue
+        plan = segment_plan.get(idx)
+        if not isinstance(plan, dict):
+            continue
+        item["label"] = str(plan.get("label", item.get("label", ""))).strip()
+        if "start_sec" in plan:
+            item["start_sec"] = float(plan.get("start_sec"))
+        if "end_sec" in plan:
+            item["end_sec"] = float(plan.get("end_sec"))
+
+
 def _save_validation_report(cfg: Dict[str, Any], task_id: str, report: Dict[str, Any]) -> Optional[Path]:
     out_dir = Path(str(_cfg_get(cfg, "run.output_dir", "outputs")))
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -8062,6 +8320,11 @@ def _apply_global_gemini_video_policy(cfg: Dict[str, Any]) -> None:
         gem["quota_fallback_model"] = quota_fallback_model
         print(f"[policy] gemini.quota_fallback_model forced to {quota_fallback_model}.")
 
+    configured_policy_retry_model = str(gem.get("policy_retry_model", "") or "").strip()
+    if configured_policy_retry_model != quota_fallback_model:
+        gem["policy_retry_model"] = quota_fallback_model
+        print(f"[policy] gemini.policy_retry_model forced to {quota_fallback_model}.")
+
     configured_quota_sources = gem.get("quota_fallback_from_models")
     if not isinstance(configured_quota_sources, list) or [str(x).strip().lower() for x in configured_quota_sources] != [preferred_model]:
         gem["quota_fallback_from_models"] = [preferred_model]
@@ -8073,6 +8336,14 @@ def _apply_global_gemini_video_policy(cfg: Dict[str, Any]) -> None:
     if not bool(gem.get("quota_fallback_enabled", True)):
         gem["quota_fallback_enabled"] = True
         print("[policy] gemini.quota_fallback_enabled forced ON.")
+
+    if not bool(gem.get("retry_with_stronger_model_on_policy_fail", True)):
+        gem["retry_with_stronger_model_on_policy_fail"] = True
+        print("[policy] gemini.retry_with_stronger_model_on_policy_fail forced ON.")
+
+    if bool(gem.get("policy_retry_only_if_flash", False)):
+        gem["policy_retry_only_if_flash"] = False
+        print("[policy] gemini.policy_retry_only_if_flash forced OFF.")
 
     if not bool(gem.get("key_rotation_enabled", True)):
         gem["key_rotation_enabled"] = True
@@ -8213,6 +8484,9 @@ def _apply_global_run_policy(cfg: Dict[str, Any]) -> None:
     if not bool(run.get("require_action_verb_start", True)):
         run["require_action_verb_start"] = True
         print("[policy] run.require_action_verb_start forced ON.")
+    if not bool(run.get("policy_autofix_enabled", True)):
+        run["policy_autofix_enabled"] = True
+        print("[policy] run.policy_autofix_enabled forced ON.")
     allowed_verbs_raw = run.get("allowed_label_start_verbs", list(_DEFAULT_ALLOWED_LABEL_START_VERBS))
     allowed_verbs = _normalize_allowed_label_start_verbs(allowed_verbs_raw)
     if not isinstance(allowed_verbs_raw, list) or not allowed_verbs_raw:
@@ -9387,6 +9661,44 @@ def run(cfg: Dict[str, Any], execute: bool) -> None:
                                 )
                         except Exception as retry_exc:
                             print(f"[policy] stronger-model retry failed: {retry_exc}")
+
+                    current_raw_errors = [
+                        str(e).strip() for e in validation_report.get("errors", []) if str(e).strip()
+                    ]
+                    if current_raw_errors and bool(_cfg_get(cfg, "run.policy_autofix_enabled", True)):
+                        fixed_count, fix_notes = _auto_fix_segment_plan_labels(
+                            cfg=cfg,
+                            source_segments=segments,
+                            segment_plan=segment_plan,
+                            validation_errors=current_raw_errors,
+                        )
+                        if fixed_count > 0:
+                            print(
+                                f"[policy] auto-fix adjusted {fixed_count} segment label(s) "
+                                "before policy block."
+                            )
+                            for note in fix_notes[:12]:
+                                print(f"  - {note}")
+                            _sync_labels_payload_with_segment_plan(labels_payload, segment_plan)
+                            validation_report = _validate_segment_plan_against_policy(
+                                cfg, segments, segment_plan
+                            )
+                            after_fix_errors = [
+                                str(e).strip()
+                                for e in validation_report.get("errors", [])
+                                if str(e).strip()
+                            ]
+                            print(
+                                "[policy] auto-fix revalidation: "
+                                f"errors {len(current_raw_errors)} -> {len(after_fix_errors)}"
+                            )
+                            _save_outputs(cfg, segments, prompt, labels_payload, task_id=task_id)
+                            if task_id:
+                                _save_task_text_files(cfg, task_id, segments, segment_plan)
+                                _save_cached_labels(cfg, task_id, labels_payload)
+                                if resume_from_artifacts:
+                                    task_state["labels_ready"] = True
+                                    _save_task_state(cfg, task_id, task_state)
 
                     report_path = _save_validation_report(cfg, report_task_id, validation_report)
                     if report_path is not None:
