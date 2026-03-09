@@ -59,6 +59,7 @@ Strict rules:
 Output requirements:
 - JSON only, no markdown
 - use the provided schema shape
+- include `step_by_step_reasoning` first: concise chronological analysis before final segments
 - include start/end in seconds, label, granularity, confidence, rule checks, audit risk
 """
 
@@ -185,8 +186,23 @@ ANNOTATION_SCHEMA: Dict[str, Any] = {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "title": "EgocentricHandActionAnnotationEpisode",
     "type": "object",
-    "required": ["episode_id", "video_duration_sec", "annotation_version", "segments", "episode_checks"],
+    "required": [
+        "step_by_step_reasoning",
+        "episode_id",
+        "video_duration_sec",
+        "annotation_version",
+        "segments",
+        "episode_checks",
+    ],
     "properties": {
+        "step_by_step_reasoning": {
+            "type": "string",
+            "minLength": 1,
+            "description": (
+                "Chronological reasoning summary: identify key hand-object interactions, "
+                "goal transitions, and why split/merge choices were made."
+            ),
+        },
         "episode_id": {"type": "string", "minLength": 1},
         "video_duration_sec": {"type": "number", "minimum": 0},
         "annotation_version": {"type": "string"},

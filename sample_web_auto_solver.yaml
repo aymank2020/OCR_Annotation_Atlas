@@ -36,6 +36,8 @@ run:
   resume_skip_video_steps_when_cached: true
   resume_skip_apply_steps_when_done: true
   auto_continuity_merge_enabled: true
+  segment_chunking_enabled: false
+  execute_require_video_context: true
   use_task_scoped_artifacts: true
   enable_quality_review_submit: true
   adjust_timestamps: true
@@ -127,8 +129,8 @@ gemini:
   connect_timeout_sec: 30
   request_timeout_sec: 420
   attach_video: true
-  require_video: false
-  allow_text_only_fallback_on_network_error: true
+  require_video: true
+  allow_text_only_fallback_on_network_error: false
   max_inline_video_mb: 20.0
   video_download_timeout_sec: 180
   min_video_bytes: 500000
