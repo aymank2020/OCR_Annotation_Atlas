@@ -193,11 +193,15 @@ DEFAULT_CONFIG: Dict[str, Any] = {
             "set",
             "attach",
             "detach",
+            "connect",
+            "disconnect",
+            "secure",
             "apply",
             "cut",
             "drill",
             "measure",
             "fold",
+            "sand",
             "press",
             "slide",
             "stack",
@@ -205,11 +209,13 @@ DEFAULT_CONFIG: Dict[str, Any] = {
             "unpack",
             "straighten",
             "comb",
+            "detangle",
             "spread",
             "shake",
             "pour",
             "spray",
             "peel",
+            "flip",
             "wrap",
             "lock",
             "unlock",
@@ -224,50 +230,10 @@ DEFAULT_CONFIG: Dict[str, Any] = {
             "untwist",
             "raise",
             "lower",
+            "bend",
         ],
         "forbidden_label_verbs": ["inspect", "check", "look", "examine", "reach", "rotate", "grab", "relocate"],
         "forbidden_narrative_words": ["another", "then", "next", "continue", "again"],
-        "allowed_label_start_verbs": [
-            "pick up",
-            "place",
-            "move",
-            "adjust",
-            "align",
-            "hold",
-            "cut",
-            "open",
-            "close",
-            "peel",
-            "secure",
-            "wipe",
-            "flip",
-            "pull",
-            "push",
-            "insert",
-            "remove",
-            "attach",
-            "detach",
-            "connect",
-            "disconnect",
-            "tighten",
-            "loosen",
-            "screw",
-            "unscrew",
-            "press",
-            "twist",
-            "turn",
-            "slide",
-            "lift",
-            "lower",
-            "set",
-            "position",
-            "straighten",
-            "comb",
-            "detangle",
-            "sand",
-            "paint",
-            "clean",
-        ],
         "tier3_label_rewrite": True,
         "enable_structural_actions": True,
         "structural_allow_split": False,
@@ -4607,10 +4573,13 @@ def _normalize_operations(payload: Dict[str, Any], cfg: Optional[Dict[str, Any]]
     raw_ops = payload.get("operations", [])
     if not isinstance(raw_ops, list):
         return []
-    max_ops = max(0, int(_cfg_get(cfg or {}, "run.max_structural_operations", 12)))
-    structural_allow_split = bool(_cfg_get(cfg or {}, "run.structural_allow_split", False))
-    structural_allow_merge = bool(_cfg_get(cfg or {}, "run.structural_allow_merge", False))
-    structural_allow_delete = bool(_cfg_get(cfg or {}, "run.structural_allow_delete", False))
+    cfg = cfg or {}
+    run_cfg = cfg.get("run", {}) if isinstance(cfg.get("run"), dict) else {}
+    max_ops = max(0, int(_cfg_get(cfg, "run.max_structural_operations", 12)))
+    # If flags are omitted (partial cfg/test), keep normalization permissive.
+    structural_allow_split = bool(run_cfg.get("structural_allow_split", True))
+    structural_allow_merge = bool(run_cfg.get("structural_allow_merge", True))
+    structural_allow_delete = bool(run_cfg.get("structural_allow_delete", True))
     out: List[Dict[str, Any]] = []
     for item in raw_ops:
         action = ""
@@ -4783,72 +4752,14 @@ def _count_atomic_actions_in_label(label: str) -> int:
     return max(1, count)
 
 
-_DEFAULT_ALLOWED_LABEL_START_VERBS: Tuple[str, ...] = (
-    "pick up",
-    "put down",
-    "set down",
-    "take out",
-    "take off",
-    "turn on",
-    "turn off",
-    "plug in",
-    "pick",
-    "place",
-    "move",
-    "adjust",
-    "hold",
-    "align",
-    "relocate",
-    "tighten",
-    "loosen",
-    "wipe",
-    "clean",
-    "paint",
-    "dip",
-    "remove",
-    "insert",
-    "pull",
-    "push",
-    "turn",
-    "open",
-    "close",
-    "unscrew",
-    "screw",
-    "lift",
-    "set",
-    "attach",
-    "detach",
-    "apply",
-    "cut",
-    "drill",
-    "measure",
-    "fold",
-    "press",
-    "slide",
-    "stack",
-    "pack",
-    "unpack",
-    "straighten",
-    "comb",
-    "spread",
-    "shake",
-    "pour",
-    "spray",
-    "peel",
-    "wrap",
-    "lock",
-    "unlock",
-    "grasp",
-    "position",
-    "fit",
-    "mount",
-    "unmount",
-    "clip",
-    "unclip",
-    "twist",
-    "untwist",
-    "raise",
-    "lower",
+_DEFAULT_ALLOWED_LABEL_START_VERBS: Tuple[str, ...] = tuple(
+    dict.fromkeys(
+        [
+            re.sub(r"\s+", " ", str(v or "").strip().lower())
+            for v in _cfg_get(DEFAULT_CONFIG, "run.allowed_label_start_verbs", [])
+            if str(v or "").strip()
+        ]
+    )
 )
 
 
@@ -5144,21 +5055,6 @@ def _strip_forbidden_verbs_for_autofix(label: str, forbidden_verbs: List[str]) -
     return out
 
 
-def _heuristic_autofix_verb_from_text(text: str) -> str:
-    t = str(text or "").lower()
-    if re.search(r"\b(cloth|towel|rag|wipe)\b", t):
-        return "wipe"
-    if re.search(r"\b(paint|brush|roller)\b", t):
-        return "paint"
-    if re.search(r"\b(screw|screwdriver|bolt|nut)\b", t):
-        return "tighten"
-    if re.search(r"\b(cable|wire|connector|plug|socket|port)\b", t):
-        return "insert"
-    if re.search(r"\b(lid|cap|door|drawer)\b", t):
-        return "open"
-    return "pick up"
-
-
 _AUTOFIX_OBJECT_EXPECTING_VERBS: Tuple[Tuple[str, ...], ...] = (
     ("pick", "up"),
     ("place",),
@@ -5173,20 +5069,6 @@ _AUTOFIX_OBJECT_EXPECTING_VERBS: Tuple[Tuple[str, ...], ...] = (
     ("tighten",),
     ("loosen",),
 )
-
-
-def _action_phrase_missing_object_for_autofix(action_phrase: str) -> bool:
-    tokens = re.findall(r"[a-z]+", str(action_phrase or "").lower())
-    if not tokens:
-        return True
-    for verb_tokens in _AUTOFIX_OBJECT_EXPECTING_VERBS:
-        n = len(verb_tokens)
-        if len(tokens) >= n and tuple(tokens[:n]) == verb_tokens:
-            # Require at least one token after the verb phrase.
-            if len(tokens) <= n:
-                return True
-            return False
-    return False
 
 
 def _ensure_place_has_location_for_autofix(label: str) -> str:
@@ -5204,80 +5086,6 @@ def _ensure_place_has_location_for_autofix(label: str) -> str:
             current = f"{current} on surface".strip()
         fixed.append(re.sub(r"\s+", " ", current).strip(" ,.;:"))
     return ", ".join([c for c in fixed if c]).strip(" ,.;:")
-
-
-def _autofix_label_candidate(
-    cfg: Dict[str, Any],
-    label: str,
-    source_label: str,
-    forbidden_verbs: List[str],
-    allowed_verb_token_patterns: List[Tuple[str, ...]],
-) -> str:
-    min_words = max(1, int(_cfg_get(cfg, "run.min_label_words", 2)))
-    max_words = max(min_words, int(_cfg_get(cfg, "run.max_label_words", 20)))
-
-    def _normalize(x: str) -> str:
-        out = _normalize_label_min_safety(x)
-        out = _strip_forbidden_verbs_for_autofix(out, forbidden_verbs)
-        # Remove narrative fillers but keep 'and' or commas for multi-action Tier-3 compliance.
-        out = re.sub(r"\b(?:then|another|continue|next)\b", "", out, flags=re.IGNORECASE)
-        out = re.sub(r"\s+", " ", out).strip(" ,.;:")
-        out = _ensure_place_has_location_for_autofix(out)
-        return out
-
-    def _valid_candidate(x: str) -> bool:
-        if not x or x.lower() == "no action":
-            return False
-        if not _label_starts_with_allowed_action_verb(x, allowed_verb_token_patterns):
-            return False
-        if _contains_forbidden_verb_in_label(x, forbidden_verbs):
-            return False
-        # Relax object check: allow valid multi-clause labels while checking first clause validity.
-        first_clause = x.split(",")[0].split(" and ")[0].strip()
-        if _action_phrase_missing_object_for_autofix(first_clause):
-            return False
-        return True
-
-    # Try full combined label first to avoid truncating valid multi-action labels.
-    for base in (label, source_label):
-        candidate = _normalize(base)
-        if _valid_candidate(candidate):
-            words = [w for w in candidate.split() if w]
-            if len(words) < min_words:
-                candidate = f"{candidate} item".strip()
-            words = [w for w in candidate.split() if w]
-            if len(words) > max_words:
-                # Soft cut at nearest comma if present, otherwise hard-cap by word count.
-                if "," in candidate:
-                    candidate = candidate.split(",", 1)[0].strip()
-                else:
-                    candidate = " ".join(words[:max_words])
-            return candidate
-
-    base_text = _normalize(label or source_label or "")
-    base_tokens = re.findall(r"[a-z]+", base_text.lower())
-    object_tokens = list(base_tokens)
-    for pattern in allowed_verb_token_patterns:
-        n = len(pattern)
-        if n > 0 and len(base_tokens) >= n and tuple(base_tokens[:n]) == pattern:
-            object_tokens = base_tokens[n:]
-            break
-    object_tokens = [t for t in object_tokens if t not in {"and", "then"}]
-    object_phrase = " ".join(object_tokens).strip() or "item"
-    verb = _heuristic_autofix_verb_from_text(base_text)
-    candidate = _normalize(f"{verb} {object_phrase}")
-    if not _label_starts_with_allowed_action_verb(candidate, allowed_verb_token_patterns):
-        candidate = _normalize(f"pick up {object_phrase}")
-    if not candidate:
-        candidate = "pick up item"
-    words = [w for w in candidate.split() if w]
-    if len(words) < min_words:
-        candidate = f"{candidate} item".strip()
-    words = [w for w in candidate.split() if w]
-    if len(words) > max_words:
-        candidate = " ".join(words[:max_words])
-
-    return candidate
 
 
 def _auto_fix_segment_plan_labels(

@@ -237,6 +237,65 @@ class TestValidator(unittest.TestCase):
         self.assertIn("forbidden_verbs", disallowed_errors)
         self.assertFalse(disallowed_report["ok"])
 
+    def test_validate_episode_warns_on_pluralization_hint(self):
+        ann = validator.normalize_annotation(
+            {
+                "episode_id": "e8",
+                "video_duration_sec": 5.0,
+                "segments": [
+                    {
+                        "segment_index": 1,
+                        "start_sec": 0.0,
+                        "end_sec": 5.0,
+                        "duration_sec": 5.0,
+                        "label": "pick up three knife",
+                        "granularity": "coarse",
+                        "primary_goal": "pick up knife",
+                        "primary_object": "knife",
+                        "confidence": 0.8,
+                    }
+                ],
+            }
+        )
+        report = validator.validate_episode(ann)
+        warnings = report["segment_reports"][0]["warnings"]
+        self.assertIn("pluralization_hint", warnings)
+
+    def test_validate_episode_warns_on_object_naming_inconsistency(self):
+        ann = validator.normalize_annotation(
+            {
+                "episode_id": "e9",
+                "video_duration_sec": 8.0,
+                "segments": [
+                    {
+                        "segment_index": 1,
+                        "start_sec": 0.0,
+                        "end_sec": 4.0,
+                        "duration_sec": 4.0,
+                        "label": "pick up box",
+                        "granularity": "coarse",
+                        "primary_goal": "pick up box",
+                        "primary_object": "box",
+                        "confidence": 0.8,
+                    },
+                    {
+                        "segment_index": 2,
+                        "start_sec": 4.0,
+                        "end_sec": 8.0,
+                        "duration_sec": 4.0,
+                        "label": "place cardboard box on table",
+                        "granularity": "coarse",
+                        "primary_goal": "place box",
+                        "primary_object": "cardboard box",
+                        "confidence": 0.8,
+                    },
+                ],
+            }
+        )
+        report = validator.validate_episode(ann)
+        self.assertIn("object_naming_inconsistent", report["episode_warnings"])
+        self.assertTrue(any("cardboard box" in w for w in report["episode_warning_details"]))
+
 
 if __name__ == "__main__":
     unittest.main()

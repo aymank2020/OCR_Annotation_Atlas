@@ -165,6 +165,23 @@ NUMERAL_TO_WORD = {
     "10": "ten",
 }
 
+PLURAL_EXPECTED_NUMBER_WORDS = {"two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"}
+SINGULAR_EXPECTED_NUMBER_WORDS = {"one", "a", "an"}
+UNCOUNTABLE_NOUN_HINTS = {
+    "water",
+    "sand",
+    "rice",
+    "hair",
+    "equipment",
+    "furniture",
+    "paper",
+    "soap",
+    "oil",
+    "powder",
+}
+PLURAL_ONLY_NOUN_HINTS = {"scissors", "glasses", "pants", "shorts", "pliers", "tongs"}
+GENERIC_OBJECT_TOKENS = {"item", "object", "thing", "stuff", "tool", "container", "none", "surface", "mat"}
+
 
 def normalize_spaces(text: str) -> str:
     return WHITESPACE_PATTERN.sub(" ", str(text).strip())
@@ -374,6 +391,82 @@ def place_has_location(label: str) -> bool:
     if "place" not in l.lower():
         return True
     return bool(PLACE_LOCATION_PATTERN.search(l))
+
+
+def has_pluralization_hint_issue(label: str) -> bool:
+    l = normalize_spaces(label)
+    if not l or l == NO_ACTION_LABEL:
+        return False
+    tokens = re.findall(r"[a-z]+", lower(l))
+    if len(tokens) < 2:
+        return False
+    for i, token in enumerate(tokens[:-1]):
+        noun = tokens[i + 1]
+        if noun in {
+            "and",
+            "or",
+            "to",
+            "on",
+            "in",
+            "into",
+            "onto",
+            "at",
+            "inside",
+            "under",
+            "over",
+            "with",
+        }:
+            continue
+        if token in PLURAL_EXPECTED_NUMBER_WORDS:
+            if noun in UNCOUNTABLE_NOUN_HINTS:
+                continue
+            if not noun.endswith("s"):
+                return True
+        if token in SINGULAR_EXPECTED_NUMBER_WORDS:
+            if noun in PLURAL_ONLY_NOUN_HINTS:
+                continue
+            if noun.endswith("s"):
+                return True
+    return False
+
+
+def _normalized_object_text(seg: Dict[str, Any]) -> str:
+    gran = str(seg.get("granularity", "")).strip().lower()
+    if gran == "no_action":
+        return ""
+    obj = normalize_spaces(seg.get("primary_object", ""))
+    if not obj:
+        obj = _infer_primary_object(normalize_spaces(seg.get("label", "")), gran or "coarse")
+    obj = lower(obj)
+    if obj in GENERIC_OBJECT_TOKENS:
+        return ""
+    return obj
+
+
+def detect_object_naming_inconsistency(segments: Sequence[Dict[str, Any]]) -> List[str]:
+    head_to_forms: Dict[str, Dict[str, List[int]]] = {}
+    for seg in segments:
+        obj = _normalized_object_text(seg)
+        if not obj:
+            continue
+        idx = int(seg.get("segment_index", 0) or 0)
+        tokens = re.findall(r"[a-z]+", obj)
+        if not tokens:
+            continue
+        head = tokens[-1]
+        if head in GENERIC_OBJECT_TOKENS:
+            continue
+        forms = head_to_forms.setdefault(head, {})
+        forms.setdefault(obj, []).append(idx)
+
+    warnings: List[str] = []
+    for head, forms in head_to_forms.items():
+        if len(forms) <= 1:
+            continue
+        variants = sorted(forms.keys(), key=lambda x: (len(x), x))
+        idxs = sorted({idx for lst in forms.values() for idx in lst})
+        warnings.append(f"object_naming_inconsistent:{head}:{'|'.join(variants)}@{','.join(map(str, idxs))}")
+    return warnings
 
 
 def no_action_mixed_with_action(label: str) -> bool:
@@ -600,6 +693,8 @@ def validate_segment(seg: Dict[str, Any], video_duration_sec: float) -> Tuple[Di
                         break
         if has_numerals(label):
             errors.append("numerals_present")
+        if has_pluralization_hint_issue(label):
+            warnings.append("pluralization_hint")
         if has_intent_only_language(label):
             errors.append("intent_only_language")
 
@@ -666,6 +761,7 @@ def validate_segment(seg: Dict[str, Any], video_duration_sec: float) -> Tuple[Di
         "starts_with_allowed_action_verb": "verb_start_not_allowed" not in errors,
         "min_two_words": "min_two_words_failed" not in errors,
         "no_numerals": "numerals_present" not in errors,
+        "pluralization_consistent": "pluralization_hint" not in warnings,
         "no_forbidden_verbs": "forbidden_verbs" not in errors,
         "forbidden_verbs_found": forbidden_verbs_found,
         "no_body_part_references": "body_parts_referenced" not in errors,
@@ -713,6 +809,8 @@ def validate_segment(seg: Dict[str, Any], video_duration_sec: float) -> Tuple[Di
         audit_reasons.append("timestamp_misalignment")
     if "possible_missing_object" in warnings:
         audit_reasons.append("object_identity_uncertain")
+    if "pluralization_hint" in warnings:
+        audit_reasons.append("object_identity_uncertain")
     segment_report = {
         "segment_index": idx,
         "label": label,
@@ -743,6 +841,10 @@ def validate_episode(annotation: Dict[str, Any]) -> Dict[str, Any]:
         seg_reports.append(report)
         seg["rule_checks"] = report["derived_rule_checks"]
         seg["audit_risk"] = report["suggested_audit_risk"]
+
+    object_naming_warnings = detect_object_naming_inconsistency(segments)
+    if object_naming_warnings:
+        episode_warnings.append("object_naming_inconsistent")
 
     starts_ends = []
     for seg in segments:
@@ -820,6 +922,7 @@ def validate_episode(annotation: Dict[str, Any]) -> Dict[str, Any]:
         "normalized_annotation": ann,
         "episode_errors": sorted(set(episode_errors)),
         "episode_warnings": sorted(set(episode_warnings)),
+        "episode_warning_details": sorted(set(object_naming_warnings)),
         "segment_reports": seg_reports,
         "major_fail_triggers": sorted(set(major_fail_triggers)),
         "repair_recommended": bool(episode_errors or any_seg_errors or episode_warnings),
