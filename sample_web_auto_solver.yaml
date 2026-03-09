@@ -35,7 +35,7 @@ run:
   resume_from_artifacts: true
   resume_skip_video_steps_when_cached: true
   resume_skip_apply_steps_when_done: true
-  auto_continuity_merge_enabled: false
+  auto_continuity_merge_enabled: true
   use_task_scoped_artifacts: true
   enable_quality_review_submit: true
   adjust_timestamps: true

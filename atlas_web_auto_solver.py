@@ -138,7 +138,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "segment_chunking_consistency_prompt_terms": 16,
         "segment_chunking_consistency_normalize_labels": True,
         "policy_autofix_enabled": True,
-        "auto_continuity_merge_enabled": False,
+        "auto_continuity_merge_enabled": True,
         "auto_continuity_merge_min_run_segments": 3,
         "auto_continuity_merge_min_token_overlap": 1,
         "use_task_scoped_artifacts": True,
@@ -7030,7 +7030,7 @@ def _build_auto_continuity_merge_operations(
     segment_plan: Dict[int, Dict[str, Any]],
     cfg: Dict[str, Any],
 ) -> List[Dict[str, Any]]:
-    if not bool(_cfg_get(cfg, "run.auto_continuity_merge_enabled", False)):
+    if not bool(_cfg_get(cfg, "run.auto_continuity_merge_enabled", True)):
         return []
     if not bool(_cfg_get(cfg, "run.structural_allow_merge", True)):
         return []
@@ -7071,8 +7071,49 @@ def _build_auto_continuity_merge_operations(
     if not runs:
         return []
 
-    merge_indices: List[int] = []
+    def get_goal(idx: int) -> str:
+        item = segment_plan.get(idx, {})
+        return _label_goal_key(str(item.get("label", "")).strip())
+
+    safe_runs: List[Tuple[int, int]] = []
+    ordered_set = set(ordered)
     for start_idx, end_idx in runs:
+        is_alternating = False
+
+        # Edge alternation pattern: A -> [B..B] -> A.
+        prev_idx = start_idx - 1
+        next_idx = end_idx + 1
+        if prev_idx in ordered_set and next_idx in ordered_set:
+            goal_prev = get_goal(prev_idx)
+            goal_next = get_goal(next_idx)
+            goal_curr = get_goal(start_idx)
+            if goal_prev and goal_next and goal_curr and goal_prev == goal_next and goal_prev != goal_curr:
+                is_alternating = True
+
+        # Duration oscillation pattern inside candidate run (long, short, long).
+        durations: List[float] = []
+        for idx in range(start_idx, end_idx + 1):
+            item = segment_plan.get(idx, {})
+            s = _safe_float(item.get("start_sec", 0.0), 0.0)
+            e = _safe_float(item.get("end_sec", s), s)
+            durations.append(max(0.0, e - s))
+        if len(durations) >= 3:
+            for i in range(0, len(durations) - 2):
+                if durations[i] > 10.0 and durations[i + 1] < 4.0 and durations[i + 2] > 10.0:
+                    is_alternating = True
+                    break
+
+        if is_alternating:
+            print(
+                "[policy] auto continuity-merge rejected for segments "
+                f"{start_idx}-{end_idx} (alternation/cyclical pattern detected)."
+            )
+            continue
+
+        safe_runs.append((start_idx, end_idx))
+
+    merge_indices: List[int] = []
+    for start_idx, end_idx in safe_runs:
         # Descending indices to keep operation row references stable.
         for idx in range(end_idx, start_idx, -1):
             merge_indices.append(idx)
@@ -8663,7 +8704,7 @@ def _apply_global_run_policy(cfg: Dict[str, Any]) -> None:
         cfg["browser"] = {}
         browser = cfg["browser"]
 
-    run.setdefault("auto_continuity_merge_enabled", False)
+    run.setdefault("auto_continuity_merge_enabled", True)
     run.setdefault("auto_continuity_merge_min_run_segments", 3)
     run.setdefault("auto_continuity_merge_min_token_overlap", 1)
     run.setdefault("segment_chunking_min_video_sec", 30.0)

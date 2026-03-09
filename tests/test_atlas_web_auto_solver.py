@@ -4,6 +4,7 @@ from atlas_web_auto_solver import (
     _apply_consistency_aliases_to_label,
     _autofix_label_candidate,
     _allowed_label_start_verb_token_patterns_from_cfg,
+    _build_auto_continuity_merge_operations,
     _count_atomic_actions_in_label,
     _find_equivalent_canonical_term,
     _label_starts_with_allowed_action_verb,
@@ -155,6 +156,48 @@ class TestAtlasWebAutoSolver(unittest.TestCase):
             allowed_verb_token_patterns=patterns,
         )
         self.assertEqual(candidate, "pick up cup, place cup on surface")
+
+    def test_auto_continuity_merge_rejects_alternation_pattern(self) -> None:
+        cfg = {
+            "run": {
+                "auto_continuity_merge_enabled": True,
+                "structural_allow_merge": True,
+                "auto_continuity_merge_min_run_segments": 3,
+                "auto_continuity_merge_min_token_overlap": 1,
+            }
+        }
+        plan = {
+            1: {"label": "sort electronic components on mat", "start_sec": 0.0, "end_sec": 5.2},
+            2: {"label": "place electronic components into box", "start_sec": 5.2, "end_sec": 31.6},
+            3: {"label": "place electronic components into box", "start_sec": 31.6, "end_sec": 33.5},
+            4: {"label": "place electronic components into box", "start_sec": 33.5, "end_sec": 52.4},
+            5: {"label": "sort electronic components on mat", "start_sec": 52.4, "end_sec": 56.2},
+        }
+        ops = _build_auto_continuity_merge_operations(plan, cfg)
+        self.assertEqual(ops, [])
+
+    def test_auto_continuity_merge_keeps_continuous_same_goal(self) -> None:
+        cfg = {
+            "run": {
+                "auto_continuity_merge_enabled": True,
+                "structural_allow_merge": True,
+                "auto_continuity_merge_min_run_segments": 3,
+                "auto_continuity_merge_min_token_overlap": 1,
+            }
+        }
+        plan = {
+            1: {"label": "place electronic component into box", "start_sec": 0.0, "end_sec": 4.0},
+            2: {"label": "place electronic component into box", "start_sec": 4.0, "end_sec": 8.0},
+            3: {"label": "place electronic component into box", "start_sec": 8.0, "end_sec": 12.0},
+        }
+        ops = _build_auto_continuity_merge_operations(plan, cfg)
+        self.assertEqual(
+            ops,
+            [
+                {"action": "merge", "segment_index": 3},
+                {"action": "merge", "segment_index": 2},
+            ],
+        )
 
 
 if __name__ == "__main__":
