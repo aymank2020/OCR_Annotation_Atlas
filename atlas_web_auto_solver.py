@@ -6446,8 +6446,8 @@ def _request_labels_with_optional_segment_chunking(
     task_id: str = "",
 ) -> Dict[str, Any]:
     chunking_enabled = bool(_cfg_get(cfg, "run.segment_chunking_enabled", True))
-    min_segments_for_chunking = max(2, int(_cfg_get(cfg, "run.segment_chunking_min_segments", 2)))
-    min_video_sec_for_chunking = max(0.0, float(_cfg_get(cfg, "run.segment_chunking_min_video_sec", 0.0)))
+    min_segments_for_chunking = max(2, int(_cfg_get(cfg, "run.segment_chunking_min_segments", 6)))
+    min_video_sec_for_chunking = max(0.0, float(_cfg_get(cfg, "run.segment_chunking_min_video_sec", 30.0)))
     max_segments_per_chunk = max(2, int(_cfg_get(cfg, "run.segment_chunking_max_segments_per_request", 2)))
     chunking_disable_operations = bool(_cfg_get(cfg, "run.segment_chunking_disable_operations", True))
     chunking_video_pad_sec = max(0.0, float(_cfg_get(cfg, "run.segment_chunking_video_pad_sec", 1.0)))
