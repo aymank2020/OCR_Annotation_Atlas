@@ -109,6 +109,9 @@ ALLOWED_LABEL_START_VERBS = (
     "untwist",
     "raise",
     "lower",
+    "connect",
+    "disconnect",
+    "bend",
 )
 ALLOWED_LABEL_START_VERB_TOKEN_PATTERNS = sorted(
     [tuple(re.findall(r"[a-z]+", v.lower())) for v in ALLOWED_LABEL_START_VERBS],
@@ -246,6 +249,31 @@ def has_intent_only_language(label: str) -> bool:
     return any(re.search(p, l) for p in INTENT_PATTERNS)
 
 
+def starts_with_allowed_action_verb(action_phrase: str) -> bool:
+    """
+    Strict Policy Gate: Every segment MUST start with a physical action verb.
+    No exceptions for nouns or adjectives.
+    """
+    phrase = normalize_spaces(action_phrase).lower()
+    if not phrase or phrase == "no action":
+        return False
+
+    words = re.findall(r"[a-z]+", phrase)
+    if not words:
+        return False
+
+    for pattern in ALLOWED_LABEL_START_VERB_TOKEN_PATTERNS:
+        if not pattern:
+            continue
+        n = len(pattern)
+        if len(words) >= n and tuple(words[:n]) == pattern:
+            if any(w.endswith("ing") for w in words[:n]):
+                return False
+            return True
+
+    return False
+
+
 def split_actions(label: str) -> List[str]:
     l = normalize_spaces(label)
     if l == NO_ACTION_LABEL:
@@ -255,20 +283,6 @@ def split_actions(label: str) -> List[str]:
         subs = [s.strip() for s in re.split(r"\band\b", chunk) if s.strip()]
         parts.extend(subs)
     return [p for p in parts if p]
-
-
-def starts_with_allowed_action_verb(action_phrase: str) -> bool:
-    words = re.findall(r"[a-z]+", lower(action_phrase))
-    if not words:
-        return False
-    for pattern in ALLOWED_LABEL_START_VERB_TOKEN_PATTERNS:
-        if not pattern:
-            continue
-        n = len(pattern)
-        if len(words) >= n and tuple(words[:n]) == pattern:
-            return True
-    return False
-
 
 def count_atomic_actions(label: str) -> int:
     l = normalize_spaces(label)
