@@ -83,6 +83,7 @@ Set `output.save_debug_files: true` to keep intermediate artifacts.
 For safer execution quality, keep these settings in production configs:
 
 - `run.execute_require_video_context: true`
+- `run.resume_skip_video_steps_when_cached: false`
 - `gemini.require_video: true`
 - `gemini.allow_text_only_fallback_on_network_error: false`
 

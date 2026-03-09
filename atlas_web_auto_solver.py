@@ -117,7 +117,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "reuse_cached_labels": True,
         "skip_unchanged_labels": True,
         "resume_from_artifacts": True,
-        "resume_skip_video_steps_when_cached": True,
+        "resume_skip_video_steps_when_cached": False,
         "resume_skip_apply_steps_when_done": False,
         "allow_resume_auto_submit": False,
         "execute_force_fresh_gemini": True,
@@ -8904,6 +8904,12 @@ def _apply_global_run_policy(cfg: Dict[str, Any]) -> None:
     if not bool(run.get("execute_require_video_context", True)):
         run["execute_require_video_context"] = True
         print("[policy] run.execute_require_video_context forced ON.")
+    if bool(run.get("resume_skip_video_steps_when_cached", False)):
+        run["resume_skip_video_steps_when_cached"] = False
+        print(
+            "[policy] run.resume_skip_video_steps_when_cached forced OFF "
+            "(video must be prepared for re-query after structural changes)."
+        )
     if not bool(run.get("require_action_verb_start", True)):
         run["require_action_verb_start"] = True
         print("[policy] run.require_action_verb_start forced ON.")
