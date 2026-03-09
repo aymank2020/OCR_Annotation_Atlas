@@ -8,7 +8,7 @@ import json
 from typing import Any, Dict
 
 
-FORBIDDEN_VERBS = ["inspect", "check", "reach"]
+FORBIDDEN_VERBS = ["inspect", "check", "reach", "examine"]
 FORBIDDEN_NARRATIVE_WORDS = ["then", "another", "continue", "next", "again"]
 
 

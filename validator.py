@@ -235,6 +235,19 @@ def contains_forbidden_verbs(label: str) -> List[str]:
     return found
 
 
+def contains_forbidden_narrative_words(label: str) -> List[str]:
+    label_l = lower(label)
+    found: List[str] = []
+    words = getattr(prompts, "FORBIDDEN_NARRATIVE_WORDS", [])
+    for word in words:
+        token = str(word or "").strip().lower()
+        if not token:
+            continue
+        if re.search(rf"\b{re.escape(token)}\b", label_l):
+            found.append(token)
+    return found
+
+
 def allow_reach_for_truncated_end(label: str, end_sec: Any, video_duration_sec: float) -> bool:
     """
     Atlas exception: allow "reach" only when the clip likely truncates at the very end.
@@ -491,6 +504,7 @@ def classify_audit_risk(reasons: Sequence[str]) -> str:
         return "low"
     high_markers = {
         "forbidden_verbs",
+        "narrative_filler_words",
         "verb_start_not_allowed",
         "disallowed_tool_terms",
         "no_action_mixed",
@@ -653,6 +667,7 @@ def validate_segment(seg: Dict[str, Any], video_duration_sec: float) -> Tuple[Di
     errors: List[str] = []
     warnings: List[str] = []
     forbidden_verbs_found: List[str] = []
+    forbidden_narrative_words_found: List[str] = []
 
     idx = seg.get("segment_index")
     label = normalize_spaces(seg.get("label", ""))
@@ -697,6 +712,9 @@ def validate_segment(seg: Dict[str, Any], video_duration_sec: float) -> Tuple[Di
             warnings.append("pluralization_hint")
         if has_intent_only_language(label):
             errors.append("intent_only_language")
+        forbidden_narrative_words_found = contains_forbidden_narrative_words(label)
+        if forbidden_narrative_words_found:
+            errors.append("narrative_filler_words")
 
         forbidden = contains_forbidden_verbs(label)
         if forbidden and "reach" in forbidden and allow_reach_for_truncated_end(label, end, video_duration_sec):
@@ -764,6 +782,8 @@ def validate_segment(seg: Dict[str, Any], video_duration_sec: float) -> Tuple[Di
         "pluralization_consistent": "pluralization_hint" not in warnings,
         "no_forbidden_verbs": "forbidden_verbs" not in errors,
         "forbidden_verbs_found": forbidden_verbs_found,
+        "no_narrative_filler_words": "narrative_filler_words" not in errors,
+        "narrative_words_found": forbidden_narrative_words_found,
         "no_body_part_references": "body_parts_referenced" not in errors,
         "no_token_stuttering": "token_stuttering" not in errors,
         "no_mechanical_motion_phrasing": "mechanical_motion_phrase" not in errors,
@@ -782,6 +802,8 @@ def validate_segment(seg: Dict[str, Any], video_duration_sec: float) -> Tuple[Di
 
     audit_reasons: List[str] = []
     if "forbidden_verbs" in errors:
+        audit_reasons.append("verb_choice_ambiguous")
+    if "narrative_filler_words" in errors:
         audit_reasons.append("verb_choice_ambiguous")
     if "verb_start_not_allowed" in errors:
         audit_reasons.append("verb_choice_ambiguous")
@@ -877,6 +899,8 @@ def validate_episode(annotation: Dict[str, Any]) -> Dict[str, Any]:
         errs = set(report["errors"])
         if "forbidden_verbs" in errs:
             major_fail_triggers.append("forbidden_verbs_used")
+        if "narrative_filler_words" in errs:
+            major_fail_triggers.append("narrative_filler_words_used")
         if "verb_start_not_allowed" in errs:
             major_fail_triggers.append("verb_start_not_allowed")
         if "verbs_not_attached_to_objects" in errs:

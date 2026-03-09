@@ -51,6 +51,33 @@ class TestValidator(unittest.TestCase):
         self.assertIn("numerals_present", errors)
         self.assertFalse(report["ok"])
 
+    def test_validate_episode_rejects_examine_and_narrative_words(self):
+        ann = validator.normalize_annotation(
+            {
+                "episode_id": "e1b",
+                "video_duration_sec": 6.0,
+                "segments": [
+                    {
+                        "segment_index": 1,
+                        "start_sec": 0.0,
+                        "end_sec": 6.0,
+                        "duration_sec": 6.0,
+                        "label": "examine box then place box on table",
+                        "granularity": "coarse",
+                        "primary_goal": "place box",
+                        "primary_object": "box",
+                        "confidence": 0.9,
+                    }
+                ],
+            }
+        )
+        report = validator.validate_episode(ann)
+        errors = report["segment_reports"][0]["errors"]
+        self.assertIn("forbidden_verbs", errors)
+        self.assertIn("narrative_filler_words", errors)
+        self.assertIn("narrative_filler_words_used", report["major_fail_triggers"])
+        self.assertFalse(report["ok"])
+
     def test_validate_episode_detects_overlap(self):
         ann = validator.normalize_annotation(
             {

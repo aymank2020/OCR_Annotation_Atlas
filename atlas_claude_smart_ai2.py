@@ -490,7 +490,7 @@ def _label_word_count(label: str) -> int:
     return len([w for w in label.split() if w.strip()])
 
 
-def autofix_label(label: str) -> Tuple[str, List[LabelIssue]]:
+def autofix_label(label: str, preserve_reach: bool = False) -> Tuple[str, List[LabelIssue]]:
     issues: List[LabelIssue] = []
     fixed = normalize_label(label)
 
@@ -498,8 +498,9 @@ def autofix_label(label: str) -> Tuple[str, List[LabelIssue]]:
         return "No Action", [LabelIssue("warning", "Empty label replaced with No Action")]
 
     if fixed != "No Action":
-        fixed = re.sub(r"\breach for\b", "pick up", fixed)
-        fixed = re.sub(r"\breach\b", "pick up", fixed)
+        if not preserve_reach:
+            fixed = re.sub(r"\breach for\b", "pick up", fixed)
+            fixed = re.sub(r"\breach\b", "pick up", fixed)
         fixed = re.sub(r"\binspect\b", "adjust", fixed)
         fixed = re.sub(r"\bcheck\b", "adjust", fixed)
         fixed = re.sub(r"\bexamine\b", "adjust", fixed)
@@ -681,7 +682,7 @@ def normalize_segments(raw_segments: Any, duration: float) -> List[Dict[str, Any
         stitched.append(_make_no_action_segment(cursor, duration))
 
     final_segments: List[Dict[str, Any]] = []
-    for seg in stitched:
+    for seg_idx, seg in enumerate(stitched):
         start = seg["start"]
         end = seg["end"]
         chunks = []
@@ -692,8 +693,18 @@ def normalize_segments(raw_segments: Any, duration: float) -> List[Dict[str, Any
         if end - start >= MIN_SEGMENT_SECONDS:
             chunks.append((start, end))
 
-        for s, e in chunks:
-            fixed_label, autofix_issues = autofix_label(seg.get("label", ""))
+        is_last_segment = seg_idx == len(stitched) - 1
+        for chunk_idx, (s, e) in enumerate(chunks):
+            is_last_chunk = chunk_idx == len(chunks) - 1
+            raw_seg_label = str(seg.get("label", ""))
+            tail_sec = max(0.0, duration - e)
+            preserve_reach = bool(
+                is_last_segment
+                and is_last_chunk
+                and tail_sec <= 0.35
+                and re.search(r"\breach\b", raw_seg_label, re.IGNORECASE)
+            )
+            fixed_label, autofix_issues = autofix_label(raw_seg_label, preserve_reach=preserve_reach)
             issues = autofix_issues + validate_label(fixed_label)
             final_segments.append(
                 {

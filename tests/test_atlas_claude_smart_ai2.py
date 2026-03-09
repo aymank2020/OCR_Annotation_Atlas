@@ -63,6 +63,21 @@ class TestAtlasClaudeSmartAI2(unittest.TestCase):
         self.assertEqual(out["policy_version"], "atlas-gripper-2026-02")
         self.assertIn("quality_report", out)
 
+    def test_autofix_label_preserves_reach_when_requested(self):
+        fixed, _issues = mod.autofix_label("reach for connector", preserve_reach=True)
+        self.assertIn("reach", fixed)
+
+    def test_autofix_label_rewrites_reach_by_default(self):
+        fixed, _issues = mod.autofix_label("reach for connector")
+        self.assertNotIn("reach", fixed)
+        self.assertIn("pick up", fixed)
+
+    def test_normalize_segments_preserves_reach_on_truncated_last_segment(self):
+        raw = [{"start": 9.8, "end": 10.0, "label": "reach for connector", "type": "coarse"}]
+        out = mod.normalize_segments(raw, duration=10.0)
+        self.assertTrue(out)
+        self.assertIn("reach", out[-1]["label"])
+
 
 if __name__ == "__main__":
     unittest.main()
