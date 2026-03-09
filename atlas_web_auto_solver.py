@@ -5202,7 +5202,9 @@ def _autofix_label_candidate(
     def _normalize(x: str) -> str:
         out = _normalize_label_min_safety(x)
         out = _strip_forbidden_verbs_for_autofix(out, forbidden_verbs)
-        out = re.sub(r"\s+", " ", out).strip(" ,")
+        # Remove narrative fillers but keep 'and' or commas for multi-action Tier-3 compliance.
+        out = re.sub(r"\b(?:then|another|continue|next)\b", "", out, flags=re.IGNORECASE)
+        out = re.sub(r"\s+", " ", out).strip(" ,.;:")
         return out
 
     def _valid_candidate(x: str) -> bool:
@@ -5212,22 +5214,27 @@ def _autofix_label_candidate(
             return False
         if _contains_forbidden_verb_in_label(x, forbidden_verbs):
             return False
-        if _action_phrase_missing_object_for_autofix(x):
+        # Relax object check: allow valid multi-clause labels while checking first clause validity.
+        first_clause = x.split(",")[0].split(" and ")[0].strip()
+        if _action_phrase_missing_object_for_autofix(first_clause):
             return False
         return True
 
+    # Try full combined label first to avoid truncating valid multi-action labels.
     for base in (label, source_label):
-        actions = _split_label_atomic_actions_for_policy(base)
-        for action in actions:
-            candidate = _normalize(action)
-            if _valid_candidate(candidate):
-                words = [w for w in candidate.split() if w]
-                if len(words) < min_words:
-                    candidate = f"{candidate} item".strip()
-                words = [w for w in candidate.split() if w]
-                if len(words) > max_words:
+        candidate = _normalize(base)
+        if _valid_candidate(candidate):
+            words = [w for w in candidate.split() if w]
+            if len(words) < min_words:
+                candidate = f"{candidate} item".strip()
+            words = [w for w in candidate.split() if w]
+            if len(words) > max_words:
+                # Soft cut at nearest comma if present, otherwise hard-cap by word count.
+                if "," in candidate:
+                    candidate = candidate.split(",", 1)[0].strip()
+                else:
                     candidate = " ".join(words[:max_words])
-                return candidate
+            return candidate
 
     base_text = _normalize(label or source_label or "")
     base_tokens = re.findall(r"[a-z]+", base_text.lower())
@@ -5251,6 +5258,7 @@ def _autofix_label_candidate(
     words = [w for w in candidate.split() if w]
     if len(words) > max_words:
         candidate = " ".join(words[:max_words])
+
     return candidate
 
 

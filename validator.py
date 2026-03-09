@@ -262,11 +262,13 @@ def starts_with_allowed_action_verb(action_phrase: str) -> bool:
     if not words:
         return False
 
+    # Check against the strict Tier-3 whitelist.
     for pattern in ALLOWED_LABEL_START_VERB_TOKEN_PATTERNS:
         if not pattern:
             continue
         n = len(pattern)
         if len(words) >= n and tuple(words[:n]) == pattern:
+            # Extra safety: reject continuous (-ing) form starts.
             if any(w.endswith("ing") for w in words[:n]):
                 return False
             return True
