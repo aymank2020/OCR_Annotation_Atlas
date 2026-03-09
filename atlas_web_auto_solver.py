@@ -124,11 +124,12 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "execute_force_live_segments": True,
         "execute_require_video_context": True,
         "segment_chunking_enabled": True,
-        "segment_chunking_min_segments": 2,
-        "segment_chunking_min_video_sec": 0.0,
+        "segment_chunking_min_segments": 6,
+        "segment_chunking_min_video_sec": 30.0,
         "segment_chunking_max_segments_per_request": 2,
         "segment_chunking_video_pad_sec": 1.0,
         "segment_chunking_keep_temp_files": False,
+        "segment_chunking_temporal_anchor_enabled": True,
         "segment_chunking_include_previous_labels_context": True,
         "segment_chunking_max_previous_labels": 12,
         "segment_chunking_disable_operations": True,
@@ -352,6 +353,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "policy_retry_model": "gemini-3-pro-preview",
         "retry_with_stronger_model_on_policy_fail": True,
         "policy_retry_only_if_flash": False,
+        "policy_retry_accept_equal_error_count": False,
         "system_instruction_file": "",
         "system_instruction_text": "",
         "temperature": 0.0,
@@ -6605,6 +6607,31 @@ def _request_labels_with_optional_segment_chunking(
             chunk_extra_parts.append(
                 "Label only the listed segment_index rows in this chunk; do not invent extra rows."
             )
+            temporal_anchor_enabled = bool(
+                _cfg_get(cfg, "run.segment_chunking_temporal_anchor_enabled", True)
+            )
+            if temporal_anchor_enabled:
+                temporal_rows: List[str] = []
+                for seg in chunk_segments:
+                    idx = int(seg.get("segment_index", 0))
+                    abs_start = max(0.0, _safe_float(seg.get("start_sec"), 0.0))
+                    abs_end = max(abs_start, _safe_float(seg.get("end_sec"), abs_start))
+                    rel_start = max(0.0, abs_start - window_start)
+                    rel_end = max(rel_start, abs_end - window_start)
+                    temporal_rows.append(
+                        f"- segment_index={idx}: abs={abs_start:.1f}-{abs_end:.1f}s | "
+                        f"clip={rel_start:.1f}-{rel_end:.1f}s"
+                    )
+                if temporal_rows:
+                    chunk_extra_parts.append(
+                        "Temporal anchoring (strict): keep each action inside its exact row time window. "
+                        "Do not shift an action to adjacent segment_index rows.\n"
+                        + "\n".join(temporal_rows)
+                    )
+                    chunk_extra_parts.append(
+                        "If uncertain between two neighboring rows, keep the current row label unchanged "
+                        "instead of moving the action to another row."
+                    )
             if include_previous_labels_context and max_previous_labels > 0 and prior_labels:
                 context_labels = prior_labels[-max_previous_labels:]
                 chunk_extra_parts.append(
@@ -8384,6 +8411,13 @@ def _apply_global_gemini_video_policy(cfg: Dict[str, Any]) -> None:
         gem["policy_retry_only_if_flash"] = False
         print("[policy] gemini.policy_retry_only_if_flash forced OFF.")
 
+    if bool(gem.get("policy_retry_accept_equal_error_count", False)):
+        gem["policy_retry_accept_equal_error_count"] = False
+        print(
+            "[policy] gemini.policy_retry_accept_equal_error_count forced OFF "
+            "(accept stronger-model retry only when policy errors decrease)."
+        )
+
     if not bool(gem.get("key_rotation_enabled", True)):
         gem["key_rotation_enabled"] = True
         print("[policy] gemini.key_rotation_enabled forced ON.")
@@ -8476,9 +8510,31 @@ def _apply_global_run_policy(cfg: Dict[str, Any]) -> None:
     run.setdefault("auto_continuity_merge_enabled", True)
     run.setdefault("auto_continuity_merge_min_run_segments", 3)
     run.setdefault("auto_continuity_merge_min_token_overlap", 1)
-    run.setdefault("segment_chunking_min_video_sec", 0.0)
-    run["segment_chunking_min_segments"] = 2
-    run["segment_chunking_min_video_sec"] = 0.0
+    run.setdefault("segment_chunking_min_video_sec", 30.0)
+    try:
+        chunking_min_segments = int(run.get("segment_chunking_min_segments", 6) or 6)
+    except Exception:
+        chunking_min_segments = 6
+    if chunking_min_segments < 6:
+        run["segment_chunking_min_segments"] = 6
+        print(
+            "[policy] run.segment_chunking_min_segments raised to 6 "
+            "(avoid over-fragmenting short episodes)."
+        )
+    else:
+        run["segment_chunking_min_segments"] = chunking_min_segments
+    try:
+        chunking_min_video_sec = float(run.get("segment_chunking_min_video_sec", 30.0) or 30.0)
+    except Exception:
+        chunking_min_video_sec = 30.0
+    if chunking_min_video_sec < 30.0:
+        run["segment_chunking_min_video_sec"] = 30.0
+        print(
+            "[policy] run.segment_chunking_min_video_sec raised to 30.0s "
+            "(preserve timeline context on short clips)."
+        )
+    else:
+        run["segment_chunking_min_video_sec"] = chunking_min_video_sec
     try:
         chunk_max = int(run.get("segment_chunking_max_segments_per_request", 2) or 2)
     except Exception:
@@ -9677,8 +9733,12 @@ def run(cfg: Dict[str, Any], execute: bool) -> None:
                                 for e in retry_validation_report.get("errors", [])
                                 if str(e).strip()
                             ]
-
-                            if len(retry_raw_errors) <= len(raw_errors):
+                            accept_equal_error_count = bool(
+                                _cfg_get(cfg, "gemini.policy_retry_accept_equal_error_count", False)
+                            )
+                            retry_is_better = len(retry_raw_errors) < len(raw_errors)
+                            retry_is_equal = len(retry_raw_errors) == len(raw_errors)
+                            if retry_is_better or (accept_equal_error_count and retry_is_equal):
                                 print(
                                     "[policy] accepted stronger-model retry: "
                                     f"errors {len(raw_errors)} -> {len(retry_raw_errors)}"
@@ -9695,7 +9755,8 @@ def run(cfg: Dict[str, Any], execute: bool) -> None:
                                         _save_task_state(cfg, task_id, task_state)
                             else:
                                 print(
-                                    "[policy] kept primary-model output: stronger-model retry was not better "
+                                    "[policy] kept primary-model output: stronger-model retry did not reduce "
+                                    "policy errors "
                                     f"({len(raw_errors)} -> {len(retry_raw_errors)})."
                                 )
                         except Exception as retry_exc:
