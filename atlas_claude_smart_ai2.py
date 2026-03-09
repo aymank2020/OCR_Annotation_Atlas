@@ -63,7 +63,7 @@ DEFAULT_HEADERS = {
     ),
 }
 
-DEFAULT_MODEL = "claude-opus-4-5"
+DEFAULT_MODEL = "claude-3-5-sonnet-20241022"
 
 
 SYSTEM_PROMPT = f"""You are an expert Atlas Capture egocentric annotation specialist.
@@ -527,13 +527,23 @@ def autofix_label(label: str) -> Tuple[str, List[LabelIssue]]:
     if fixed != "No Action":
         words = fixed.split()
         if len(words) > MAX_LABEL_WORDS:
-            fixed = " ".join(words[:MAX_LABEL_WORDS]).strip(" ,.;")
-            issues.append(
-                LabelIssue(
-                    "warning",
-                    f"Trimmed label to {MAX_LABEL_WORDS} words (policy cap)",
+            # Prefer clause-safe trimming before hard word truncation.
+            if "," in fixed:
+                fixed = fixed.split(",", 1)[0].strip()
+                issues.append(
+                    LabelIssue(
+                        "warning",
+                        f"Label exceeded {MAX_LABEL_WORDS} words. Kept only the first clause to maintain safety.",
+                    )
                 )
-            )
+            else:
+                fixed = " ".join(words[:MAX_LABEL_WORDS]).strip(" ,.;")
+                issues.append(
+                    LabelIssue(
+                        "warning",
+                        f"Trimmed label forcefully to {MAX_LABEL_WORDS} words (policy cap).",
+                    )
+                )
 
     if fixed != "No Action" and _label_word_count(fixed) < 2:
         fixed = "handle item"

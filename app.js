@@ -36,9 +36,26 @@ function validateLabel(label) {
   const issues = [];
   const suggestions = [];
   const l = label.trim();
+  const ALLOWED_START_VERBS = [
+    'pick up', 'put down', 'set down', 'take out', 'take off', 'turn on', 'turn off', 'plug in', 'unplug',
+    'pick', 'place', 'move', 'adjust', 'hold', 'align', 'relocate', 'tighten', 'loosen', 'wipe', 'clean',
+    'paint', 'dip', 'remove', 'insert', 'pull', 'push', 'turn', 'open', 'close', 'unscrew', 'screw',
+    'lift', 'set', 'attach', 'detach', 'apply', 'cut', 'drill', 'measure', 'fold', 'press', 'slide',
+    'stack', 'pack', 'unpack', 'straighten', 'comb', 'spread', 'shake', 'pour', 'spray', 'peel', 'wrap',
+    'lock', 'unlock', 'grasp', 'position', 'fit', 'mount', 'unmount', 'clip', 'unclip', 'twist', 'untwist',
+    'raise', 'lower', 'connect', 'disconnect', 'bend'
+  ];
 
   if (!l) { issues.push({ type: 'error', msg: 'Label cannot be empty' }); return { issues, suggestions, pass: false }; }
   if (l.split(' ').length < 2) { issues.push({ type: 'error', msg: 'Use at least 2 words per label' }); }
+  if (l.toLowerCase() !== 'no action') {
+    const hasValidStart = ALLOWED_START_VERBS.some(v => l.toLowerCase().startsWith(v + ' ') || l.toLowerCase() === v);
+    if (!hasValidStart) {
+      const firstWord = l.split(' ')[0];
+      issues.push({ type: 'error', msg: `Label must start with an approved physical action verb. Invalid start: "${firstWord}"` });
+      suggestions.push('Start the sentence with a direct action like: pick up, place, adjust, wipe, etc.');
+    }
+  }
 
   // Forbidden verbs
   FORBIDDEN_VERBS.forEach(v => {

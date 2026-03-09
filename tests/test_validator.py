@@ -161,8 +161,7 @@ class TestValidator(unittest.TestCase):
         )
         report = validator.validate_episode(ann)
         errors = report["segment_reports"][0]["errors"]
-        self.assertIn("starts_with_non_action_verb", errors)
-        self.assertIn("action_clause_starts_with_non_action_verb", errors)
+        self.assertIn("verb_start_not_allowed", errors)
         self.assertFalse(report["ok"])
 
 
