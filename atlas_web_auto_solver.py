@@ -440,6 +440,7 @@ _GEMINI_REQUEST_TIMESTAMPS: List[float] = []
 _GEMINI_QUOTA_COOLDOWN_UNTIL_TS = 0.0
 _GEMINI_FALLBACK_USES = 0
 _SCRIPT_BUILD = "2026-02-27.0905"
+_DOTENV_CACHE: Optional[Dict[str, str]] = None
 
 
 def _deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
@@ -492,6 +493,44 @@ def _sanitize_secret_value(raw: str) -> str:
     return val.strip()
 
 
+def _load_dotenv_cache() -> Dict[str, str]:
+    global _DOTENV_CACHE
+    if _DOTENV_CACHE is not None:
+        return _DOTENV_CACHE
+    data: Dict[str, str] = {}
+    path = Path(".env")
+    if not path.exists():
+        _DOTENV_CACHE = data
+        return data
+    try:
+        for raw_line in path.read_text(encoding="utf-8").splitlines():
+            line = str(raw_line or "").strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.lower().startswith("export "):
+                line = line[7:].strip()
+            if "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            k = str(key or "").strip()
+            if not k:
+                continue
+            v = str(value or "").strip().strip('"').strip("'")
+            data[k] = v
+    except Exception:
+        data = {}
+    _DOTENV_CACHE = data
+    return data
+
+
+def _read_secret_source(name: str) -> str:
+    value = os.environ.get(name, "")
+    if value and str(value).strip():
+        return str(value)
+    dotenv = _load_dotenv_cache()
+    return str(dotenv.get(name, "") or "")
+
+
 def _parse_secret_values(raw: Any) -> List[str]:
     values: List[str] = []
     if isinstance(raw, list):
@@ -512,7 +551,7 @@ def _resolve_secret(explicit: str, env_names: List[str]) -> str:
     if explicit and explicit.strip():
         return _sanitize_secret_value(explicit)
     for name in env_names:
-        value = _sanitize_secret_value(os.environ.get(name, ""))
+        value = _sanitize_secret_value(_read_secret_source(name))
         if value:
             return value
     return ""
@@ -5603,29 +5642,29 @@ def _resolve_gemini_api_key_entries(cfg: Dict[str, Any]) -> List[Tuple[str, str]
 
     _append("cfg_api_keys", _cfg_get(cfg, "gemini.api_keys", []))
     _append("cfg_rotation_api_keys", _cfg_get(cfg, "gemini.rotation_api_keys", []))
-    _append("env:GEMINI_API_KEYS", os.environ.get("GEMINI_API_KEYS", ""))
-    _append("env:GOOGLE_API_KEYS", os.environ.get("GOOGLE_API_KEYS", ""))
-    _append("env:GEMINI_API_KEY_POOL", os.environ.get("GEMINI_API_KEY_POOL", ""))
-    _append("env:GOOGLE_API_KEY_POOL", os.environ.get("GOOGLE_API_KEY_POOL", ""))
+    _append("env:GEMINI_API_KEYS", _read_secret_source("GEMINI_API_KEYS"))
+    _append("env:GOOGLE_API_KEYS", _read_secret_source("GOOGLE_API_KEYS"))
+    _append("env:GEMINI_API_KEY_POOL", _read_secret_source("GEMINI_API_KEY_POOL"))
+    _append("env:GOOGLE_API_KEY_POOL", _read_secret_source("GOOGLE_API_KEY_POOL"))
 
     for idx in range(1, 33):
-        _append(f"env:GEMINI_API_KEY_{idx}", os.environ.get(f"GEMINI_API_KEY_{idx}", ""))
-        _append(f"env:GOOGLE_API_KEY_{idx}", os.environ.get(f"GOOGLE_API_KEY_{idx}", ""))
+        _append(f"env:GEMINI_API_KEY_{idx}", _read_secret_source(f"GEMINI_API_KEY_{idx}"))
+        _append(f"env:GOOGLE_API_KEY_{idx}", _read_secret_source(f"GOOGLE_API_KEY_{idx}"))
         _append(
             f"env:GEMINI_API_KEY_ROTATION_{idx}",
-            os.environ.get(f"GEMINI_API_KEY_ROTATION_{idx}", ""),
+            _read_secret_source(f"GEMINI_API_KEY_ROTATION_{idx}"),
         )
         _append(
             f"env:GOOGLE_API_KEY_ROTATION_{idx}",
-            os.environ.get(f"GOOGLE_API_KEY_ROTATION_{idx}", ""),
+            _read_secret_source(f"GOOGLE_API_KEY_ROTATION_{idx}"),
         )
         _append(
             f"env:GEMINI_API_KEY_PROJECT_{idx}",
-            os.environ.get(f"GEMINI_API_KEY_PROJECT_{idx}", ""),
+            _read_secret_source(f"GEMINI_API_KEY_PROJECT_{idx}"),
         )
         _append(
             f"env:GOOGLE_API_KEY_PROJECT_{idx}",
-            os.environ.get(f"GOOGLE_API_KEY_PROJECT_{idx}", ""),
+            _read_secret_source(f"GOOGLE_API_KEY_PROJECT_{idx}"),
         )
 
     return entries
