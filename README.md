@@ -2,6 +2,11 @@
 
 Rule-first pipeline for evaluating Tier2 annotation outputs against Atlas-style guidelines.
 
+## Strategy Docs
+
+- `PROJECT_PLAN_EN.md`: full execution plan (architecture, workstreams, 30/60/90 roadmap, KPIs).
+- `ENTERPRISE_PIPELINE_BRIEF_AR.md`: Arabic operational brief describing end-to-end autonomous flow.
+
 ## What is implemented
 
 - `validator.py`: deterministic rule engine (forbidden verbs, numerals, No Action rules, overlap, duration checks, etc.)
