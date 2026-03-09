@@ -28,7 +28,8 @@ Strict rules:
 - usually do not mention the tool; if unavoidable, use only "gripper"
 - never use tool terms like "mechanical arm", "robotic arm", "robot arm", "manipulator", "claw arm"
 - imperative voice only
-- forbidden verbs: inspect, check, reach (except truncated-end edge case)
+- forbidden verbs: inspect, check, reach
+- reach exception: allow "reach" only when the segment ends at the clipped/truncated end of the video
 - forbidden narrative words: then, another, continue, next, again
 - no "-ing" verb starts; use imperative commands (e.g., "turn mold", not "turning mold")
 - no numerals in labels
@@ -80,6 +81,7 @@ Critical behavior:
 Rules to enforce:
 - imperative labels only
 - forbidden verbs: inspect, check, reach
+- reach exception: allow "reach" only for clipped/truncated video-end segments
 - forbidden narrative words: then, another, continue, next, again
 - treat gripper as hand extension; avoid tool mention unless unavoidable
 - if tool must be named, use only "gripper" (never mechanical/robotic arm wording)
@@ -113,7 +115,7 @@ Audit each segment for:
 2) task-relevant hand-object focus
 3) accurate verb/object naming (no guessing)
 4) label format: imperative, no numerals, max 2 atomic actions, verbs attached to objects
-5) no forbidden verbs: inspect/check/reach
+5) no forbidden verbs: inspect/check/reach (except truncated-end reach)
 6) no forbidden narrative words: then/another/continue/next/again
 7) dense/coarse not mixed
 8) No Action usage and isolation correctness
@@ -125,7 +127,7 @@ Decision policy:
 - FAIL if major fail conditions exist:
   missed major action, hallucination, invalid timestamps,
   forbidden verbs, forbidden narrative words, dense/coarse mix,
-  >2 atomic actions, No Action mixed with action
+  >2 atomic actions, place missing location, No Action mixed with action
 - BORDERLINE if no major fail but multiple medium risks
 - PASS only when accurate, defensible, and consistent
 
@@ -150,7 +152,7 @@ Task: normalize wording only, with minimal edits.
 Rules:
 - imperative labels
 - no numerals
-- no forbidden verbs: inspect/check/reach
+- no forbidden verbs: inspect/check/reach (except truncated-end reach)
 - no forbidden narrative words: then/another/continue/next/again
 - normalize disallowed tool terms to "gripper" when unavoidable
 - no intent-only language

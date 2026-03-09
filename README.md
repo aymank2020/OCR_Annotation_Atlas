@@ -44,6 +44,9 @@ The following strict policy updates are now in `main`:
 - Strict verb-start gate in backend:
   - `validator.py::starts_with_allowed_action_verb`
   - rejects noun/adjective starts and disallows `-ing` verb starts.
+- Atlas rule alignment in backend:
+  - `validator.py` enforces numerals as errors, `place` without location as error,
+    and allows `reach` only in truncated-end edge cases.
 - UI-side verb whitelist gate in frontend:
   - `app.js::validateLabel` blocks labels that do not start with approved action verbs.
 - Autofix truncation fix:
