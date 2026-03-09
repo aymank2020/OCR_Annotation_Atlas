@@ -1,43 +1,108 @@
 # OCR Annotation Atlas - Tier3 Pipeline
 
-Rule-first pipeline for evaluating Tier2 annotation outputs against Atlas-style guidelines.
+Rule-first ecosystem for evaluating and repairing Tier2 annotation outputs against Atlas-style guidelines.
 
-## Strategy Docs
+## Strategy docs
 
-- `PROJECT_PLAN_EN.md`: full execution plan (architecture, workstreams, 30/60/90 roadmap, KPIs).
-- `ENTERPRISE_PIPELINE_BRIEF_AR.md`: Arabic operational brief describing end-to-end autonomous flow.
+- `PROJECT_PLAN_EN.md`: architecture, workstreams, roadmap, and KPIs.
+- `ENTERPRISE_PIPELINE_BRIEF_AR.md`: Arabic operational brief for autonomous end-to-end flow.
 
-## What is implemented
+## Repository scope
 
-- `validator.py`: deterministic rule engine (forbidden verbs, numerals, No Action rules, overlap, duration checks, etc.)
-- `repair_payload_builder.py`: builds repair payload from annotation + validator report
-- `pipeline_runner.py`: multi-pass pipeline runner
-- `prompts.py`: production prompts + JSON schema asset
-- `sample_config.yaml`: ready template for running the full flow
-- `sample_config_online_hybrid.yaml`: ready Gemini + Codex/OpenAI online preset
-- `sample_config_gemini_claude_codex.yaml`: ready Gemini + Claude + Codex preset (with JSON fallback)
-- `atlas_tier3_gui.py`: desktop GUI to run pipeline without CLI
-- `atlas_web_auto_solver.py`: browser automation (extract Atlas segments -> Gemini API -> optional auto-fill back to Atlas)
+This `main` branch contains the core production pipeline (validator, prompts, web solver, hybrid runner, and GUI).
+
+Some operations modules discussed in architecture reviews (for example WhatsApp/Discord collectors or drive uploader timers) can live in extended deployment branches/snapshots and may not exist in this minimal core branch.
+
+## Core components (implemented in this branch)
+
+- `atlas_web_auto_solver.py`: Atlas browser automation (extract segments, call vision model, optionally apply labels).
+- `validator.py`: deterministic policy gate (verbs, objects, numerals, No Action, overlap/duration checks).
+- `pipeline_runner.py`: multi-pass orchestration (`candidate -> validate -> repair -> re-validate -> judge`).
+- `repair_payload_builder.py`: creates repair payload from annotation + validator report.
+- `prompts.py`: system prompts and JSON schema assets.
+- `atlas_claude_smart_ai2.py`: Claude vision pipeline with normalization/autofix/QA hooks.
+- `atlas_tier3_gui.py`: desktop GUI to run the pipeline.
+- `app.js` + `atlas_annotation.html`: web annotation UI and local validation logic.
+- `safe_update_preserve_local.sh`: safe update script that preserves runtime secrets/session state.
+
+## Extended ecosystem modules (ops branches)
+
+When present in your deployment branch, these modules extend the system into continuous learning + ops automation:
+
+- `whatsapp_training_collector.py`: extracts operational feedback from WhatsApp chats.
+- `discord_updates_collector.py`: harvests policy updates from Discord exports.
+- `atlas_feedback_training_export.py`: exports disputes/feedback into reusable training datasets.
+- `build_study_pack.py`: builds study/training bundles from outputs and errors.
+- `upload_outputs_to_drive.sh`: backup/archive outputs to Google Drive via `rclone`.
+- `sync_gemini_video_policy.py`: syncs video policy settings across YAML files.
+- `atlas_training_supervisor.py`: multi-process supervisor with restart and incident logs.
+
+## Hardening updates (March 2026)
+
+The following strict policy updates are now in `main`:
+
+- Strict verb-start gate in backend:
+  - `validator.py::starts_with_allowed_action_verb`
+  - rejects noun/adjective starts and disallows `-ing` verb starts.
+- UI-side verb whitelist gate in frontend:
+  - `app.js::validateLabel` blocks labels that do not start with approved action verbs.
+- Autofix truncation fix:
+  - `atlas_web_auto_solver.py::_autofix_label_candidate` now validates full combined labels first and avoids blind action splitting.
+- Claude autofix safety improvements:
+  - `atlas_claude_smart_ai2.py::autofix_label` uses clause-safe trimming before hard word-cap truncation.
+- Claude default model corrected:
+  - `atlas_claude_smart_ai2.py` defaults to `claude-3-5-sonnet-20241022`.
+- Prompt-level narrative ban added:
+  - `prompts.py` explicitly forbids narrative fillers (`then`, `another`, `continue`, `next`, `again`) in generation/repair/audit/normalization instructions.
+
+Reference commits:
+
+- `555eb66`: label autofix truncation + strict verb-start gate alignment.
+- `e27d31a`: explicit forbidden narrative words in prompts.
 
 ## Output format (simplified)
 
-By default each run now writes only:
+By default each run writes:
 
-- `<prefix>_final.json` (final annotation)
-- `<prefix>_final_report.html` (segment list UI similar to Atlas segment panel)
-- `<prefix>_summary.json` (run metadata)
+- `<prefix>_final.json`
+- `<prefix>_final_report.html`
+- `<prefix>_summary.json`
 
-Set `output.save_debug_files: true` in config if you also want all intermediate files.
+Set `output.save_debug_files: true` to keep intermediate artifacts.
 
 ## Recommended workflow
 
-1. Candidate generation (from file, Claude video, or Gemini video)
-2. Rule validation (Python validator)
-3. Optional repair pass (Anthropic/OpenAI/Gemini)
-4. Re-validation
-5. Optional audit judge pass
+1. Candidate generation (`file` / `gemini_video` / `claude_vision`).
+2. Rule validation (`validator.py`).
+3. Optional repair pass (`anthropic` / `openai` / `gemini`).
+4. Re-validation.
+5. Optional audit judge pass.
 
-## GUI (easiest)
+## Production policy recommendations
+
+For safer execution quality, keep these settings in production configs:
+
+- `run.execute_require_video_context: true`
+- `gemini.require_video: true`
+- `gemini.allow_text_only_fallback_on_network_error: false`
+
+Rationale:
+
+- Prevents text-only fallback when video upload fails.
+- Avoids hallucinated action labels without visual evidence.
+
+## Model-ID sanity checks (important)
+
+Some sample YAMLs are templates and can contain placeholder model IDs.
+Before enabling repair/judge in production, confirm every model ID against provider docs.
+
+Safe examples:
+
+- Anthropic: `claude-3-5-sonnet-20241022`
+- OpenAI: `gpt-4o` or `gpt-4o-mini`
+- Google: current Gemini model IDs from official docs
+
+## GUI (desktop)
 
 ```bash
 python atlas_tier3_gui.py
@@ -49,9 +114,7 @@ Or double-click:
 launch_tier3_gui.bat
 ```
 
-## Atlas Web Auto-Solver (no manual copy/paste)
-
-This mode automates the manual loop of copying segments to Gemini and writing labels back.
+## Atlas web auto-solver
 
 Setup once:
 
@@ -60,104 +123,80 @@ pip install playwright requests pyyaml
 python -m playwright install chromium
 ```
 
-Run safe dry-run first:
+Safe dry-run:
 
 ```bash
 python atlas_web_auto_solver.py --config sample_web_auto_solver.yaml
 ```
 
-Apply labels to Atlas (real write):
+Execute real writes:
 
 ```bash
 python atlas_web_auto_solver.py --config sample_web_auto_solver.yaml --execute
 ```
 
 Notes:
-- Login + OTP can run in two modes:
-  - `otp.provider: gmail_imap` (fully automatic from Gmail IMAP)
-  - `otp.provider: manual_browser` (you type OTP manually in opened Chrome)
-- Configure these fields in `sample_web_auto_solver.yaml` (or env vars):
-  - `atlas.email`
-  - `otp.gmail_email`
-  - `otp.gmail_app_password` (Gmail App Password)
-- If OTP detection is slow, increase:
-  - `otp.timeout_sec`
-  - `otp.lookback_sec`
-- If OTP is not in Inbox, set mailbox explicitly:
-  - `otp.mailbox: "[Gmail]/All Mail"`
-- If you have multiple Chrome profiles, enable:
-  - `browser.use_chrome_profile: true`
-  - `browser.chrome_profile_directory: "auto"` (or set explicit value like `Profile 1`)
-- If profile launch fails, close all Chrome windows first, then retry.
-- Or keep `browser.fallback_to_isolated_context_on_profile_error: true` to continue automatically with isolated context.
-- If profile startup hangs at `about:blank`, lower friction by keeping:
-  - `browser.profile_launch_timeout_ms: 30000`
-- On Windows, to avoid profile lock failures, enable:
-  - `browser.close_chrome_before_profile_launch: true`
-- For Chrome `DevTools remote debugging requires a non-default data directory`, enable:
-  - `browser.clone_chrome_profile_to_temp: true`
-- If Gmail IMAP returns `Application-specific password required`, create App Password here:
-  - `https://myaccount.google.com/apppasswords`
-- Session is cached in `.state/atlas_auth.json` after first successful run.
-- Selectors are pre-tuned for current Atlas login/verify pages, with fallback chains for task-room UI.
-- Script now attempts to download the current task video and attach it to Gemini API request together with segment text/timestamps.
-- Script outputs debug artifacts to `outputs/`:
-  - extracted segments JSON
-  - prompt sent to Gemini
-  - labels returned by Gemini
+
+- OTP modes:
+  - `otp.provider: gmail_imap`
+  - `otp.provider: manual_browser`
+- Session cache:
+  - `.state/atlas_auth.json`
+- Debug artifacts:
+  - extracted segments
+  - prompt payload
+  - generated labels
 
 ## CLI
 
-Run from YAML config:
+Run from YAML:
 
 ```bash
 python pipeline_runner.py --config sample_config.yaml
 ```
 
-Run online hybrid (Gemini + Codex/OpenAI):
+Online hybrid (Gemini + OpenAI/Codex):
 
 ```bash
 python pipeline_runner.py --config sample_config_online_hybrid.yaml
 ```
 
-Run triple hybrid (Gemini + Claude + Codex/OpenAI):
+Triple hybrid (Gemini + Claude + OpenAI/Codex):
 
 ```bash
 python pipeline_runner.py --config sample_config_gemini_claude_codex.yaml
 ```
 
-Notes for this preset:
-- Uses `gemini-2.5-flash` by default.
-- If Gemini fails and Claude fallback fails, it automatically falls back to `input.candidate_json`.
-- `fail_open_on_repair_error` / `fail_open_on_judge_error` keep pipeline running even if repair/judge providers fail.
-- Cost-saving defaults:
-  - `repair_policy: major_only`
-  - `judge_policy: on_major_or_repair`
-  - `save_debug_files: false` (fewer output files)
-
-Run directly from candidate JSON:
+Direct candidate JSON:
 
 ```bash
 python pipeline_runner.py --candidate-json data/f01.json --episode-id f01 --duration 59 --output-dir outputs --output-prefix run_f01
 ```
 
-Build repair payload only:
+Repair payload only:
 
 ```bash
 python repair_payload_builder.py --annotation-json data/f01.json --output-json outputs/f01_repair_payload.json
 ```
 
+## Safe VPS update (preserve keys/session)
+
+```bash
+cd /root/OCR_annotation_Atlas
+chmod +x safe_update_preserve_local.sh
+./safe_update_preserve_local.sh main /root/OCR_annotation_Atlas https://github.com/aymank2020/OCR_Annotation_Atlas.git
+```
+
+This preserves local runtime files (such as `.env`, local YAML overrides, and `.state/atlas_auth.json`) before pulling updates, then restores them after update.
+
 ## Provider notes
 
-- `candidate_provider=file`: uses existing candidate JSON.
-- `candidate_provider=claude_vision`: uses `atlas_claude_smart_ai2.py`.
-- `candidate_provider=gemini_video`: supports local `video_file` (mp4).
-- For Gemini candidate, you can set `fallback_type: claude_vision` in config to auto-fallback on 429/quota errors.
+- Candidate providers: `file | claude_vision | gemini_video`.
 - Repair/Judge providers: `none | anthropic | claude | openai | codex | openai_codex | gemini`.
-- `codex` and `openai_codex` are aliases to OpenAI API calls in `pipeline_runner.py`.
-- `claude` is an alias to Anthropic API calls in `pipeline_runner.py`.
+- `codex` and `openai_codex` map to OpenAI API calls in `pipeline_runner.py`.
+- `claude` maps to Anthropic API calls in `pipeline_runner.py`.
 
-API keys can be set in config or env:
+Environment keys:
 
 - `ANTHROPIC_API_KEY`
 - `OPENAI_API_KEY`
@@ -165,8 +204,8 @@ API keys can be set in config or env:
 
 Security:
 
-- Never commit API keys in code/config files.
-- If a key was shared in chat or committed, rotate/revoke it immediately and generate a new key.
+- Never commit API keys.
+- Rotate immediately if exposed.
 
 ## Tests
 
