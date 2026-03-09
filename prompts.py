@@ -55,6 +55,8 @@ Strict rules:
 - if uncertain, use general nouns (tool/container/cloth/item)
 - do not keep placeholder/default labels
 - do not hallucinate hidden actions
+- for retrieval from containers, prefer "remove [item] from [container]" over "take [item] out"
+- temporal strictness is mandatory: action text must match only the exact row start_sec/end_sec window
 
 Output requirements:
 - JSON only, no markdown

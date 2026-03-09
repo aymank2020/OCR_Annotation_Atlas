@@ -4653,6 +4653,7 @@ def build_prompt(
         "If surface type/elevation is unclear (floor mat vs table/shelf), do not guess raised furniture.\n"
         "Use neutral location wording (on surface/on mat/on floor) unless elevation is clearly visible.\n"
         "Use 'place' only with explicit location (on/in/into/onto/at/to/inside/under/over).\n"
+        "For retrieval from containers, prefer 'remove [item] from [container]' over ambiguous 'take ... out'.\n"
         "No-Action pause rule: if ego still holds the task object/tool during a pause, do not use 'No Action'. "
         "Keep/merge it with surrounding action.\n"
         "Attach verbs to objects: do not write 'pick up and place box' or 'pick up box and place under desk'; "
@@ -5036,6 +5037,10 @@ def _label_starts_with_allowed_action_verb(
             continue
         n = len(pattern)
         if len(tokens) >= n and tuple(tokens[:n]) == pattern:
+            return True
+    if tokens and tokens[0] == "take":
+        lookahead = tokens[1:6]
+        if "out" in lookahead or "off" in lookahead:
             return True
     return False
 
@@ -6872,6 +6877,10 @@ def _label_starts_with_allowed_action_verb(
             if any(word.endswith("ing") for word in words[:n]):
                 return False
             return True
+    if words and words[0] == "take":
+        lookahead = words[1:6]
+        if "out" in lookahead or "off" in lookahead:
+            return True
     return False
 
 
@@ -6915,8 +6924,11 @@ def _action_phrase_missing_object_for_autofix(action_phrase: str) -> bool:
 def _heuristic_autofix_verb_from_text(text: str) -> str:
     lowered = re.sub(r"\s+", " ", (text or "").strip()).lower()
     if lowered:
+        tokens = set(re.findall(r"[a-z]+", lowered))
+        if "screwdriver" in tokens and tokens.intersection({"bag", "box", "case", "container", "pouch"}):
+            return "remove"
         for needle, verb in _AUTOFIX_VERB_HINT_MAP:
-            if needle in lowered:
+            if needle in tokens:
                 return verb
     return "pick up"
 

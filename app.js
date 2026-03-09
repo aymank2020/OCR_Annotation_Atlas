@@ -49,7 +49,10 @@ function validateLabel(label) {
   if (!l) { issues.push({ type: 'error', msg: 'Label cannot be empty' }); return { issues, suggestions, pass: false }; }
   if (l.split(' ').length < 2) { issues.push({ type: 'error', msg: 'Use at least 2 words per label' }); }
   if (l.toLowerCase() !== 'no action') {
-    const hasValidStart = ALLOWED_START_VERBS.some(v => l.toLowerCase().startsWith(v + ' ') || l.toLowerCase() === v);
+    const lowerLabel = l.toLowerCase();
+    const tokens = lowerLabel.match(/[a-z]+/g) || [];
+    const separableTakeStart = tokens.length >= 3 && tokens[0] === 'take' && (tokens.slice(1, 6).includes('out') || tokens.slice(1, 6).includes('off'));
+    const hasValidStart = ALLOWED_START_VERBS.some(v => lowerLabel.startsWith(v + ' ') || lowerLabel === v) || separableTakeStart;
     if (!hasValidStart) {
       const firstWord = l.split(' ')[0];
       issues.push({ type: 'error', msg: `Label must start with an approved physical action verb. Invalid start: "${firstWord}"` });

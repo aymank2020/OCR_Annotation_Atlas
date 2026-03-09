@@ -321,6 +321,13 @@ def starts_with_allowed_action_verb(action_phrase: str) -> bool:
                 return False
             return True
 
+    # Allow separable phrasal starts like "take screwdriver out/off ..."
+    # so valid retrieval labels do not get rejected and over-autofixed.
+    if words and words[0] == "take":
+        lookahead = words[1:6]
+        if "out" in lookahead or "off" in lookahead:
+            return True
+
     return False
 
 

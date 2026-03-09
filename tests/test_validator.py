@@ -166,6 +166,10 @@ class TestValidator(unittest.TestCase):
         self.assertTrue(validator.starts_with_allowed_action_verb("pick up component, connect wires to component"))
         self.assertTrue(validator.starts_with_allowed_action_verb("connect wires to component"))
 
+    def test_starts_with_allowed_action_verb_accepts_separable_take_phrases(self):
+        self.assertTrue(validator.starts_with_allowed_action_verb("take screwdriver out of bag"))
+        self.assertTrue(validator.starts_with_allowed_action_verb("take cover off device"))
+
     def test_validate_episode_rejects_label_that_starts_with_noun_or_adjective(self):
         ann = validator.normalize_annotation(
             {

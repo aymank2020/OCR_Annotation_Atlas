@@ -157,6 +157,20 @@ class TestAtlasWebAutoSolver(unittest.TestCase):
         )
         self.assertEqual(candidate, "pick up cup, place cup on surface")
 
+    def test_autofix_label_candidate_preserves_separable_take_out(self) -> None:
+        cfg = {"run": {"min_label_words": 2, "max_label_words": 20}}
+        forbidden = ["inspect", "check", "look", "examine", "reach", "rotate", "grab", "relocate"]
+        patterns = _allowed_label_start_verb_token_patterns_from_cfg(cfg)
+        candidate = _autofix_label_candidate(
+            cfg=cfg,
+            label="take screwdriver out of bag",
+            source_label="take screwdriver out of bag",
+            forbidden_verbs=forbidden,
+            allowed_verb_token_patterns=patterns,
+        )
+        self.assertTrue(_label_starts_with_allowed_action_verb(candidate, patterns))
+        self.assertFalse(candidate.lower().startswith("tighten take"))
+
     def test_auto_continuity_merge_rejects_alternation_pattern(self) -> None:
         cfg = {
             "run": {

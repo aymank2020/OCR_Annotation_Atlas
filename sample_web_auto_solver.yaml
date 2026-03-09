@@ -37,6 +37,7 @@ run:
   resume_skip_apply_steps_when_done: true
   auto_continuity_merge_enabled: true
   segment_chunking_enabled: true
+  segment_chunking_temporal_anchor_enabled: true
   execute_require_video_context: true
   use_task_scoped_artifacts: true
   enable_quality_review_submit: true
