@@ -9,6 +9,7 @@ from typing import Any, Dict
 
 
 FORBIDDEN_VERBS = ["inspect", "check", "reach"]
+FORBIDDEN_NARRATIVE_WORDS = ["then", "another", "continue", "next", "again"]
 
 
 VIDEO_ANNOTATION_PROMPT = """You are an expert egocentric hand-action annotation assistant for Atlas Capture style labeling.
@@ -28,6 +29,7 @@ Strict rules:
 - never use tool terms like "mechanical arm", "robotic arm", "robot arm", "manipulator", "claw arm"
 - imperative voice only
 - forbidden verbs: inspect, check, reach (except truncated-end edge case)
+- forbidden narrative words: then, another, continue, next, again
 - no "-ing" verb starts; use imperative commands (e.g., "turn mold", not "turning mold")
 - no numerals in labels
 - never mix dense/coarse in one segment
@@ -78,6 +80,7 @@ Critical behavior:
 Rules to enforce:
 - imperative labels only
 - forbidden verbs: inspect, check, reach
+- forbidden narrative words: then, another, continue, next, again
 - treat gripper as hand extension; avoid tool mention unless unavoidable
 - if tool must be named, use only "gripper" (never mechanical/robotic arm wording)
 - no numerals in labels
@@ -111,16 +114,18 @@ Audit each segment for:
 3) accurate verb/object naming (no guessing)
 4) label format: imperative, no numerals, max 2 atomic actions, verbs attached to objects
 5) no forbidden verbs: inspect/check/reach
-6) dense/coarse not mixed
-7) No Action usage and isolation correctness
-8) timestamp alignment to engagement/disengagement boundaries
-9) merge/split logic consistency
-10) no hallucinated or missed major actions
+6) no forbidden narrative words: then/another/continue/next/again
+7) dense/coarse not mixed
+8) No Action usage and isolation correctness
+9) timestamp alignment to engagement/disengagement boundaries
+10) merge/split logic consistency
+11) no hallucinated or missed major actions
 
 Decision policy:
 - FAIL if major fail conditions exist:
   missed major action, hallucination, invalid timestamps,
-  forbidden verbs, dense/coarse mix, >2 atomic actions, No Action mixed with action
+  forbidden verbs, forbidden narrative words, dense/coarse mix,
+  >2 atomic actions, No Action mixed with action
 - BORDERLINE if no major fail but multiple medium risks
 - PASS only when accurate, defensible, and consistent
 
@@ -146,6 +151,7 @@ Rules:
 - imperative labels
 - no numerals
 - no forbidden verbs: inspect/check/reach
+- no forbidden narrative words: then/another/continue/next/again
 - normalize disallowed tool terms to "gripper" when unavoidable
 - no intent-only language
 - consistent object naming within episode
