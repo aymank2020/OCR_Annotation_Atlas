@@ -138,7 +138,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "segment_chunking_consistency_prompt_terms": 16,
         "segment_chunking_consistency_normalize_labels": True,
         "policy_autofix_enabled": True,
-        "auto_continuity_merge_enabled": True,
+        "auto_continuity_merge_enabled": False,
         "auto_continuity_merge_min_run_segments": 3,
         "auto_continuity_merge_min_token_overlap": 1,
         "use_task_scoped_artifacts": True,
@@ -7030,7 +7030,7 @@ def _build_auto_continuity_merge_operations(
     segment_plan: Dict[int, Dict[str, Any]],
     cfg: Dict[str, Any],
 ) -> List[Dict[str, Any]]:
-    if not bool(_cfg_get(cfg, "run.auto_continuity_merge_enabled", True)):
+    if not bool(_cfg_get(cfg, "run.auto_continuity_merge_enabled", False)):
         return []
     if not bool(_cfg_get(cfg, "run.structural_allow_merge", True)):
         return []
@@ -8663,7 +8663,7 @@ def _apply_global_run_policy(cfg: Dict[str, Any]) -> None:
         cfg["browser"] = {}
         browser = cfg["browser"]
 
-    run.setdefault("auto_continuity_merge_enabled", True)
+    run.setdefault("auto_continuity_merge_enabled", False)
     run.setdefault("auto_continuity_merge_min_run_segments", 3)
     run.setdefault("auto_continuity_merge_min_token_overlap", 1)
     run.setdefault("segment_chunking_min_video_sec", 30.0)
