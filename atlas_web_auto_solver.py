@@ -5189,6 +5189,23 @@ def _action_phrase_missing_object_for_autofix(action_phrase: str) -> bool:
     return False
 
 
+def _ensure_place_has_location_for_autofix(label: str) -> str:
+    text = re.sub(r"\s+", " ", (label or "").strip(" ,.;:"))
+    if not text:
+        return text
+    place_location_pattern = re.compile(r"\bplace\b.*\b(on|in|into|onto|at|to|inside|under|over)\b", re.IGNORECASE)
+    clauses = [c.strip() for c in text.split(",") if c.strip()]
+    if not clauses:
+        clauses = [text]
+    fixed: List[str] = []
+    for clause in clauses:
+        current = clause
+        if re.search(r"\bplace\b", current, flags=re.IGNORECASE) and not place_location_pattern.search(current):
+            current = f"{current} on surface".strip()
+        fixed.append(re.sub(r"\s+", " ", current).strip(" ,.;:"))
+    return ", ".join([c for c in fixed if c]).strip(" ,.;:")
+
+
 def _autofix_label_candidate(
     cfg: Dict[str, Any],
     label: str,
@@ -5205,6 +5222,7 @@ def _autofix_label_candidate(
         # Remove narrative fillers but keep 'and' or commas for multi-action Tier-3 compliance.
         out = re.sub(r"\b(?:then|another|continue|next)\b", "", out, flags=re.IGNORECASE)
         out = re.sub(r"\s+", " ", out).strip(" ,.;:")
+        out = _ensure_place_has_location_for_autofix(out)
         return out
 
     def _valid_candidate(x: str) -> bool:
@@ -5294,6 +5312,7 @@ def _auto_fix_segment_plan_labels(
         "label/action must start with allowed action verb",
         "forbidden verb",
         "verbs must attach to objects",
+        "missing explicit location",
         "label has fewer than",
         "label has more than",
         "repeated token/phrase",
@@ -7107,6 +7126,7 @@ def _autofix_label_candidate(
         out = _strip_forbidden_verbs_for_autofix(out, forbidden_verbs)
         out = re.sub(r"\b(?:then|another|continue|next)\b", "", out, flags=re.IGNORECASE)
         out = re.sub(r"\s+", " ", out).strip(" ,.;:")
+        out = _ensure_place_has_location_for_autofix(out)
         return out
 
     def _valid_candidate(x: str) -> bool:

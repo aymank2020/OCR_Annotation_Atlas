@@ -130,6 +130,32 @@ class TestAtlasWebAutoSolver(unittest.TestCase):
         )
         self.assertTrue(_label_starts_with_allowed_action_verb(candidate, patterns))
 
+    def test_autofix_label_candidate_adds_location_for_place(self) -> None:
+        cfg = {"run": {"min_label_words": 2, "max_label_words": 20}}
+        forbidden = ["inspect", "check", "look", "examine", "reach", "rotate", "grab", "relocate"]
+        patterns = _allowed_label_start_verb_token_patterns_from_cfg(cfg)
+        candidate = _autofix_label_candidate(
+            cfg=cfg,
+            label="place cup",
+            source_label="place cup",
+            forbidden_verbs=forbidden,
+            allowed_verb_token_patterns=patterns,
+        )
+        self.assertEqual(candidate, "place cup on surface")
+
+    def test_autofix_label_candidate_adds_location_inside_multi_action(self) -> None:
+        cfg = {"run": {"min_label_words": 2, "max_label_words": 20}}
+        forbidden = ["inspect", "check", "look", "examine", "reach", "rotate", "grab", "relocate"]
+        patterns = _allowed_label_start_verb_token_patterns_from_cfg(cfg)
+        candidate = _autofix_label_candidate(
+            cfg=cfg,
+            label="pick up cup, place cup",
+            source_label="pick up cup, place cup",
+            forbidden_verbs=forbidden,
+            allowed_verb_token_patterns=patterns,
+        )
+        self.assertEqual(candidate, "pick up cup, place cup on surface")
+
 
 if __name__ == "__main__":
     unittest.main()
