@@ -218,6 +218,24 @@ def contains_forbidden_verbs(label: str) -> List[str]:
     return found
 
 
+def allow_reach_for_truncated_end(label: str, end_sec: Any, video_duration_sec: float) -> bool:
+    """
+    Atlas exception: allow "reach" only when the clip likely truncates at the very end.
+    """
+    if not re.search(r"\breach\b", lower(label)):
+        return False
+    try:
+        end = float(end_sec)
+        duration = float(video_duration_sec)
+    except Exception:
+        return False
+    if duration <= 0:
+        return False
+    # If remaining tail is very small, treat as truncated-end edge case.
+    tail_sec = max(0.0, duration - end)
+    return tail_sec <= 0.35
+
+
 def has_numerals(label: str) -> bool:
     return bool(NUMERAL_PATTERN.search(label))
 
@@ -541,6 +559,7 @@ def normalize_annotation(
 def validate_segment(seg: Dict[str, Any], video_duration_sec: float) -> Tuple[Dict[str, Any], List[str], List[str]]:
     errors: List[str] = []
     warnings: List[str] = []
+    forbidden_verbs_found: List[str] = []
 
     idx = seg.get("segment_index")
     label = normalize_spaces(seg.get("label", ""))
@@ -585,7 +604,11 @@ def validate_segment(seg: Dict[str, Any], video_duration_sec: float) -> Tuple[Di
             errors.append("intent_only_language")
 
         forbidden = contains_forbidden_verbs(label)
-        if forbidden:
+        if forbidden and "reach" in forbidden and allow_reach_for_truncated_end(label, end, video_duration_sec):
+            forbidden = [v for v in forbidden if v != "reach"]
+            warnings.append("reach_allowed_truncated_end")
+        forbidden_verbs_found = forbidden
+        if forbidden_verbs_found:
             errors.append("forbidden_verbs")
         disallowed_terms = disallowed_tool_terms_found(label)
         if disallowed_terms:
@@ -621,7 +644,7 @@ def validate_segment(seg: Dict[str, Any], video_duration_sec: float) -> Tuple[Di
             if has_unattached_verb_chain(label):
                 errors.append("verbs_not_attached_to_objects")
             if not place_has_location(label):
-                warnings.append("place_missing_location")
+                errors.append("place_missing_location")
             if dense_coarse_mixed(seg):
                 errors.append("dense_coarse_mixed")
 
@@ -644,7 +667,7 @@ def validate_segment(seg: Dict[str, Any], video_duration_sec: float) -> Tuple[Di
         "min_two_words": "min_two_words_failed" not in errors,
         "no_numerals": "numerals_present" not in errors,
         "no_forbidden_verbs": "forbidden_verbs" not in errors,
-        "forbidden_verbs_found": contains_forbidden_verbs(label),
+        "forbidden_verbs_found": forbidden_verbs_found,
         "no_body_part_references": "body_parts_referenced" not in errors,
         "no_token_stuttering": "token_stuttering" not in errors,
         "no_mechanical_motion_phrasing": "mechanical_motion_phrase" not in errors,
@@ -656,6 +679,7 @@ def validate_segment(seg: Dict[str, Any], video_duration_sec: float) -> Tuple[Di
         "no_hallucinated_steps": True,
         "dense_coarse_not_mixed": "dense_coarse_mixed" not in errors,
         "no_action_not_mixed_with_action": "no_action_mixed" not in errors,
+        "place_has_location": "place_missing_location" not in errors,
         "timestamps_aligned": all(e not in errors for e in ["timestamp_order_invalid", "duration_mismatch"]),
         "hands_disengage_boundary_ok": True,
     }
@@ -675,6 +699,8 @@ def validate_segment(seg: Dict[str, Any], video_duration_sec: float) -> Tuple[Di
         audit_reasons.append("verb_choice_ambiguous")
     if "mechanical_motion_phrase" in errors:
         audit_reasons.append("verb_choice_ambiguous")
+    if "place_missing_location" in errors:
+        audit_reasons.append("verb_choice_ambiguous")
     if "numerals_present" in errors:
         audit_reasons.append("possible_hallucination")
     if "dense_coarse_mixed" in errors:
@@ -687,9 +713,6 @@ def validate_segment(seg: Dict[str, Any], video_duration_sec: float) -> Tuple[Di
         audit_reasons.append("timestamp_misalignment")
     if "possible_missing_object" in warnings:
         audit_reasons.append("object_identity_uncertain")
-    if "place_missing_location" in warnings:
-        audit_reasons.append("verb_choice_ambiguous")
-
     segment_report = {
         "segment_index": idx,
         "label": label,
@@ -764,8 +787,12 @@ def validate_episode(annotation: Dict[str, Any]) -> Dict[str, Any]:
             major_fail_triggers.append("token_stuttering")
         if "mechanical_motion_phrase" in errs:
             major_fail_triggers.append("mechanical_motion_phrase")
+        if "numerals_present" in errs:
+            major_fail_triggers.append("numerals_present")
         if "dense_coarse_mixed" in errs:
             major_fail_triggers.append("dense_coarse_mixed")
+        if "place_missing_location" in errs:
+            major_fail_triggers.append("place_missing_location")
         if "too_many_atomic_actions" in errs:
             major_fail_triggers.append("too_many_atomic_actions")
         if "no_action_mixed" in errs:

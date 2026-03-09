@@ -22,14 +22,14 @@ providers:
   repair:
     # "claude" is alias of anthropic provider
     type: "claude"
-    model: "claude-opus-4-6"
+    model: "claude-3-5-sonnet-20241022"
     # Prefer env var ANTHROPIC_API_KEY
     api_key: ""
 
   judge:
     # "codex" is alias of OpenAI provider
     type: "codex"
-    model: "gpt-5.2"
+    model: "gpt-4o"
     # Prefer env var OPENAI_API_KEY
     api_key: ""
 

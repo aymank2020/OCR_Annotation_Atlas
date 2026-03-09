@@ -164,6 +164,79 @@ class TestValidator(unittest.TestCase):
         self.assertIn("verb_start_not_allowed", errors)
         self.assertFalse(report["ok"])
 
+    def test_validate_episode_rejects_place_without_location(self):
+        ann = validator.normalize_annotation(
+            {
+                "episode_id": "e6",
+                "video_duration_sec": 6.0,
+                "segments": [
+                    {
+                        "segment_index": 1,
+                        "start_sec": 0.0,
+                        "end_sec": 6.0,
+                        "duration_sec": 6.0,
+                        "label": "place cup",
+                        "granularity": "coarse",
+                        "primary_goal": "place cup",
+                        "primary_object": "cup",
+                        "confidence": 0.8,
+                    }
+                ],
+            }
+        )
+        report = validator.validate_episode(ann)
+        errors = report["segment_reports"][0]["errors"]
+        self.assertIn("place_missing_location", errors)
+        self.assertFalse(report["ok"])
+
+    def test_validate_episode_allows_reach_only_on_truncated_end(self):
+        allowed = validator.normalize_annotation(
+            {
+                "episode_id": "e7a",
+                "video_duration_sec": 10.0,
+                "segments": [
+                    {
+                        "segment_index": 1,
+                        "start_sec": 9.7,
+                        "end_sec": 10.0,
+                        "duration_sec": 0.3,
+                        "label": "reach for connector",
+                        "granularity": "coarse",
+                        "primary_goal": "reach connector",
+                        "primary_object": "connector",
+                        "confidence": 0.8,
+                    }
+                ],
+            }
+        )
+        allowed_report = validator.validate_episode(allowed)
+        allowed_errors = allowed_report["segment_reports"][0]["errors"]
+        self.assertNotIn("forbidden_verbs", allowed_errors)
+
+        disallowed = validator.normalize_annotation(
+            {
+                "episode_id": "e7b",
+                "video_duration_sec": 10.0,
+                "segments": [
+                    {
+                        "segment_index": 1,
+                        "start_sec": 2.0,
+                        "end_sec": 4.0,
+                        "duration_sec": 2.0,
+                        "label": "reach for connector",
+                        "granularity": "coarse",
+                        "primary_goal": "reach connector",
+                        "primary_object": "connector",
+                        "confidence": 0.8,
+                    }
+                ],
+            }
+        )
+        disallowed_report = validator.validate_episode(disallowed)
+        disallowed_errors = disallowed_report["segment_reports"][0]["errors"]
+        self.assertIn("forbidden_verbs", disallowed_errors)
+        self.assertFalse(disallowed_report["ok"])
+
 
 if __name__ == "__main__":
     unittest.main()

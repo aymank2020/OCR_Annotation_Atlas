@@ -18,7 +18,7 @@ providers:
   repair:
     # none | anthropic | openai | gemini
     type: "none"
-    model: "claude-opus-4-5"
+    model: "claude-3-5-sonnet-20241022"
     api_key: ""
 
   judge:
