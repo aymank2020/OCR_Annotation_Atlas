@@ -269,6 +269,9 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "gemini": {
         "api_key": "",
         "fallback_api_key": "",
+        "api_keys": [],
+        "rotation_api_keys": [],
+        "key_rotation_enabled": True,
         "prefer_fallback_key_as_primary": False,
         "quota_fallback_enabled": True,
         "quota_fallback_max_uses_per_run": 1000,
@@ -388,37 +391,54 @@ def _cfg_get(cfg: Dict[str, Any], path: str, default: Any = None) -> Any:
     return cur
 
 
-def _resolve_secret(explicit: str, env_names: List[str]) -> str:
-    def _sanitize_secret_value(raw: str) -> str:
-        val = str(raw or "").strip()
-        if not val:
-            return ""
-        if "=" in val:
-            left, right = val.split("=", 1)
-            left_norm = left.strip().upper()
-            if left_norm in {
-                "GEMINI_API_KEY",
-                "GOOGLE_API_KEY",
-                "GEMINI_API_KEY_FALLBACK",
-                "GOOGLE_API_KEY_FALLBACK",
-                "GEMINI_API_KEY_SECONDARY",
-                "GOOGLE_API_KEY_SECONDARY",
-            }:
-                val = right.strip()
-        val = val.strip().strip("'").strip('"').strip()
-        if "#" in val:
-            val = val.split("#", 1)[0].strip()
-        if val.lower().startswith("api_key "):
-            val = val.split(" ", 1)[1].strip()
-        if val.lower().startswith("apikey "):
-            val = val.split(" ", 1)[1].strip()
-        if any(ch.isspace() for ch in val):
-            val = val.split()[0].strip()
-        match = re.search(r"(AIza[0-9A-Za-z_-]{20,})", val)
-        if match:
-            return match.group(1).strip()
-        return val.strip()
+def _sanitize_secret_value(raw: str) -> str:
+    val = str(raw or "").strip()
+    if not val:
+        return ""
+    if "=" in val:
+        left, right = val.split("=", 1)
+        left_norm = left.strip().upper()
+        if left_norm in {
+            "GEMINI_API_KEY",
+            "GOOGLE_API_KEY",
+            "GEMINI_API_KEY_FALLBACK",
+            "GOOGLE_API_KEY_FALLBACK",
+            "GEMINI_API_KEY_SECONDARY",
+            "GOOGLE_API_KEY_SECONDARY",
+        }:
+            val = right.strip()
+    val = val.strip().strip("'").strip('"').strip()
+    if "#" in val:
+        val = val.split("#", 1)[0].strip()
+    if val.lower().startswith("api_key "):
+        val = val.split(" ", 1)[1].strip()
+    if val.lower().startswith("apikey "):
+        val = val.split(" ", 1)[1].strip()
+    if any(ch.isspace() for ch in val):
+        val = val.split()[0].strip()
+    match = re.search(r"(AIza[0-9A-Za-z_-]{20,})", val)
+    if match:
+        return match.group(1).strip()
+    return val.strip()
 
+
+def _parse_secret_values(raw: Any) -> List[str]:
+    values: List[str] = []
+    if isinstance(raw, list):
+        candidates = raw
+    else:
+        text = str(raw or "").strip()
+        if not text:
+            return values
+        candidates = re.split(r"[\n,;|]+", text)
+    for item in candidates:
+        value = _sanitize_secret_value(str(item or ""))
+        if value:
+            values.append(value)
+    return values
+
+
+def _resolve_secret(explicit: str, env_names: List[str]) -> str:
     if explicit and explicit.strip():
         return _sanitize_secret_value(explicit)
     for name in env_names:
@@ -5083,6 +5103,59 @@ def _is_gemini_quota_error_text(text: str) -> bool:
     return any(marker in body for marker in quota_markers)
 
 
+def _resolve_gemini_api_key_entries(cfg: Dict[str, Any]) -> List[Tuple[str, str]]:
+    entries: List[Tuple[str, str]] = []
+    seen: set[str] = set()
+
+    def _append(source: str, raw: Any) -> None:
+        for value in _parse_secret_values(raw):
+            if value in seen:
+                continue
+            seen.add(value)
+            entries.append((source, value))
+
+    primary = _resolve_gemini_key(str(_cfg_get(cfg, "gemini.api_key", "")))
+    fallback = _resolve_gemini_fallback_key(str(_cfg_get(cfg, "gemini.fallback_api_key", "")))
+    prefer_fallback_key_as_primary = bool(
+        _cfg_get(cfg, "gemini.prefer_fallback_key_as_primary", False)
+    )
+    if prefer_fallback_key_as_primary and fallback:
+        _append("fallback", fallback)
+        _append("primary", primary)
+    else:
+        _append("primary", primary)
+        _append("fallback", fallback)
+
+    _append("cfg_api_keys", _cfg_get(cfg, "gemini.api_keys", []))
+    _append("cfg_rotation_api_keys", _cfg_get(cfg, "gemini.rotation_api_keys", []))
+    _append("env:GEMINI_API_KEYS", os.environ.get("GEMINI_API_KEYS", ""))
+    _append("env:GOOGLE_API_KEYS", os.environ.get("GOOGLE_API_KEYS", ""))
+    _append("env:GEMINI_API_KEY_POOL", os.environ.get("GEMINI_API_KEY_POOL", ""))
+    _append("env:GOOGLE_API_KEY_POOL", os.environ.get("GOOGLE_API_KEY_POOL", ""))
+
+    for idx in range(1, 33):
+        _append(f"env:GEMINI_API_KEY_{idx}", os.environ.get(f"GEMINI_API_KEY_{idx}", ""))
+        _append(f"env:GOOGLE_API_KEY_{idx}", os.environ.get(f"GOOGLE_API_KEY_{idx}", ""))
+        _append(
+            f"env:GEMINI_API_KEY_ROTATION_{idx}",
+            os.environ.get(f"GEMINI_API_KEY_ROTATION_{idx}", ""),
+        )
+        _append(
+            f"env:GOOGLE_API_KEY_ROTATION_{idx}",
+            os.environ.get(f"GOOGLE_API_KEY_ROTATION_{idx}", ""),
+        )
+        _append(
+            f"env:GEMINI_API_KEY_PROJECT_{idx}",
+            os.environ.get(f"GEMINI_API_KEY_PROJECT_{idx}", ""),
+        )
+        _append(
+            f"env:GOOGLE_API_KEY_PROJECT_{idx}",
+            os.environ.get(f"GOOGLE_API_KEY_PROJECT_{idx}", ""),
+        )
+
+    return entries
+
+
 def _is_gemini_api_key_invalid_text(text: str) -> bool:
     body = (text or "").lower()
     markers = (
@@ -5173,35 +5246,30 @@ def call_gemini_labels(
     model_override: str = "",
 ) -> Dict[str, Any]:
     model = str(model_override or _cfg_get(cfg, "gemini.model", "gemini-3.1-pro-preview")).strip()
-    configured_primary_key = _resolve_gemini_key(str(_cfg_get(cfg, "gemini.api_key", "")))
-    configured_fallback_key = _resolve_gemini_fallback_key(str(_cfg_get(cfg, "gemini.fallback_api_key", "")))
-    prefer_fallback_key_as_primary = bool(
-        _cfg_get(cfg, "gemini.prefer_fallback_key_as_primary", False)
-    )
-    primary_api_key = configured_primary_key
-    fallback_api_key = configured_fallback_key
-    if prefer_fallback_key_as_primary and configured_fallback_key:
-        primary_api_key = configured_fallback_key
-        fallback_api_key = configured_primary_key
-        print("[gemini] configured fallback key as primary key source.")
-    elif not configured_primary_key and configured_fallback_key:
-        primary_api_key = configured_fallback_key
-        fallback_api_key = ""
-        print("[gemini] primary key missing; using fallback key as primary.")
-    if not primary_api_key:
+    key_entries = _resolve_gemini_api_key_entries(cfg)
+    if not key_entries:
         raise RuntimeError(
-            "Missing Gemini API key. Set GEMINI_API_KEY_FALLBACK (preferred) "
-            "or GEMINI_API_KEY/GOOGLE_API_KEY."
+            "Missing Gemini API keys. Set GEMINI_API_KEY and additional keys via "
+            "GEMINI_API_KEY_FALLBACK / GEMINI_API_KEY_2..N / GEMINI_API_KEYS."
         )
+    key_rotation_enabled = bool(_cfg_get(cfg, "gemini.key_rotation_enabled", True))
     quota_fallback_enabled = bool(_cfg_get(cfg, "gemini.quota_fallback_enabled", False))
     quota_fallback_max_uses_per_run = max(
         0,
         int(_cfg_get(cfg, "gemini.quota_fallback_max_uses_per_run", 1)),
     )
-    if fallback_api_key and fallback_api_key == primary_api_key:
-        fallback_api_key = ""
-    if not quota_fallback_enabled:
-        fallback_api_key = ""
+    if not (key_rotation_enabled and quota_fallback_enabled):
+        key_entries = key_entries[:1]
+    active_key_index = 0
+    active_key_name, active_api_key = key_entries[active_key_index]
+    can_rotate_keys = len(key_entries) > 1 and quota_fallback_max_uses_per_run > 0
+    if len(key_entries) > 1:
+        print(
+            "[gemini] key rotation pool active: "
+            f"{len(key_entries)} keys (rotation={'on' if can_rotate_keys else 'off'})."
+        )
+    elif active_key_name == "fallback":
+        print("[gemini] primary key missing; using fallback key as only key source.")
 
     system_instruction = _resolve_system_instruction(cfg)
     max_retries = max(0, int(_cfg_get(cfg, "gemini.max_retries", 3)))
@@ -5240,10 +5308,6 @@ def call_gemini_labels(
         )
     elif not attach_video:
         video_attach_block_reason = "disabled_by_config"
-
-    active_api_key = primary_api_key
-    active_key_name = "primary"
-    can_use_secondary = bool(fallback_api_key) and quota_fallback_max_uses_per_run > 0
 
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
     parts: List[Dict[str, Any]] = [{"text": prompt}]
@@ -5481,41 +5545,42 @@ def call_gemini_labels(
     used_video_in_success = False
     fallback_used = False
 
-    def _switch_to_secondary_key(reason: str) -> bool:
-        nonlocal active_api_key, active_key_name
+    def _switch_to_next_key(reason: str) -> bool:
+        nonlocal active_api_key, active_key_name, active_key_index
         nonlocal include_video, video_parts, video_transport_used, fallback_used
         nonlocal prepared_video_files, prepared_video_file
         nonlocal frame_parts, reference_frame_bytes, reference_frame_count_used
         global _GEMINI_FALLBACK_USES
-        if not quota_fallback_enabled or not can_use_secondary:
+        if not can_rotate_keys:
             return False
-        if active_key_name != "primary":
+        if active_key_index >= len(key_entries) - 1:
             return False
         if _GEMINI_FALLBACK_USES >= quota_fallback_max_uses_per_run:
             return False
-        active_api_key = fallback_api_key
-        active_key_name = "secondary"
+        active_key_index += 1
+        active_key_name, active_api_key = key_entries[active_key_index]
         _GEMINI_FALLBACK_USES += 1
         fallback_used = True
         print(
-            f"[gemini] primary key {reason}; switching to secondary key "
-            f"({ _GEMINI_FALLBACK_USES }/{quota_fallback_max_uses_per_run}) for this request."
+            "[gemini] key rotation: "
+            f"switching to key {active_key_index + 1}/{len(key_entries)} "
+            f"after {reason} (switches={_GEMINI_FALLBACK_USES}/{quota_fallback_max_uses_per_run}, source={active_key_name})."
         )
 
-        # Files API uploads are scoped to the key/project. Rebuild attachment for secondary key.
+        # Files API uploads are scoped to key/project; rebuild attachments with the new key.
         if include_video and video_transport_used.startswith("files_api"):
             rebuilt = []
             try:
                 rebuilt = _build_files_api_video_parts(active_api_key)
             except Exception as exc:
-                print(f"[gemini] secondary-key Files API re-upload failed: {exc}")
+                print(f"[gemini] rotated-key Files API re-upload failed: {exc}")
                 rebuilt = []
             if rebuilt:
                 video_parts = rebuilt
                 include_video = True
                 video_transport_used = "files_api-multi" if len(video_parts) > 1 else "files_api"
                 _rebuild_parts()
-                print("[gemini] rebuilt Files API video attachment with secondary key.")
+                print(f"[gemini] rebuilt Files API video attachment with key source '{active_key_name}'.")
             else:
                 inline_parts = _build_inline_video_parts(prepared_video_files)
                 if inline_parts:
@@ -5523,7 +5588,7 @@ def call_gemini_labels(
                     include_video = True
                     video_transport_used = "inline-multi" if len(video_parts) > 1 else "inline"
                     _rebuild_parts()
-                    print("[gemini] switched to inline video payload after secondary-key fallback.")
+                    print("[gemini] switched to inline video payload after key rotation.")
                 elif not require_video and allow_text_fallback:
                     include_video = False
                     video_parts = []
@@ -5531,7 +5596,7 @@ def call_gemini_labels(
                     reference_frame_bytes = 0
                     reference_frame_count_used = 0
                     _rebuild_parts()
-                    print("[gemini] secondary-key fallback continuing in text-only mode (video too large for inline).")
+                    print("[gemini] key rotation continuing in text-only mode (video too large for inline).")
         return True
 
     for attempt in range(max_retries + 1):
@@ -5611,7 +5676,7 @@ def call_gemini_labels(
         if _is_gemini_quota_exceeded_429(resp):
             quota_default_wait = max(1.0, float(_cfg_get(cfg, "gemini.quota_retry_default_wait_sec", 12.0)))
             quota_wait_sec = _extract_retry_seconds_from_response(resp, default_wait_sec=quota_default_wait)
-            if _switch_to_secondary_key("quota exhausted"):
+            if _switch_to_next_key("quota exhausted"):
                 continue
             cooldown_wait = _set_gemini_quota_cooldown(quota_wait_sec)
             retry_on_quota_429 = bool(_cfg_get(cfg, "gemini.retry_on_quota_429", False))
@@ -5626,9 +5691,9 @@ def call_gemini_labels(
             )
             break
         if _is_gemini_api_key_invalid_response(resp):
-            if _switch_to_secondary_key("API key was rejected"):
+            if _switch_to_next_key("API key was rejected"):
                 continue
-            print("[gemini] API key rejected and no secondary key is available.")
+            print("[gemini] API key rejected and no more keys are available in rotation pool.")
             break
         if (
             include_video
@@ -7791,6 +7856,16 @@ def _apply_global_gemini_video_policy(cfg: Dict[str, Any]) -> None:
     if not bool(gem.get("quota_fallback_enabled", True)):
         gem["quota_fallback_enabled"] = True
         print("[policy] gemini.quota_fallback_enabled forced ON.")
+
+    if not bool(gem.get("key_rotation_enabled", True)):
+        gem["key_rotation_enabled"] = True
+        print("[policy] gemini.key_rotation_enabled forced ON.")
+
+    if not isinstance(gem.get("api_keys"), list):
+        gem["api_keys"] = []
+
+    if not isinstance(gem.get("rotation_api_keys"), list):
+        gem["rotation_api_keys"] = []
 
     if bool(gem.get("prefer_fallback_key_as_primary", False)):
         gem["prefer_fallback_key_as_primary"] = False
