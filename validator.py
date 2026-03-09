@@ -43,6 +43,48 @@ OBJECT_EXPECTING_VERBS = {
     "flip",
 }
 
+ALLOWED_LABEL_START_VERB_TOKEN_PATTERNS: Tuple[Tuple[str, ...], ...] = (
+    ("pick", "up"),
+    ("place",),
+    ("move",),
+    ("adjust",),
+    ("align",),
+    ("hold",),
+    ("cut",),
+    ("open",),
+    ("close",),
+    ("peel",),
+    ("secure",),
+    ("wipe",),
+    ("flip",),
+    ("pull",),
+    ("push",),
+    ("insert",),
+    ("remove",),
+    ("attach",),
+    ("detach",),
+    ("connect",),
+    ("disconnect",),
+    ("tighten",),
+    ("loosen",),
+    ("screw",),
+    ("unscrew",),
+    ("press",),
+    ("twist",),
+    ("turn",),
+    ("slide",),
+    ("lift",),
+    ("lower",),
+    ("set",),
+    ("position",),
+    ("straighten",),
+    ("comb",),
+    ("detangle",),
+    ("sand",),
+    ("paint",),
+    ("clean",),
+)
+
 INTENT_PATTERNS = [
     r"\bprepare to\b",
     r"\btry to\b",
@@ -171,6 +213,31 @@ def is_imperative_like(label: str) -> bool:
 def has_intent_only_language(label: str) -> bool:
     l = lower(label)
     return any(re.search(p, l) for p in INTENT_PATTERNS)
+
+
+def starts_with_allowed_action_verb(action_phrase: str) -> bool:
+    """
+    Strict Policy Gate: Every segment MUST start with a physical action verb.
+    No exceptions for nouns or adjectives.
+    """
+    phrase = normalize_spaces(action_phrase).lower()
+    if not phrase or phrase == "no action":
+        return False
+
+    words = re.findall(r"[a-z]+", phrase)
+    if not words:
+        return False
+
+    for pattern in ALLOWED_LABEL_START_VERB_TOKEN_PATTERNS:
+        if not pattern:
+            continue
+        n = len(pattern)
+        if len(words) >= n and tuple(words[:n]) == pattern:
+            if any(w.endswith("ing") for w in words[:n]):
+                return False
+            return True
+
+    return False
 
 
 def split_actions(label: str) -> List[str]:
@@ -467,6 +534,8 @@ def validate_segment(seg: Dict[str, Any], video_duration_sec: float) -> Tuple[Di
             errors.append("min_two_words_failed")
         if not is_imperative_like(label):
             errors.append("imperative_voice_failed")
+        if label != NO_ACTION_LABEL and not starts_with_allowed_action_verb(label):
+            errors.append("starts_with_non_action_verb")
         if has_numerals(label):
             errors.append("numerals_present")
         if has_intent_only_language(label):
@@ -501,6 +570,9 @@ def validate_segment(seg: Dict[str, Any], video_duration_sec: float) -> Tuple[Di
             errors.append("no_action_mixed")
 
         if label != NO_ACTION_LABEL:
+            clause_starts_invalid = [phrase for phrase in split_actions(label) if not starts_with_allowed_action_verb(phrase)]
+            if clause_starts_invalid:
+                errors.append("action_clause_starts_with_non_action_verb")
             if count_atomic_actions(label) > MAX_ATOMIC_ACTIONS_PER_LABEL:
                 errors.append("too_many_atomic_actions")
             missing = [phrase for phrase in split_actions(label) if detect_possible_missing_object(phrase)]
@@ -528,6 +600,10 @@ def validate_segment(seg: Dict[str, Any], video_duration_sec: float) -> Tuple[Di
 
     derived_rule_checks = {
         "imperative_voice": "imperative_voice_failed" not in errors,
+        "starts_with_allowed_action_verb": (
+            "starts_with_non_action_verb" not in errors
+            and "action_clause_starts_with_non_action_verb" not in errors
+        ),
         "min_two_words": "min_two_words_failed" not in errors,
         "no_numerals": "numerals_present" not in errors,
         "no_forbidden_verbs": "forbidden_verbs" not in errors,
@@ -549,6 +625,10 @@ def validate_segment(seg: Dict[str, Any], video_duration_sec: float) -> Tuple[Di
 
     audit_reasons: List[str] = []
     if "forbidden_verbs" in errors:
+        audit_reasons.append("verb_choice_ambiguous")
+    if "starts_with_non_action_verb" in errors:
+        audit_reasons.append("verb_choice_ambiguous")
+    if "action_clause_starts_with_non_action_verb" in errors:
         audit_reasons.append("verb_choice_ambiguous")
     if "verbs_not_attached_to_objects" in errors:
         audit_reasons.append("verb_choice_ambiguous")
@@ -637,6 +717,10 @@ def validate_episode(annotation: Dict[str, Any]) -> Dict[str, Any]:
         errs = set(report["errors"])
         if "forbidden_verbs" in errs:
             major_fail_triggers.append("forbidden_verbs_used")
+        if "starts_with_non_action_verb" in errs:
+            major_fail_triggers.append("starts_with_non_action_verb")
+        if "action_clause_starts_with_non_action_verb" in errs:
+            major_fail_triggers.append("action_clause_starts_with_non_action_verb")
         if "verbs_not_attached_to_objects" in errs:
             major_fail_triggers.append("verbs_not_attached_to_objects")
         if "disallowed_tool_terms" in errs:

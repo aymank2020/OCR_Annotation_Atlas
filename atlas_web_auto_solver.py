@@ -153,6 +153,47 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "max_atomic_actions_per_label": 2,
         "forbidden_label_verbs": ["inspect", "check", "look", "examine", "reach", "rotate", "grab", "relocate"],
         "forbidden_narrative_words": ["another", "then", "next", "continue", "again"],
+        "allowed_label_start_verbs": [
+            "pick up",
+            "place",
+            "move",
+            "adjust",
+            "align",
+            "hold",
+            "cut",
+            "open",
+            "close",
+            "peel",
+            "secure",
+            "wipe",
+            "flip",
+            "pull",
+            "push",
+            "insert",
+            "remove",
+            "attach",
+            "detach",
+            "connect",
+            "disconnect",
+            "tighten",
+            "loosen",
+            "screw",
+            "unscrew",
+            "press",
+            "twist",
+            "turn",
+            "slide",
+            "lift",
+            "lower",
+            "set",
+            "position",
+            "straighten",
+            "comb",
+            "detangle",
+            "sand",
+            "paint",
+            "clean",
+        ],
         "tier3_label_rewrite": True,
         "enable_structural_actions": True,
         "structural_allow_split": False,
@@ -4411,6 +4452,7 @@ def _validate_segment_plan_against_policy(
     max_atomic_actions = max(1, int(_cfg_get(cfg, "run.max_atomic_actions_per_label", 2)))
     forbidden_verbs_raw = _cfg_get(cfg, "run.forbidden_label_verbs", [])
     forbidden_verbs = [str(v).strip().lower() for v in forbidden_verbs_raw if str(v).strip()]
+    allowed_verb_token_patterns = _allowed_label_start_verb_token_patterns_from_cfg(cfg)
     forbidden_narrative_raw = _cfg_get(cfg, "run.forbidden_narrative_words", [])
     forbidden_narrative_words = [str(v).strip().lower() for v in forbidden_narrative_raw if str(v).strip()]
     skip_unchanged_lexical = bool(
@@ -4476,6 +4518,15 @@ def _validate_segment_plan_against_policy(
                     errors.append(f"segment {idx}: label has fewer than {min_words} words")
                 if len(words) > max_words:
                     errors.append(f"segment {idx}: label has more than {max_words} words")
+                if not _label_starts_with_allowed_action_verb(label, allowed_verb_token_patterns):
+                    errors.append(f"segment {idx}: label must start with an allowed action verb")
+                clause_starts_invalid = False
+                for clause in _label_action_clauses(label):
+                    if not _label_starts_with_allowed_action_verb(clause, allowed_verb_token_patterns):
+                        clause_starts_invalid = True
+                        break
+                if clause_starts_invalid:
+                    errors.append(f"segment {idx}: each action clause must start with an allowed action verb")
                 for v in forbidden_verbs:
                     if re.search(rf"\b{re.escape(v)}\b", label_l):
                         errors.append(f"segment {idx}: forbidden verb '{v}' found")
@@ -5980,6 +6031,255 @@ def _label_content_tokens(label: str) -> set[str]:
     return {tok for tok in tokens if tok and tok not in _LABEL_OVERLAP_STOPWORDS}
 
 
+_AUTOFIX_ALLOWED_LABEL_START_VERB_TOKEN_PATTERNS: Tuple[Tuple[str, ...], ...] = (
+    ("pick", "up"),
+    ("place",),
+    ("move",),
+    ("adjust",),
+    ("align",),
+    ("hold",),
+    ("cut",),
+    ("open",),
+    ("close",),
+    ("peel",),
+    ("secure",),
+    ("wipe",),
+    ("flip",),
+    ("pull",),
+    ("push",),
+    ("insert",),
+    ("remove",),
+    ("attach",),
+    ("detach",),
+    ("connect",),
+    ("disconnect",),
+    ("tighten",),
+    ("loosen",),
+    ("screw",),
+    ("unscrew",),
+    ("press",),
+    ("twist",),
+    ("turn",),
+    ("slide",),
+    ("lift",),
+    ("lower",),
+    ("set",),
+    ("position",),
+    ("straighten",),
+    ("comb",),
+    ("detangle",),
+    ("sand",),
+    ("paint",),
+    ("clean",),
+)
+
+_AUTOFIX_OBJECT_EXPECTING_VERBS: set[str] = {
+    "pick up",
+    "place",
+    "move",
+    "adjust",
+    "align",
+    "hold",
+    "cut",
+    "open",
+    "close",
+    "peel",
+    "secure",
+    "wipe",
+    "flip",
+    "pull",
+    "push",
+    "insert",
+    "remove",
+    "attach",
+    "detach",
+    "connect",
+    "disconnect",
+    "tighten",
+    "loosen",
+    "screw",
+    "unscrew",
+}
+
+_AUTOFIX_VERB_HINT_MAP: Tuple[Tuple[str, str], ...] = (
+    ("wire", "connect"),
+    ("cable", "connect"),
+    ("plug", "connect"),
+    ("socket", "connect"),
+    ("cloth", "wipe"),
+    ("towel", "wipe"),
+    ("rag", "wipe"),
+    ("screw", "tighten"),
+    ("bolt", "tighten"),
+    ("nut", "tighten"),
+    ("lid", "close"),
+    ("door", "close"),
+    ("cap", "close"),
+    ("switch", "press"),
+    ("button", "press"),
+    ("paper", "place"),
+    ("box", "place"),
+)
+
+
+def _allowed_label_start_verb_token_patterns_from_cfg(cfg: Dict[str, Any]) -> List[Tuple[str, ...]]:
+    raw = _cfg_get(cfg, "run.allowed_label_start_verbs", [])
+    patterns: List[Tuple[str, ...]] = []
+    if isinstance(raw, list):
+        for item in raw:
+            tokens = tuple(re.findall(r"[a-z]+", str(item).lower()))
+            if tokens:
+                patterns.append(tokens)
+    if not patterns:
+        patterns = list(_AUTOFIX_ALLOWED_LABEL_START_VERB_TOKEN_PATTERNS)
+    deduped: List[Tuple[str, ...]] = []
+    seen: set[Tuple[str, ...]] = set()
+    for pattern in patterns:
+        if pattern in seen:
+            continue
+        seen.add(pattern)
+        deduped.append(pattern)
+    return deduped
+
+
+def _label_starts_with_allowed_action_verb(
+    action_phrase: str,
+    allowed_verb_token_patterns: List[Tuple[str, ...]],
+) -> bool:
+    phrase = re.sub(r"\s+", " ", (action_phrase or "").strip()).lower()
+    if not phrase or phrase == "no action":
+        return False
+    words = re.findall(r"[a-z]+", phrase)
+    if not words:
+        return False
+    for pattern in allowed_verb_token_patterns:
+        if not pattern:
+            continue
+        n = len(pattern)
+        if len(words) >= n and tuple(words[:n]) == pattern:
+            if any(word.endswith("ing") for word in words[:n]):
+                return False
+            return True
+    return False
+
+
+def _contains_forbidden_verb_in_label(label: str, forbidden_verbs: List[str]) -> bool:
+    text = (label or "").strip().lower()
+    if not text:
+        return False
+    for verb in forbidden_verbs:
+        if re.search(rf"\b{re.escape(verb)}\b", text):
+            return True
+    return False
+
+
+def _strip_forbidden_verbs_for_autofix(label: str, forbidden_verbs: List[str]) -> str:
+    out = label or ""
+    for verb in forbidden_verbs:
+        if not verb:
+            continue
+        out = re.sub(rf"\b{re.escape(verb)}\b", "", out, flags=re.IGNORECASE)
+    out = re.sub(r"\s+", " ", out).strip(" ,.;:")
+    return out
+
+
+def _action_phrase_missing_object_for_autofix(action_phrase: str) -> bool:
+    phrase = re.sub(r"\s+", " ", (action_phrase or "").strip()).lower()
+    if not phrase:
+        return True
+    for verb in sorted(_AUTOFIX_OBJECT_EXPECTING_VERBS, key=len, reverse=True):
+        if phrase == verb:
+            return True
+        if phrase.startswith(verb + " "):
+            remaining = phrase[len(verb):].strip()
+            if not remaining:
+                return True
+            if len(re.findall(r"[a-z]+", remaining)) == 0:
+                return True
+            return False
+    return False
+
+
+def _heuristic_autofix_verb_from_text(text: str) -> str:
+    lowered = re.sub(r"\s+", " ", (text or "").strip()).lower()
+    if lowered:
+        for needle, verb in _AUTOFIX_VERB_HINT_MAP:
+            if needle in lowered:
+                return verb
+    return "pick up"
+
+
+def _autofix_label_candidate(
+    cfg: Dict[str, Any],
+    label: str,
+    source_label: str,
+    forbidden_verbs: List[str],
+    allowed_verb_token_patterns: List[Tuple[str, ...]],
+) -> str:
+    min_words = max(1, int(_cfg_get(cfg, "run.min_label_words", 2)))
+    max_words = max(min_words, int(_cfg_get(cfg, "run.max_label_words", 20)))
+
+    def _normalize(x: str) -> str:
+        out = _normalize_label_min_safety(x)
+        out = _strip_forbidden_verbs_for_autofix(out, forbidden_verbs)
+        out = re.sub(r"\b(?:then|another|continue|next)\b", "", out, flags=re.IGNORECASE)
+        out = re.sub(r"\s+", " ", out).strip(" ,.;:")
+        return out
+
+    def _valid_candidate(x: str) -> bool:
+        if not x or x.lower() == "no action":
+            return False
+        if not _label_starts_with_allowed_action_verb(x, allowed_verb_token_patterns):
+            return False
+        if _contains_forbidden_verb_in_label(x, forbidden_verbs):
+            return False
+        first_clause = x.split(",")[0].split(" and ")[0].strip()
+        if _action_phrase_missing_object_for_autofix(first_clause):
+            return False
+        return True
+
+    for base in (label, source_label):
+        candidate = _normalize(base)
+        if _valid_candidate(candidate):
+            words = [w for w in candidate.split() if w]
+            if len(words) < min_words:
+                candidate = f"{candidate} item".strip()
+            words = [w for w in candidate.split() if w]
+            if len(words) > max_words:
+                if "," in candidate:
+                    candidate = candidate.split(",", 1)[0].strip()
+                else:
+                    candidate = " ".join(words[:max_words])
+            return candidate
+
+    base_text = _normalize(label or source_label or "")
+    base_tokens = re.findall(r"[a-z]+", base_text.lower())
+    object_tokens = list(base_tokens)
+    for pattern in allowed_verb_token_patterns:
+        n = len(pattern)
+        if n > 0 and len(base_tokens) >= n and tuple(base_tokens[:n]) == pattern:
+            object_tokens = base_tokens[n:]
+            break
+
+    object_tokens = [t for t in object_tokens if t not in {"and", "then"}]
+    object_phrase = " ".join(object_tokens).strip() or "item"
+    verb = _heuristic_autofix_verb_from_text(base_text)
+    candidate = _normalize(f"{verb} {object_phrase}")
+
+    if not _label_starts_with_allowed_action_verb(candidate, allowed_verb_token_patterns):
+        candidate = _normalize(f"pick up {object_phrase}")
+    if not candidate:
+        candidate = "pick up item"
+
+    words = [w for w in candidate.split() if w]
+    if len(words) < min_words:
+        candidate = f"{candidate} item".strip()
+    words = [w for w in candidate.split() if w]
+    if len(words) > max_words:
+        candidate = " ".join(words[:max_words])
+    return candidate
+
+
 _MICRO_ACTION_VERBS: set[str] = {"dip", "reload", "wet"}
 
 
@@ -6470,6 +6770,11 @@ def _normalize_segment_plan(
     if not isinstance(items, list):
         raise ValueError("Gemini payload must contain list at 'segments'")
 
+    effective_cfg = cfg or {}
+    forbidden_verbs_raw = _cfg_get(effective_cfg, "run.forbidden_label_verbs", [])
+    forbidden_verbs = [str(v).strip().lower() for v in forbidden_verbs_raw if str(v).strip()]
+    allowed_verb_token_patterns = _allowed_label_start_verb_token_patterns_from_cfg(effective_cfg)
+
     source_by_idx: Dict[int, Dict[str, Any]] = {int(seg["segment_index"]): seg for seg in source_segments}
     out: Dict[int, Dict[str, Any]] = {}
     for item in items:
@@ -6483,9 +6788,17 @@ def _normalize_segment_plan(
         source = source_by_idx.get(idx)
         if source is None:
             continue
-        label = str(item.get("label", "")).strip() or str(source.get("current_label", "")).strip()
-        if bool(_cfg_get(cfg or {}, "run.tier3_label_rewrite", True)):
+        source_label = str(source.get("current_label", "")).strip()
+        label = str(item.get("label", "")).strip() or source_label
+        if bool(_cfg_get(effective_cfg, "run.tier3_label_rewrite", True)):
             label = _rewrite_label_tier3(label)
+        label = _autofix_label_candidate(
+            effective_cfg,
+            label,
+            source_label,
+            forbidden_verbs,
+            allowed_verb_token_patterns,
+        )
         label = _normalize_label_min_safety(label)
         start_src = _safe_float(source.get("start_sec", 0.0), 0.0)
         end_src = _safe_float(source.get("end_sec", 0.0), 0.0)
@@ -6504,8 +6817,15 @@ def _normalize_segment_plan(
         if idx in out:
             continue
         source_label = str(source.get("current_label", "")).strip()
-        if bool(_cfg_get(cfg or {}, "run.tier3_label_rewrite", True)):
+        if bool(_cfg_get(effective_cfg, "run.tier3_label_rewrite", True)):
             source_label = _rewrite_label_tier3(source_label)
+        source_label = _autofix_label_candidate(
+            effective_cfg,
+            source_label,
+            source_label,
+            forbidden_verbs,
+            allowed_verb_token_patterns,
+        )
         source_label = _normalize_label_min_safety(source_label)
         out[idx] = {
             "segment_index": idx,
