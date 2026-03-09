@@ -59,7 +59,7 @@ Strict rules:
 Output requirements:
 - JSON only, no markdown
 - use the provided schema shape
-- include `step_by_step_reasoning` first: concise chronological analysis before final segments
+- include `step_by_step_reasoning` first: max 2 short sentences of chronological analysis before final segments
 - include start/end in seconds, label, granularity, confidence, rule checks, audit risk
 """
 
@@ -198,9 +198,10 @@ ANNOTATION_SCHEMA: Dict[str, Any] = {
         "step_by_step_reasoning": {
             "type": "string",
             "minLength": 1,
+            "maxLength": 320,
             "description": (
-                "Chronological reasoning summary: identify key hand-object interactions, "
-                "goal transitions, and why split/merge choices were made."
+                "Chronological reasoning summary in at most 2 short sentences: identify key "
+                "hand-object interactions, goal transitions, and why split/merge choices were made."
             ),
         },
         "episode_id": {"type": "string", "minLength": 1},

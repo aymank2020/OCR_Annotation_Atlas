@@ -36,7 +36,7 @@ run:
   resume_skip_video_steps_when_cached: true
   resume_skip_apply_steps_when_done: true
   auto_continuity_merge_enabled: true
-  segment_chunking_enabled: false
+  segment_chunking_enabled: true
   execute_require_video_context: true
   use_task_scoped_artifacts: true
   enable_quality_review_submit: true
@@ -134,6 +134,10 @@ gemini:
   max_inline_video_mb: 20.0
   video_download_timeout_sec: 180
   min_video_bytes: 500000
+  optimize_video_target_fps: 4.0
+  optimize_video_min_fps: 4.0
+  vision_preencode_fps: 4.0
+  split_upload_reencode_fps: 4.0
   extra_instructions: |
     Keep labels concise and imperative.
     Use "No Action" only when there is clearly no hand/object interaction.

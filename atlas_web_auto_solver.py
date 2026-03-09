@@ -1858,7 +1858,7 @@ def _split_video_for_upload(video_file: Path, cfg: Dict[str, Any]) -> List[Path]
     parent = video_file.parent
     use_reencode_on_copy_fail = bool(_cfg_get(cfg, "gemini.split_upload_reencode_on_copy_fail", True))
     reencode_max_width = max(640, int(_cfg_get(cfg, "gemini.split_upload_reencode_max_width", 1280)))
-    reencode_fps = max(6.0, float(_cfg_get(cfg, "gemini.split_upload_reencode_fps", 12.0)))
+    reencode_fps = max(4.0, float(_cfg_get(cfg, "gemini.split_upload_reencode_fps", 12.0)))
     max_part_tolerance_mb = max(chunk_max_mb + 0.5, chunk_max_mb * 1.35)
 
     while True:
@@ -2255,7 +2255,7 @@ def _maybe_preencode_video_for_vision(video_file: Path, cfg: Dict[str, Any]) -> 
         return video_file
 
     max_width = max(640, int(_cfg_get(cfg, "gemini.vision_preencode_max_width", 1280)))
-    target_fps = max(6.0, float(_cfg_get(cfg, "gemini.vision_preencode_fps", 12.0)))
+    target_fps = max(4.0, float(_cfg_get(cfg, "gemini.vision_preencode_fps", 12.0)))
     crf = int(_cfg_get(cfg, "gemini.vision_preencode_crf", 26))
     crf = max(18, min(35, crf))
     out_file = video_file.with_name(f"{video_file.stem}_vision_pre.mp4")
@@ -8551,7 +8551,7 @@ def _apply_global_gemini_video_policy(cfg: Dict[str, Any]) -> None:
         vision_preencode_fps = float(gem.get("vision_preencode_fps", 12.0))
     except Exception:
         vision_preencode_fps = 12.0
-    if vision_preencode_fps < 8.0 or vision_preencode_fps > 15.0:
+    if vision_preencode_fps < 4.0 or vision_preencode_fps > 15.0:
         gem["vision_preencode_fps"] = 12.0
         print("[policy] gemini.vision_preencode_fps forced to 12.0.")
 
@@ -8654,7 +8654,7 @@ def _apply_global_gemini_video_policy(cfg: Dict[str, Any]) -> None:
         min_fps = float(gem.get("optimize_video_min_fps", 8.0))
     except Exception:
         min_fps = 8.0
-    min_fps = max(8.0, min_fps)
+    min_fps = max(4.0, min_fps)
     gem["optimize_video_min_fps"] = min_fps
     gem["optimize_video_target_fps"] = max(min_fps, target_fps)
 
