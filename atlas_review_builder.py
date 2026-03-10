@@ -100,7 +100,7 @@ def _collect_episode_files(outputs_dir: Path) -> Dict[str, Dict[str, List[Path]]
         if len(file_map[eid]["related"]) < 200:
             file_map[eid]["related"].append(outputs_dir / rel)
 
-    # Look into training_feedback runs/episodes/<episode_id>/ for tier files.
+    # Look into training_feedback runs/episodes/<episode_id>/ for tier/state/detail files.
     runs_root = outputs_dir / "training_feedback" / "runs"
     if runs_root.exists():
         for ep_dir in runs_root.glob("*/episodes/*"):
@@ -108,15 +108,31 @@ def _collect_episode_files(outputs_dir: Path) -> Dict[str, Dict[str, List[Path]]
                 continue
             eid = _extract_episode_id(ep_dir.name)
             if not eid:
+                # Fallback: resolve 24-char episode id from files inside this episode folder.
+                for p in ep_dir.rglob("*"):
+                    if not p.is_file():
+                        continue
+                    eid = _extract_episode_id(p.name)
+                    if eid:
+                        break
+            if not eid:
                 continue
-            for p in ep_dir.glob("*.json"):
+            for p in ep_dir.rglob("*"):
+                if not p.is_file():
+                    continue
                 name_l = p.name.lower()
-                if "tier2" in name_l or "draft" in name_l:
+
+                if name_l.startswith("task_state_") and p.suffix.lower() == ".json":
+                    file_map[eid]["task_state_files"].append(p)
+                elif "tier2" in name_l and p.suffix.lower() == ".json":
                     file_map[eid]["tier2_json"].append(p)
-                elif "tier3" in name_l or "final" in name_l or "repaired" in name_l:
+                elif ("tier3" in name_l or "final" in name_l or "repaired" in name_l) and p.suffix.lower() == ".json":
                     file_map[eid]["tier3_json"].append(p)
-                elif "valid" in name_l:
+                elif "valid" in name_l and p.suffix.lower() == ".json":
                     file_map[eid]["validation"].append(p)
+                elif "detail" in name_l and p.suffix.lower() in {".txt", ".html"}:
+                    file_map[eid]["feedback_detail"].append(p)
+
                 if len(file_map[eid]["related"]) < 200:
                     file_map[eid]["related"].append(p)
 
@@ -145,6 +161,45 @@ def _load_disputes(outputs_dir: Path) -> Dict[str, List[Dict[str, Any]]]:
     return by_ep
 
 
+def _merge_state_dicts(items: List[Dict[str, Any]]) -> Dict[str, Any]:
+    merged: Dict[str, Any] = {}
+    if not items:
+        return merged
+
+    # Keep latest field values, but OR key boolean signals across all snapshots.
+    for d in items:
+        if isinstance(d, dict):
+            merged.update(d)
+
+    merged["episode_submitted"] = any(bool(d.get("episode_submitted") or d.get("submitted")) for d in items if isinstance(d, dict))
+    merged["submitted"] = merged["episode_submitted"]
+    merged["labels_applied"] = any(bool(d.get("labels_applied")) for d in items if isinstance(d, dict))
+    merged["has_error"] = any(bool(d.get("last_error") or d.get("has_error")) for d in items if isinstance(d, dict))
+
+    vals = [d.get("validation_ok") for d in items if isinstance(d, dict) and d.get("validation_ok") is not None]
+    if vals:
+        # Any successful validation snapshot counts as a pass signal.
+        merged["validation_ok"] = any(bool(v) for v in vals)
+
+    return merged
+
+
+def _load_task_states_from_file_map(file_map: Dict[str, Dict[str, List[Path]]]) -> Dict[str, Dict[str, Any]]:
+    states: Dict[str, Dict[str, Any]] = {}
+    for eid, buckets in file_map.items():
+        paths = buckets.get("task_state_files", [])
+        if not paths:
+            continue
+        payloads: List[Dict[str, Any]] = []
+        for p in sorted(paths):
+            obj = _load_json(p)
+            if isinstance(obj, dict):
+                payloads.append(obj)
+        if payloads:
+            states[eid] = _merge_state_dicts(payloads)
+    return states
+
+
 def _load_usage(outputs_dir: Path) -> Dict[str, List[Dict[str, Any]]]:
     by_ep: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
     usage_rows = _load_jsonl(outputs_dir / "gemini_usage.jsonl")
@@ -155,20 +210,25 @@ def _load_usage(outputs_dir: Path) -> Dict[str, List[Dict[str, Any]]]:
     return by_ep
 
 
-def _calc_status(state: Dict[str, Any], disputes_count: int, has_tier3: bool) -> str:
-    submitted = bool(state.get("episode_submitted") or state.get("submitted"))
+def _calc_status(
+    state: Dict[str, Any],
+    disputes_count: int,
+    has_tier3: bool,
+    has_feedback_evidence: bool,
+) -> str:
+    submitted = bool(state.get("episode_submitted") or state.get("submitted") or has_feedback_evidence)
     labels_applied = bool(state.get("labels_applied"))
     policy_ok = state.get("validation_ok")
     has_error = bool(state.get("last_error") or state.get("has_error"))
 
     if disputes_count > 0:
         return "disputed"
+    if submitted:
+        return "submitted"
     if policy_ok is False:
         return "policy_fail"
     if has_error:
         return "error"
-    if submitted:
-        return "submitted"
     if labels_applied or has_tier3:
         return "labeled_not_submitted"
     return "unknown"
@@ -178,12 +238,38 @@ def _total_cost(rows: List[Dict[str, Any]]) -> float:
     return round(sum(float(r.get("estimated_cost_usd", 0) or 0.0) for r in rows), 6)
 
 
+def _build_atlas_urls(eid: str, status: str) -> Dict[str, str]:
+    task_url = f"https://audit.atlascapture.io/tasks/room/normal/label/{eid}"
+    feedback_url = f"https://audit.atlascapture.io/feedback/{eid}"
+    disputes_url = f"https://audit.atlascapture.io/disputes/{eid}"
+
+    if status == "disputed":
+        open_url = disputes_url
+    elif status == "submitted":
+        open_url = feedback_url
+    else:
+        open_url = task_url
+
+    return {
+        "task_url": task_url,
+        "feedback_url": feedback_url,
+        "disputes_url": disputes_url,
+        "open_url": open_url,
+    }
+
+
 def build_index(outputs_dir: Path) -> Dict[str, Any]:
     outputs_dir = outputs_dir.resolve()
     print(f"[review-builder] outputs_dir={outputs_dir}")
 
     file_map = _collect_episode_files(outputs_dir)
     states = _load_task_states(outputs_dir)
+    states_from_runs = _load_task_states_from_file_map(file_map)
+    for eid, st in states_from_runs.items():
+        if eid in states:
+            states[eid] = _merge_state_dicts([states[eid], st])
+        else:
+            states[eid] = st
     disputes = _load_disputes(outputs_dir)
     usage = _load_usage(outputs_dir)
 
@@ -208,10 +294,21 @@ def build_index(outputs_dir: Path) -> Dict[str, Any]:
         tier3_json = _load_json(Path(_pick_first(files.get("tier3_json", [])))) if files.get("tier3_json") else None
         validation = _load_json(Path(validation_path)) if validation_path else None
 
-        status = _calc_status(state, len(ep_disputes), bool(tier3_text or tier3_json))
+        has_feedback_evidence = bool(files.get("feedback_detail"))
+        status = _calc_status(
+            state,
+            len(ep_disputes),
+            bool(tier3_text or tier3_json),
+            has_feedback_evidence=has_feedback_evidence,
+        )
+        urls = _build_atlas_urls(eid, status)
         episode_entry = {
             "episode_id": eid,
-            "atlas_url": f"https://audit.atlascapture.io/tasks/room/normal/label/{eid}",
+            "atlas_url": urls["open_url"],
+            "open_url": urls["open_url"],
+            "task_url": urls["task_url"],
+            "feedback_url": urls["feedback_url"],
+            "disputes_url": urls["disputes_url"],
             "review_status": status,
             "video_path": _pick_first(files.get("videos", [])),
             "tier2_text_path": tier2_text_path,

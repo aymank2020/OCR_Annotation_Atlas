@@ -174,6 +174,40 @@ def _build_html(data: Dict[str, Any], title: str) -> str:
       font-size: 13px;
       color: #c8d7ff;
     }}
+    .timeline {{
+      display: grid;
+      gap: 6px;
+      margin-bottom: 10px;
+      max-height: 220px;
+      overflow: auto;
+      padding-right: 4px;
+    }}
+    .segrow {{
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: #101a33;
+      padding: 6px;
+      display: grid;
+      gap: 4px;
+    }}
+    .segbtn {{
+      text-align: left;
+      border: 1px solid #35538a;
+      border-radius: 6px;
+      background: #132348;
+      color: #bcd6ff;
+      padding: 5px 8px;
+      font-family: Consolas, "Courier New", monospace;
+      font-size: 12px;
+      cursor: pointer;
+    }}
+    .segbtn:hover {{ background: #1a315f; }}
+    .seglabel {{
+      font-size: 12px;
+      color: #dce6ff;
+      line-height: 1.45;
+      word-break: break-word;
+    }}
     pre {{
       margin: 0;
       white-space: pre-wrap;
@@ -256,10 +290,12 @@ def _build_html(data: Dict[str, Any], title: str) -> str:
       <div class="section grid2">
         <div class="labelbox">
           <div class="tt">Tier2 (Before) | قبل التعديل</div>
+          <div id="tier2Timeline" class="timeline"></div>
           <pre id="tier2Box">-</pre>
         </div>
         <div class="labelbox">
           <div class="tt">Tier3 (After) | بعد التعديل</div>
+          <div id="tier3Timeline" class="timeline"></div>
           <pre id="tier3Box">-</pre>
         </div>
       </div>
@@ -305,8 +341,11 @@ def _build_html(data: Dict[str, Any], title: str) -> str:
     const videoNote = document.getElementById("videoNote");
     const tier2Box = document.getElementById("tier2Box");
     const tier3Box = document.getElementById("tier3Box");
+    const tier2Timeline = document.getElementById("tier2Timeline");
+    const tier3Timeline = document.getElementById("tier3Timeline");
     const validationBox = document.getElementById("validationBox");
     const disputesBox = document.getElementById("disputesBox");
+    let segStopAt = null;
 
     metaInfo.textContent = `generated: ${{DATA.generated_at_utc || "n/a"}}`;
     topStats.innerHTML = `
@@ -333,6 +372,29 @@ def _build_html(data: Dict[str, Any], title: str) -> str:
       return encodeURI(s);
     }}
 
+    function parseTimeToSec(v) {{
+      if (typeof v === "number") return v;
+      const s = String(v || "").trim();
+      if (!s) return null;
+      if (/^\\d+(\\.\\d+)?$/.test(s)) return Number(s);
+      const parts = s.split(":").map((x) => Number(x));
+      if (parts.some((x) => Number.isNaN(x))) return null;
+      if (parts.length === 2) {{
+        return parts[0] * 60 + parts[1];
+      }}
+      if (parts.length === 3) {{
+        return parts[0] * 3600 + parts[1] * 60 + parts[2];
+      }}
+      return null;
+    }}
+
+    function secToStamp(sec) {{
+      const s = Number(sec || 0);
+      const m = Math.floor(s / 60);
+      const rem = (s - m * 60).toFixed(1).padStart(4, "0");
+      return `${{m}}:${{rem}}`;
+    }}
+
     function toText(v) {{
       if (!v) return "(missing)";
       if (typeof v === "string") return v;
@@ -353,6 +415,111 @@ def _build_html(data: Dict[str, Any], title: str) -> str:
         return JSON.stringify(v, null, 2);
       }}
       return String(v);
+    }}
+
+    function parseSegments(v) {{
+      const out = [];
+      if (!v) return out;
+
+      if (Array.isArray(v)) {{
+        v.forEach((s) => {{
+          if (!s || typeof s !== "object") return;
+          const a = s.start_sec ?? s.start;
+          const b = s.end_sec ?? s.end;
+          const aSec = parseTimeToSec(a);
+          const bSec = parseTimeToSec(b);
+          if (aSec == null || bSec == null) return;
+          out.push({{
+            start_sec: aSec,
+            end_sec: bSec,
+            start_text: typeof a === "number" ? secToStamp(aSec) : String(a),
+            end_text: typeof b === "number" ? secToStamp(bSec) : String(b),
+            label: String(s.label || "").trim(),
+          }});
+        }});
+        return out;
+      }}
+
+      if (typeof v === "object" && Array.isArray(v.segments)) {{
+        return parseSegments(v.segments);
+      }}
+
+      const lines = String(v).split(/\\r?\\n/).map((x) => x.trim()).filter(Boolean);
+      lines.forEach((line) => {{
+        const tabParts = line.split(/\\t+/).map((x) => x.trim()).filter(Boolean);
+        if (tabParts.length >= 3) {{
+          // Typical atlas text dump:
+          // 1\t0.0\t3.3\tlabel
+          // or 0.0\t3.3\tlabel
+          const aRaw = tabParts.length >= 4 ? tabParts[1] : tabParts[0];
+          const bRaw = tabParts.length >= 4 ? tabParts[2] : tabParts[1];
+          const labelRaw = tabParts.length >= 4 ? tabParts.slice(3).join(" ") : tabParts.slice(2).join(" ");
+          const aSec = parseTimeToSec(aRaw);
+          const bSec = parseTimeToSec(bRaw);
+          if (aSec != null && bSec != null) {{
+            out.push({{
+              start_sec: aSec,
+              end_sec: bSec,
+              start_text: secToStamp(aSec),
+              end_text: secToStamp(bSec),
+              label: String(labelRaw || "").trim(),
+            }});
+            return;
+          }}
+        }}
+
+        const matches = line.match(/\\d+:\\d+(?:\\.\\d+)?/g);
+        if (!matches || matches.length < 2) return;
+        const startText = matches[0];
+        const endText = matches[1];
+        const startSec = parseTimeToSec(startText);
+        const endSec = parseTimeToSec(endText);
+        if (startSec == null || endSec == null) return;
+
+        const endIdx = line.indexOf(endText);
+        let label = endIdx >= 0 ? line.slice(endIdx + endText.length).trim() : "";
+        label = label.replace(/^[-–—>|#\\d\\.\\s]+/, "").trim();
+        out.push({{
+          start_sec: startSec,
+          end_sec: endSec,
+          start_text: startText,
+          end_text: endText,
+          label,
+        }});
+      }});
+      return out;
+    }}
+
+    function jumpToSegment(startSec, endSec) {{
+      if (!Number.isFinite(startSec)) return;
+      try {{
+        video.currentTime = Math.max(0, startSec);
+      }} catch (_) {{}}
+      if (Number.isFinite(endSec) && endSec > startSec) {{
+        segStopAt = endSec;
+      }} else {{
+        segStopAt = null;
+      }}
+      video.play().catch(() => {{}});
+    }}
+
+    function renderTimeline(container, segments) {{
+      container.innerHTML = "";
+      if (!segments.length) {{
+        container.innerHTML = `<div class="empty">No parsed timestamps | لا توجد أزمنة قابلة للنقر</div>`;
+        return;
+      }}
+      segments.forEach((s, i) => {{
+        const row = document.createElement("div");
+        row.className = "segrow";
+        row.innerHTML = `
+          <button class="segbtn" type="button">${{i + 1}}) ${{s.start_text}} → ${{s.end_text}}</button>
+          <div class="seglabel">${{(s.label || "(no label)").replace(/</g, "&lt;").replace(/>/g, "&gt;")}}</div>
+        `;
+        const btn = row.querySelector(".segbtn");
+        btn.addEventListener("click", () => jumpToSegment(s.start_sec, s.end_sec));
+        container.appendChild(row);
+      }});
     }}
 
     function renderList() {{
@@ -395,7 +562,10 @@ def _build_html(data: Dict[str, Any], title: str) -> str:
       const eid = ep.episode_id || "unknown";
       const status = ep.review_status || "unknown";
       const cost = Number(ep.total_cost_usd || 0).toFixed(6);
-      const atlasUrl = ep.atlas_url || "";
+      const atlasUrl = ep.atlas_url || ep.open_url || "";
+      const taskUrl = ep.task_url || "";
+      const feedbackUrl = ep.feedback_url || "";
+      const disputesUrl = ep.disputes_url || "";
       const hasVideo = Boolean(ep.video_path || ep.video_web_path);
       const src = normalizePath(ep.video_web_path || ep.video_path || "");
 
@@ -405,7 +575,10 @@ def _build_html(data: Dict[str, Any], title: str) -> str:
           <span><b>Status | الحالة:</b> ${{statusBadge(status)}}</span>
           <span><b>Cost | التكلفة:</b> $${{cost}}</span>
           <span><b>Disputes | النزاعات:</b> ${{ep.disputes_count || 0}}</span>
-          <span><a href="${{atlasUrl}}" target="_blank">Open Atlas | فتح أطلس</a></span>
+          <span><a href="${{atlasUrl}}" target="_blank">Open Current | فتح الحالي</a></span>
+          <span><a href="${{taskUrl}}" target="_blank">Task</a></span>
+          <span><a href="${{feedbackUrl}}" target="_blank">Feedback</a></span>
+          <span><a href="${{disputesUrl}}" target="_blank">Disputes</a></span>
         </div>
       `;
 
@@ -420,8 +593,12 @@ def _build_html(data: Dict[str, Any], title: str) -> str:
           : "No video found for this episode | لا يوجد فيديو لهذه الحلقة.";
       }}
 
-      tier2Box.textContent = toText(ep.tier2_text || ep.tier2);
-      tier3Box.textContent = toText(ep.tier3_text || ep.tier3);
+      const tier2Raw = ep.tier2_text || ep.tier2;
+      const tier3Raw = ep.tier3_text || ep.tier3;
+      tier2Box.textContent = toText(tier2Raw);
+      tier3Box.textContent = toText(tier3Raw);
+      renderTimeline(tier2Timeline, parseSegments(tier2Raw));
+      renderTimeline(tier3Timeline, parseSegments(tier3Raw));
       validationBox.textContent = ep.validation ? JSON.stringify(ep.validation, null, 2) : "(missing)";
       const disputes = Array.isArray(ep.disputes) ? ep.disputes.slice(0, 5) : [];
       disputesBox.textContent = disputes.length ? JSON.stringify(disputes, null, 2) : "(none)";
@@ -434,6 +611,13 @@ def _build_html(data: Dict[str, Any], title: str) -> str:
     }}
 
     initFilter();
+    video.addEventListener("timeupdate", () => {{
+      if (segStopAt == null) return;
+      if (video.currentTime >= segStopAt) {{
+        video.pause();
+        segStopAt = null;
+      }}
+    }});
     searchEl.addEventListener("input", renderList);
     statusEl.addEventListener("change", renderList);
     renderList();
