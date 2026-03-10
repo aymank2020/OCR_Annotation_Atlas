@@ -41,6 +41,7 @@ OBJECT_EXPECTING_VERBS = {
     "secure",
     "wipe",
     "flip",
+    "chisel",
 }
 
 ALLOWED_LABEL_START_VERBS = (
@@ -80,6 +81,7 @@ ALLOWED_LABEL_START_VERBS = (
     "detach",
     "apply",
     "cut",
+    "chisel",
     "drill",
     "measure",
     "fold",

@@ -171,6 +171,11 @@ class TestAtlasWebAutoSolver(unittest.TestCase):
         self.assertTrue(_label_starts_with_allowed_action_verb(candidate, patterns))
         self.assertFalse(candidate.lower().startswith("tighten take"))
 
+    def test_label_starts_with_allowed_action_verb_accepts_chisel(self) -> None:
+        cfg = {"run": {"allowed_label_start_verbs": ["pick up", "place", "chisel"]}}
+        patterns = _allowed_label_start_verb_token_patterns_from_cfg(cfg)
+        self.assertTrue(_label_starts_with_allowed_action_verb("chisel metal edge", patterns))
+
     def test_auto_continuity_merge_rejects_alternation_pattern(self) -> None:
         cfg = {
             "run": {

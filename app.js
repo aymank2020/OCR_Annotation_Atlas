@@ -41,6 +41,7 @@ function validateLabel(label) {
     'pick', 'place', 'move', 'adjust', 'hold', 'align', 'relocate', 'tighten', 'loosen', 'wipe', 'clean',
     'paint', 'dip', 'remove', 'insert', 'pull', 'push', 'turn', 'open', 'close', 'unscrew', 'screw',
     'lift', 'set', 'attach', 'detach', 'apply', 'cut', 'drill', 'measure', 'fold', 'press', 'slide',
+    'chisel',
     'stack', 'pack', 'unpack', 'straighten', 'comb', 'spread', 'shake', 'pour', 'spray', 'peel', 'wrap',
     'lock', 'unlock', 'grasp', 'position', 'fit', 'mount', 'unmount', 'clip', 'unclip', 'twist', 'untwist',
     'raise', 'lower', 'connect', 'disconnect', 'bend'
