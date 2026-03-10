@@ -148,9 +148,10 @@ What it does:
 
 1. Pulls metadata snapshot from Drive into `/tmp/atlas_drive_review/snapshot` (videos excluded by default).
 2. Builds `episodes_review_index.json`.
-3. Builds `atlas_review_viewer.html` (interactive page for manual QA).
-4. Exports chat packages (`chat_reviews/<episode_id>/...`).
-5. Uploads generated index/viewer/packages back to the same Drive folder when `--upload-results 1`.
+3. Builds `atlas_dashboard.html` (operations metrics from Drive snapshot).
+4. Builds `atlas_review_viewer.html` (interactive page for manual QA).
+5. Exports chat packages (`chat_reviews/<episode_id>/...`).
+6. Uploads generated dashboard/index/viewer/packages back to the same Drive folder when `--upload-results 1`.
 
 ## Production policy recommendations
 

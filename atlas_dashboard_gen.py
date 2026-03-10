@@ -24,6 +24,7 @@ import argparse
 import json
 import math
 import os
+import re
 import webbrowser
 from collections import defaultdict
 from datetime import datetime, timezone
@@ -60,11 +61,48 @@ def _load_json(path: Path, default: Any = None) -> Any:
         return default
 
 
+EPISODE_ID_PATTERN = re.compile(r"([0-9a-f]{24})", re.IGNORECASE)
+
+
+def _extract_episode_id(text: str) -> Optional[str]:
+    m = EPISODE_ID_PATTERN.search(text or "")
+    return m.group(1).lower() if m else None
+
+
+def _merge_state_dicts(items: List[Dict[str, Any]]) -> Dict[str, Any]:
+    merged: Dict[str, Any] = {}
+    if not items:
+        return merged
+    for d in items:
+        if isinstance(d, dict):
+            merged.update(d)
+
+    merged["episode_submitted"] = any(bool(d.get("episode_submitted") or d.get("submitted")) for d in items)
+    merged["submitted"] = merged["episode_submitted"]
+    merged["labels_applied"] = any(bool(d.get("labels_applied")) for d in items)
+    merged["labels_ready"] = any(bool(d.get("labels_ready")) for d in items)
+    merged["has_error"] = any(bool(d.get("last_error") or d.get("has_error")) for d in items)
+
+    vals = [d.get("validation_ok") for d in items if d.get("validation_ok") is not None]
+    if vals:
+        merged["validation_ok"] = any(bool(v) for v in vals)
+    return merged
+
+
 def load_usage(outputs_dir: Path) -> List[Dict[str, Any]]:
     return _load_jsonl(outputs_dir / "gemini_usage.jsonl")
 
 
+def load_review_index(outputs_dir: Path) -> Dict[str, Any]:
+    p = outputs_dir / "episodes_review_index.json"
+    data = _load_json(p, default={})
+    return data if isinstance(data, dict) else {}
+
+
 def load_task_states(outputs_dir: Path) -> List[Dict[str, Any]]:
+    by_episode: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+
+    # Source 1: legacy .task_state/task_state folders
     candidates = [
         outputs_dir / ".task_state",
         outputs_dir / "task_state",
@@ -81,15 +119,57 @@ def load_task_states(outputs_dir: Path) -> List[Dict[str, Any]]:
             if candidate.exists():
                 state_dir = candidate
                 break
-    states: List[Dict[str, Any]] = []
-    if state_dir is None or not state_dir.exists():
-        return states
-    for f in sorted(state_dir.glob("*.json")):
-        data = _load_json(f)
-        if isinstance(data, dict):
+    if state_dir is not None and state_dir.exists():
+        for f in sorted(state_dir.glob("*.json")):
+            data = _load_json(f)
+            if not isinstance(data, dict):
+                continue
+            eid = _extract_episode_id(f.stem) or str(f.stem).lower()
             data.setdefault("_file", f.stem)
-            states.append(data)
-    return states
+            data["_state_source"] = "legacy_task_state"
+            data["_episode_id"] = eid
+            by_episode[eid].append(data)
+
+    # Source 2: training_feedback runs snapshots (matched_outputs/task_state_*.json)
+    runs_root = outputs_dir / "training_feedback" / "runs"
+    if runs_root.exists():
+        for f in runs_root.rglob("task_state_*.json"):
+            data = _load_json(f)
+            if not isinstance(data, dict):
+                continue
+            eid = _extract_episode_id(f.name) or _extract_episode_id(str(data.get("video_path", "")))
+            if not eid:
+                continue
+            data["_file"] = str(f.name)
+            data["_state_source"] = "runs_task_state"
+            data["_episode_id"] = eid
+            by_episode[eid].append(data)
+
+    # Source 3: episodes_review_index.json (if it includes task_state)
+    idx = load_review_index(outputs_dir)
+    episodes = idx.get("episodes", []) if isinstance(idx, dict) else []
+    if isinstance(episodes, list):
+        for ep in episodes:
+            if not isinstance(ep, dict):
+                continue
+            eid = str(ep.get("episode_id", "")).strip().lower()
+            st = ep.get("task_state")
+            if not eid or not isinstance(st, dict):
+                continue
+            st = dict(st)
+            st["_state_source"] = "review_index"
+            st["_episode_id"] = eid
+            by_episode[eid].append(st)
+
+    # Merge all snapshots per episode
+    merged_states: List[Dict[str, Any]] = []
+    for eid in sorted(by_episode.keys()):
+        merged = _merge_state_dicts(by_episode[eid])
+        merged["_episode_id"] = eid
+        merged["_snapshots_count"] = len(by_episode[eid])
+        merged_states.append(merged)
+
+    return merged_states
 
 
 def _flatten_transition_rows(node: Any, out: List[Dict[str, Any]]) -> None:
@@ -132,6 +212,32 @@ def load_transitions(outputs_dir: Path) -> List[Dict[str, Any]]:
         if data is None:
             continue
         _flatten_transition_rows(data, rows)
+    if rows:
+        return rows
+
+    # Fallback 2: synthesize dispute rows from episodes_review_index.json
+    idx = load_review_index(outputs_dir)
+    episodes = idx.get("episodes", []) if isinstance(idx, dict) else []
+    generated_at = str(idx.get("generated_at_utc", "") or "")
+    if isinstance(episodes, list):
+        for ep in episodes:
+            if not isinstance(ep, dict):
+                continue
+            disputes_count = int(ep.get("disputes_count") or 0)
+            if disputes_count <= 0:
+                continue
+            eid = str(ep.get("episode_id") or "").strip()
+            if not eid:
+                continue
+            rows.append(
+                {
+                    "episode_id": eid,
+                    "status": "disputed",
+                    "dispute_bucket": "disputed",
+                    "ts_utc": generated_at,
+                    "_source": "review_index",
+                }
+            )
     return rows
 
 
@@ -200,10 +306,10 @@ def compute_episode_metrics(states: List[Dict[str, Any]]) -> Dict[str, Any]:
             "policy_pass_rate_pct": 0.0,
         }
     total = len(states)
-    submitted = sum(1 for s in states if s.get("episode_submitted"))
+    submitted = sum(1 for s in states if s.get("episode_submitted") or s.get("submitted"))
     applied = sum(1 for s in states if s.get("labels_applied"))
     ready = sum(1 for s in states if s.get("labels_ready"))
-    has_error = sum(1 for s in states if s.get("last_error"))
+    has_error = sum(1 for s in states if s.get("last_error") or s.get("has_error"))
     policy_ok = sum(1 for s in states if s.get("validation_ok") is True)
     policy_fail = sum(1 for s in states if s.get("validation_ok") is False)
     return {
@@ -217,6 +323,62 @@ def compute_episode_metrics(states: List[Dict[str, Any]]) -> Dict[str, Any]:
         "submit_rate_pct": round(submitted / total * 100, 1) if total else 0.0,
         "policy_pass_rate_pct": round(policy_ok / (policy_ok + policy_fail) * 100, 1)
             if (policy_ok + policy_fail) > 0 else 0.0,
+    }
+
+
+def compute_episode_metrics_from_review_index(episodes: List[Dict[str, Any]]) -> Dict[str, Any]:
+    if not episodes:
+        return compute_episode_metrics([])
+
+    total = len(episodes)
+    submitted = 0
+    applied = 0
+    ready = 0
+    has_error = 0
+    policy_ok = 0
+    policy_fail = 0
+
+    for ep in episodes:
+        if not isinstance(ep, dict):
+            continue
+        status = str(ep.get("review_status") or "").strip().lower()
+        if status in {"submitted", "disputed"}:
+            submitted += 1
+
+        st = ep.get("task_state")
+        if isinstance(st, dict):
+            if st.get("labels_applied"):
+                applied += 1
+            if st.get("labels_ready"):
+                ready += 1
+            if st.get("last_error") or st.get("has_error"):
+                has_error += 1
+            if st.get("validation_ok") is True:
+                policy_ok += 1
+            elif st.get("validation_ok") is False:
+                policy_fail += 1
+            continue
+
+        # Fallback to validation object when task_state is unavailable.
+        v = ep.get("validation")
+        if isinstance(v, dict):
+            if v.get("ok") is True:
+                policy_ok += 1
+            elif v.get("ok") is False:
+                policy_fail += 1
+
+    return {
+        "total": total,
+        "submitted": submitted,
+        "labels_applied": applied,
+        "labels_ready": ready,
+        "has_error": has_error,
+        "policy_passed": policy_ok,
+        "policy_failed": policy_fail,
+        "submit_rate_pct": round(submitted / total * 100, 1) if total else 0.0,
+        "policy_pass_rate_pct": round(policy_ok / (policy_ok + policy_fail) * 100, 1)
+        if (policy_ok + policy_fail) > 0
+        else 0.0,
     }
 
 
@@ -776,7 +938,10 @@ function asWidth(v) {
 // Data coverage notice
 const coverageMsgs = [];
 if (!DATA.coverage.has_task_state) {
-  coverageMsgs.push("Episode status source not found (.task_state/task_state) | مصدر حالة الحلقات غير موجود");
+  coverageMsgs.push("Episode status source not found (.task_state, runs/*/matched_outputs/task_state_*.json, or episodes_review_index.json) | مصدر حالة الحلقات غير موجود");
+}
+if (DATA.coverage.has_runs_task_state_files && DATA.episodes.total > 0) {
+  coverageMsgs.push("Episode status loaded from runs snapshots | تم تحميل حالة الحلقات من لقطات runs");
 }
 if (!DATA.coverage.has_live_transitions && DATA.coverage.has_runs_transition_files) {
   coverageMsgs.push("Using fallback source runs/*/t4_transitions.json | استخدام مصدر احتياطي من ملفات runs");
@@ -803,6 +968,7 @@ const sources = [
   { key: "task_state", label: "Episode State | حالة الحلقات" },
   { key: "transitions", label: "Transitions | التحولات" },
   { key: "lessons", label: "Lessons | الدروس" },
+  { key: "review_index", label: "Review Index | فهرس المراجعة" },
 ];
 cPanel.innerHTML = `
   <div class="completeness-title">Data Completeness | اكتمال البيانات (${asPercentOrNA(c.completeness_pct)})</div>
@@ -1059,6 +1225,7 @@ def generate_dashboard(outputs_dir: Path, open_browser: bool = False) -> Path:
     states = load_task_states(outputs_dir)
     transitions = load_transitions(outputs_dir)
     lessons = load_lessons(outputs_dir)
+    review_index = load_review_index(outputs_dir)
 
     task_state_candidates = [
         outputs_dir / ".task_state",
@@ -1066,29 +1233,37 @@ def generate_dashboard(outputs_dir: Path, open_browser: bool = False) -> Path:
         outputs_dir.parent / ".task_state",
         outputs_dir.parent / "task_state",
     ]
-    task_state_dir_exists = any(p.exists() for p in task_state_candidates)
+    task_state_dir_exists = any(p.exists() and p.is_dir() for p in task_state_candidates)
+    runs_root = outputs_dir / "training_feedback" / "runs"
+    has_runs_task_state_files = any(runs_root.rglob("task_state_*.json")) if runs_root.exists() else False
     live_transitions_path = outputs_dir / "training_feedback" / "live" / "t4_transitions_history.jsonl"
     has_live_transitions = bool(live_transitions_path.exists() and live_transitions_path.stat().st_size > 0)
-    has_runs_transition_files = any((outputs_dir / "training_feedback" / "runs").glob("*/t4_transitions.json"))
+    has_runs_transition_files = any(runs_root.glob("*/t4_transitions.json")) if runs_root.exists() else False
+    has_review_index = isinstance(review_index, dict) and isinstance(review_index.get("episodes"), list)
 
     source_rows = {
         "usage": len(usage),
         "task_state": len(states),
         "transitions": len(transitions),
         "lessons": len(lessons),
+        "review_index": len(review_index.get("episodes", [])) if has_review_index else 0,
     }
     source_available = {
         "usage": source_rows["usage"] > 0,
         "task_state": source_rows["task_state"] > 0,
         "transitions": source_rows["transitions"] > 0,
         "lessons": source_rows["lessons"] > 0,
+        "review_index": source_rows["review_index"] > 0,
     }
-    completeness_pct = round(sum(1 for v in source_available.values() if v) / 4 * 100, 1)
+    completeness_pct = round(sum(1 for v in source_available.values() if v) / len(source_available) * 100, 1)
 
     coverage = {
-        "has_task_state": task_state_dir_exists,
+        "has_task_state": source_rows["task_state"] > 0,
+        "task_state_dir_exists": task_state_dir_exists,
+        "has_runs_task_state_files": has_runs_task_state_files,
         "has_live_transitions": has_live_transitions,
         "has_runs_transition_files": has_runs_transition_files,
+        "has_review_index": has_review_index,
         "source_rows": source_rows,
         "source_available": source_available,
         "completeness_pct": completeness_pct,
@@ -1099,7 +1274,9 @@ def generate_dashboard(outputs_dir: Path, open_browser: bool = False) -> Path:
 
     data = {
         "cost": compute_cost_metrics(usage),
-        "episodes": compute_episode_metrics(states),
+        "episodes": compute_episode_metrics_from_review_index(review_index.get("episodes", []))
+        if has_review_index
+        else compute_episode_metrics(states),
         "disputes": compute_dispute_metrics(transitions),
         "lessons": compute_lesson_metrics(lessons),
         "coverage": coverage,
