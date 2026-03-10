@@ -106,6 +106,45 @@ Each folder in `chat_reviews/<episode_id>/` contains:
 - `atlas_url.txt`
 - episode video (when available)
 
+## Full Historical Re-Audit (Google Drive source)
+
+When server disk is limited and your historical artifacts live on Google Drive, run the Drive workflow script.
+
+Prerequisites:
+
+- `rclone` configured with a Drive remote (default remote name: `gdrive`)
+- Python 3 available on server
+
+Run by Drive folder link:
+
+```bash
+bash atlas_drive_review_workflow.sh \
+  --drive-link "https://drive.google.com/drive/folders/<FOLDER_ID>?usp=sharing" \
+  --upload-results 1
+```
+
+Run by remote path:
+
+```bash
+bash atlas_drive_review_workflow.sh \
+  --drive-path "OCR_annotation_Atlas/outputs_archive" \
+  --upload-results 1
+```
+
+Useful options:
+
+- `--include-video 1`: also copy videos locally (default `0`)
+- `--only-status disputed,policy_fail,error,labeled_not_submitted`
+- `--limit 200`
+- `--remote gdrive`
+
+What it does:
+
+1. Pulls metadata snapshot from Drive into `/tmp/atlas_drive_review/snapshot` (videos excluded by default).
+2. Builds `episodes_review_index.json`.
+3. Exports chat packages (`chat_reviews/<episode_id>/...`).
+4. Uploads generated index/packages back to the same Drive folder when `--upload-results 1`.
+
 ## Production policy recommendations
 
 For safer execution quality, keep these settings in production configs:
