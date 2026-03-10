@@ -231,6 +231,21 @@ def _build_html(data: Dict[str, Any], title: str) -> str:
       text-decoration: none;
     }}
     a:hover {{ text-decoration: underline; }}
+    .btn {{
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 10px;
+      border: 1px solid #35538a;
+      border-radius: 8px;
+      background: #132348;
+      color: #bcd6ff;
+      font-size: 12px;
+      cursor: pointer;
+    }}
+    .btn:hover {{
+      background: #1a315f;
+    }}
     .stats {{
       font-size: 12px;
       color: var(--muted);
@@ -417,6 +432,50 @@ def _build_html(data: Dict[str, Any], title: str) -> str:
       return String(v);
     }}
 
+    function buildChatPrompt(ep) {{
+      const tier2Raw = ep.tier2_text || ep.tier2;
+      const tier3Raw = ep.tier3_text || ep.tier3;
+      const validation = ep.validation || {{}};
+      const disputes = Array.isArray(ep.disputes) ? ep.disputes : [];
+
+      const validationSummary = {{
+        ok: validation.ok,
+        episode_errors: validation.episode_errors || [],
+        episode_warnings: validation.episode_warnings || [],
+        major_fail_triggers: validation.major_fail_triggers || [],
+        device_class_conflicts: validation.device_class_conflicts || [],
+      }};
+
+      return [
+        "I need a strict Atlas Tier-4 audit for this episode.",
+        "",
+        `Episode ID: ${{ep.episode_id || ""}}`,
+        `Atlas URL: ${{ep.atlas_url || ep.open_url || ""}}`,
+        `Current status: ${{ep.review_status || "unknown"}}`,
+        "",
+        "[Tier2 - before AI update]",
+        toText(tier2Raw),
+        "",
+        "[Tier3 - after AI update]",
+        toText(tier3Raw),
+        "",
+        "[Validator summary]",
+        JSON.stringify(validationSummary, null, 2),
+        "",
+        "[Disputes summary]",
+        `Count: ${{disputes.length}}`,
+        "Sample:",
+        JSON.stringify(disputes.slice(0, 3), null, 2),
+        "",
+        "Please evaluate:",
+        "1) Which is better: Tier2 or Tier3?",
+        "2) Is Tier3 submit-safe according to Atlas policy?",
+        "3) List exact segment-level issues with rule names.",
+        "4) Provide corrected labels for failing segments.",
+        "5) Final verdict: PASS / FAIL with confidence.",
+      ].join("\\n");
+    }}
+
     function parseSegments(v) {{
       const out = [];
       if (!v) return out;
@@ -566,6 +625,8 @@ def _build_html(data: Dict[str, Any], title: str) -> str:
       const taskUrl = ep.task_url || "";
       const feedbackUrl = ep.feedback_url || "";
       const disputesUrl = ep.disputes_url || "";
+      const chatPromptRel = `chat_reviews/${{eid}}/chat_prompt.txt`;
+      const chatMetaRel = `chat_reviews/${{eid}}/episode_meta.json`;
       const hasVideo = Boolean(ep.video_path || ep.video_web_path);
       const src = normalizePath(ep.video_web_path || ep.video_path || "");
 
@@ -579,8 +640,25 @@ def _build_html(data: Dict[str, Any], title: str) -> str:
           <span><a href="${{taskUrl}}" target="_blank">Task</a></span>
           <span><a href="${{feedbackUrl}}" target="_blank">Feedback</a></span>
           <span><a href="${{disputesUrl}}" target="_blank">Disputes</a></span>
+          <span><a href="${{chatPromptRel}}" target="_blank">Chat Prompt</a></span>
+          <span><a href="${{chatMetaRel}}" target="_blank">Episode Meta</a></span>
+          <span><button id="copyPromptBtn" class="btn" type="button">Copy Chat Prompt</button></span>
         </div>
       `;
+      const copyBtn = document.getElementById("copyPromptBtn");
+      if (copyBtn) {{
+        copyBtn.addEventListener("click", async () => {{
+          const prompt = buildChatPrompt(ep);
+          try {{
+            await navigator.clipboard.writeText(prompt);
+            copyBtn.textContent = "Copied";
+            setTimeout(() => (copyBtn.textContent = "Copy Chat Prompt"), 1300);
+          }} catch (_) {{
+            copyBtn.textContent = "Copy failed";
+            setTimeout(() => (copyBtn.textContent = "Copy Chat Prompt"), 1300);
+          }}
+        }});
+      }}
 
       videoNote.textContent = "";
       if (src) {{
