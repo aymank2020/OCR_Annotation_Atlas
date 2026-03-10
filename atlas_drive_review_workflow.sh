@@ -132,6 +132,9 @@ DASH_PATH="$EFFECTIVE_OUTPUTS/atlas_dashboard.html"
 
 python3 "$APP_DIR/atlas_review_builder.py" \
   --outputs-dir "$EFFECTIVE_OUTPUTS" \
+  --probe-atlas-status auto \
+  --atlas-state "$APP_DIR/.state/atlas_auth.json" \
+  --probe-timeout-sec 0.8 \
   --out "$INDEX_PATH"
 
 python3 "$APP_DIR/atlas_dashboard_gen.py" \

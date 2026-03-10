@@ -247,6 +247,239 @@ def load_lessons(outputs_dir: Path) -> List[Dict[str, Any]]:
     )
 
 
+NOTE_KEYWORDS = (
+    "policy",
+    "guideline",
+    "rule",
+    "must",
+    "should",
+    "forbidden",
+    "dispute",
+    "tier",
+    "trainer",
+    "team lead",
+    "teamleader",
+    "question",
+    "answer",
+    "timestamp",
+    "no action",
+    "place",
+    "location",
+    "numeral",
+    "validator",
+    "segment",
+    "merge",
+    "split",
+    "quality",
+)
+
+NOISE_PATTERNS = (
+    "good morning",
+    "good night",
+    "hi ",
+    "hello",
+    "thanks",
+    "thank you",
+    "ok",
+    "okay",
+    "lol",
+    "haha",
+)
+
+
+def _normalize_note_text(text: str) -> str:
+    text = (text or "").strip()
+    text = re.sub(r"\s+", " ", text)
+    return text
+
+
+def _is_high_signal_note(text: str) -> bool:
+    t = _normalize_note_text(text).lower()
+    if not t or len(t) < 8:
+        return False
+    if any(t == p or t.startswith(f"{p} ") for p in NOISE_PATTERNS):
+        return False
+    if any(k in t for k in NOTE_KEYWORDS):
+        return True
+    # Keep long, specific lines even without keywords.
+    return len(t.split()) >= 10
+
+
+def _ts_from_run_name(path: Path) -> str:
+    m = re.search(r"(20\d{6}_\d{6})", str(path))
+    return m.group(1) if m else ""
+
+
+def _dedupe_notes(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    by_key: Dict[tuple, Dict[str, Any]] = {}
+    for row in rows:
+        text = _normalize_note_text(str(row.get("text") or ""))
+        if not text:
+            continue
+        canonical = re.sub(r"[^a-z0-9\u0600-\u06ff]+", " ", text.lower())
+        canonical = re.sub(r"\s+", " ", canonical).strip()[:260]
+        key = (canonical, str(row.get("category") or "").lower())
+        row["text"] = text
+        prev = by_key.get(key)
+        if prev is None or str(row.get("ts") or "") > str(prev.get("ts") or ""):
+            by_key[key] = row
+    out = list(by_key.values())
+    out.sort(key=lambda x: str(x.get("ts") or ""), reverse=True)
+    return out
+
+
+def load_whatsapp_notes(outputs_dir: Path) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    runs_root = outputs_dir / "training_feedback" / "whatsapp" / "runs"
+    if not runs_root.exists():
+        return rows
+
+    key_map = {
+        "high_signal_rules": "rule",
+        "operator_checklist": "checklist",
+        "prompt_additions": "prompt_addition",
+        "escalation_flags": "escalation",
+        "media_observations": "media_observation",
+    }
+    for f in sorted(runs_root.glob("*/gemini_whatsapp_parsed.json"), reverse=True)[:40]:
+        obj = _load_json(f, default={})
+        if not isinstance(obj, dict):
+            continue
+        ts = str(obj.get("generated_at") or "") or _ts_from_run_name(f.parent)
+        for key, category in key_map.items():
+            vals = obj.get(key)
+            if not isinstance(vals, list):
+                continue
+            for item in vals:
+                text = str(item or "").strip()
+                if not _is_high_signal_note(text):
+                    continue
+                rows.append(
+                    {
+                        "source": "whatsapp",
+                        "category": category,
+                        "ts": ts,
+                        "run": f.parent.name,
+                        "text": text,
+                    }
+                )
+
+    # Fallback from raw dataset text messages.
+    for f in sorted(runs_root.glob("*/whatsapp_dataset.json"), reverse=True)[:20]:
+        obj = _load_json(f, default={})
+        if not isinstance(obj, dict):
+            continue
+        ts = str(obj.get("generated_at") or "") or _ts_from_run_name(f.parent)
+        groups = obj.get("groups")
+        if not isinstance(groups, list):
+            continue
+        for g in groups:
+            if not isinstance(g, dict):
+                continue
+            group_name = str(g.get("group_name") or "")
+            msgs = g.get("messages")
+            if not isinstance(msgs, list):
+                continue
+            for m in msgs:
+                if not isinstance(m, dict):
+                    continue
+                text = str(m.get("text") or "").strip()
+                if not _is_high_signal_note(text):
+                    continue
+                rows.append(
+                    {
+                        "source": "whatsapp",
+                        "category": f"group:{group_name or 'unknown'}",
+                        "ts": ts,
+                        "run": f.parent.name,
+                        "text": text,
+                    }
+                )
+    return _dedupe_notes(rows)[:250]
+
+
+def load_discord_notes(outputs_dir: Path) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    runs_root = outputs_dir / "training_feedback" / "discord" / "runs"
+    if runs_root.exists():
+        for f in sorted(runs_root.glob("*/discord_policy_updates.json"), reverse=True):
+            obj = _load_json(f, default=[])
+            if not isinstance(obj, list):
+                continue
+            ts = _ts_from_run_name(f.parent)
+            for item in obj:
+                if isinstance(item, dict):
+                    text = str(
+                        item.get("content")
+                        or item.get("text")
+                        or item.get("update")
+                        or item.get("rule")
+                        or ""
+                    )
+                else:
+                    text = str(item or "")
+                if not _is_high_signal_note(text):
+                    continue
+                rows.append(
+                    {
+                        "source": "discord",
+                        "category": "policy_update",
+                        "ts": ts,
+                        "run": f.parent.name,
+                        "text": text,
+                    }
+                )
+
+        for f in sorted(runs_root.glob("*/discord_new_messages.json"), reverse=True):
+            obj = _load_json(f, default=[])
+            if not isinstance(obj, list):
+                continue
+            ts = _ts_from_run_name(f.parent)
+            for item in obj:
+                if not isinstance(item, dict):
+                    continue
+                content = str(item.get("content") or "").strip()
+                if not _is_high_signal_note(content):
+                    continue
+                author = str(item.get("author") or "").strip()
+                channel = str(item.get("channel_name") or "").strip()
+                meta = []
+                if author:
+                    meta.append(author)
+                if channel:
+                    meta.append(channel)
+                text = f"[{' | '.join(meta)}] {content}" if meta else content
+                rows.append(
+                    {
+                        "source": "discord",
+                        "category": "new_message",
+                        "ts": ts,
+                        "run": f.parent.name,
+                        "text": text,
+                    }
+                )
+
+    # Fallback: parse exports text files.
+    exports_dir = outputs_dir / "discord_exports"
+    if exports_dir.exists():
+        for txt in sorted(exports_dir.glob("*.txt"), reverse=True):
+            ts = _ts_from_run_name(txt)
+            for raw in txt.read_text(encoding="utf-8", errors="replace").splitlines():
+                line = _normalize_note_text(raw)
+                if not _is_high_signal_note(line):
+                    continue
+                rows.append(
+                    {
+                        "source": "discord",
+                        "category": "export_line",
+                        "ts": ts,
+                        "run": txt.name,
+                        "text": line,
+                    }
+                )
+    return _dedupe_notes(rows)[:250]
+
+
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Metric computation
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -515,6 +748,24 @@ def compute_lesson_metrics(lessons: List[Dict[str, Any]]) -> Dict[str, Any]:
         )
     return {
         "total_lessons": len(lessons),
+        "recent": recent,
+    }
+
+
+def compute_note_metrics(notes: List[Dict[str, Any]], max_recent: int = 50) -> Dict[str, Any]:
+    recent = []
+    for row in notes[: max(1, int(max_recent))]:
+        recent.append(
+            {
+                "display_text": str(row.get("text") or ""),
+                "display_ts": str(row.get("ts") or ""),
+                "category": str(row.get("category") or ""),
+                "source": str(row.get("source") or ""),
+                "run": str(row.get("run") or ""),
+            }
+        )
+    return {
+        "total": len(notes),
         "recent": recent,
     }
 
@@ -788,6 +1039,33 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     margin-top: 6px;
   }
 
+  .notes-scroll {
+    max-height: 320px;
+    overflow: auto;
+    padding-right: 4px;
+  }
+
+  .note-card {
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-right: 3px solid var(--accent4);
+    border-radius: 6px;
+    padding: 10px 12px;
+    margin-bottom: 8px;
+    font-size: 0.75rem;
+    line-height: 1.5;
+  }
+
+  .note-meta {
+    margin-top: 6px;
+    font-family: var(--mono);
+    font-size: 0.64rem;
+    color: var(--text2);
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
   /* No data */
   .no-data {
     color: var(--text2);
@@ -916,6 +1194,22 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
   </div>
 
+  <!-- WhatsApp + Discord Notes -->
+  <div class="section-label">Team Notes | ملاحظات الفريق</div>
+  <div class="two-col">
+
+    <div class="panel">
+      <div class="panel-title">What'sup Notes | ملاحظات واتساب <span id="whatsapp-notes-count" class="pill"></span></div>
+      <div id="whatsapp-notes-panel" class="notes-scroll"></div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-title">Discord Notes | ملاحظات ديسكورد <span id="discord-notes-count" class="pill"></span></div>
+      <div id="discord-notes-panel" class="notes-scroll"></div>
+    </div>
+
+  </div>
+
 </main>
 
 <div class="footer">
@@ -968,6 +1262,8 @@ const sources = [
   { key: "task_state", label: "Episode State | حالة الحلقات" },
   { key: "transitions", label: "Transitions | التحولات" },
   { key: "lessons", label: "Lessons | الدروس" },
+  { key: "whatsapp_notes", label: "What'sup Notes | ملاحظات واتساب" },
+  { key: "discord_notes", label: "Discord Notes | ملاحظات ديسكورد" },
   { key: "review_index", label: "Review Index | فهرس المراجعة" },
 ];
 cPanel.innerHTML = `
@@ -1208,6 +1504,49 @@ if (DATA.lessons.recent.length > 0) {
 } else {
   lessPanel.innerHTML = '<div class="no-data">No lessons yet | لا توجد دروس بعد</div>';
 }
+
+function renderNotes(panelId, countId, payload, emptyText) {
+  const panel = document.getElementById(panelId);
+  const countEl = document.getElementById(countId);
+  const rows = (payload && Array.isArray(payload.recent)) ? payload.recent : [];
+  if (countEl) {
+    countEl.textContent = (payload && payload.total) ? payload.total : 0;
+  }
+  if (!panel) return;
+  if (rows.length === 0) {
+    panel.innerHTML = `<div class="no-data">${emptyText}</div>`;
+    return;
+  }
+  panel.innerHTML = rows.map(r => {
+    const text = (r.display_text || "").toString();
+    const ts = (r.display_ts || "").toString().substring(0, 19);
+    const category = (r.category || "").toString();
+    const run = (r.run || "").toString();
+    return `
+      <div class="note-card">
+        ${text.substring(0, 420)}${text.length > 420 ? "…" : ""}
+        <div class="note-meta">
+          ${ts ? `<span>${ts}</span>` : ""}
+          ${category ? `<span>${category}</span>` : ""}
+          ${run ? `<span>${run}</span>` : ""}
+        </div>
+      </div>
+    `;
+  }).join("");
+}
+
+renderNotes(
+  "whatsapp-notes-panel",
+  "whatsapp-notes-count",
+  DATA.whatsapp_notes,
+  "No WhatsApp notes yet | لا توجد ملاحظات واتساب بعد"
+);
+renderNotes(
+  "discord-notes-panel",
+  "discord-notes-count",
+  DATA.discord_notes,
+  "No Discord notes yet | لا توجد ملاحظات ديسكورد بعد"
+);
 </script>
 </body>
 </html>
@@ -1220,11 +1559,14 @@ if (DATA.lessons.recent.length > 0) {
 
 def generate_dashboard(outputs_dir: Path, open_browser: bool = False) -> Path:
     print(f"[dashboard] reading outputs from: {outputs_dir}")
+    outputs_dir.mkdir(parents=True, exist_ok=True)
 
     usage = load_usage(outputs_dir)
     states = load_task_states(outputs_dir)
     transitions = load_transitions(outputs_dir)
     lessons = load_lessons(outputs_dir)
+    whatsapp_notes = load_whatsapp_notes(outputs_dir)
+    discord_notes = load_discord_notes(outputs_dir)
     review_index = load_review_index(outputs_dir)
 
     task_state_candidates = [
@@ -1246,6 +1588,8 @@ def generate_dashboard(outputs_dir: Path, open_browser: bool = False) -> Path:
         "task_state": len(states),
         "transitions": len(transitions),
         "lessons": len(lessons),
+        "whatsapp_notes": len(whatsapp_notes),
+        "discord_notes": len(discord_notes),
         "review_index": len(review_index.get("episodes", [])) if has_review_index else 0,
     }
     source_available = {
@@ -1270,7 +1614,37 @@ def generate_dashboard(outputs_dir: Path, open_browser: bool = False) -> Path:
     }
 
     print(f"[dashboard] usage_rows={len(usage)} task_states={len(states)} "
-          f"transitions={len(transitions)} lessons={len(lessons)}")
+          f"transitions={len(transitions)} lessons={len(lessons)} "
+          f"whatsapp_notes={len(whatsapp_notes)} discord_notes={len(discord_notes)}")
+
+    generated_at_utc = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    # Persist digests for reuse in other pipelines (RAG/fine-tune prep).
+    (outputs_dir / "whatsapp_notes.json").write_text(
+        json.dumps(
+            {
+                "generated_at_utc": generated_at_utc,
+                "source": "atlas_dashboard_gen",
+                "total": len(whatsapp_notes),
+                "notes": whatsapp_notes,
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    (outputs_dir / "discord_notes.json").write_text(
+        json.dumps(
+            {
+                "generated_at_utc": generated_at_utc,
+                "source": "atlas_dashboard_gen",
+                "total": len(discord_notes),
+                "notes": discord_notes,
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
 
     data = {
         "cost": compute_cost_metrics(usage),
@@ -1279,6 +1653,8 @@ def generate_dashboard(outputs_dir: Path, open_browser: bool = False) -> Path:
         else compute_episode_metrics(states),
         "disputes": compute_dispute_metrics(transitions),
         "lessons": compute_lesson_metrics(lessons),
+        "whatsapp_notes": compute_note_metrics(whatsapp_notes),
+        "discord_notes": compute_note_metrics(discord_notes),
         "coverage": coverage,
     }
 

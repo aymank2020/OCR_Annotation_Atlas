@@ -8,15 +8,28 @@ to compare Tier2 vs Tier3 and inspect validation/disputes per episode.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 from collections import Counter, defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlparse
+from urllib.request import Request, urlopen
 
 
 EPISODE_ID_PATTERN = re.compile(r"([0-9a-f]{24})", re.IGNORECASE)
+NOT_FOUND_HINTS = (
+    "not found",
+    "404",
+    "does not exist",
+    "doesn't exist",
+    "cannot find",
+    "page you are looking",
+)
 
 
 def _load_json(path: Path) -> Any:
@@ -46,6 +59,164 @@ def _load_jsonl(path: Path) -> List[Dict[str, Any]]:
 def _extract_episode_id(text: str) -> Optional[str]:
     m = EPISODE_ID_PATTERN.search(text or "")
     return m.group(1).lower() if m else None
+
+
+def _extract_ts_from_path(path: Path) -> str:
+    m = re.search(r"(20\d{6}_\d{6})", str(path))
+    if not m:
+        return ""
+    return m.group(1)
+
+
+def _resolve_atlas_state_path(outputs_dir: Path, atlas_state_path: Optional[str]) -> Optional[Path]:
+    candidates: List[Path] = []
+    if atlas_state_path:
+        p = Path(atlas_state_path).expanduser()
+        candidates.append(p)
+    candidates.extend(
+        [
+            Path(".state/atlas_auth.json"),
+            outputs_dir.parent / ".state" / "atlas_auth.json",
+            Path(__file__).resolve().parent / ".state" / "atlas_auth.json",
+        ]
+    )
+    for c in candidates:
+        try:
+            p = c.resolve()
+        except Exception:
+            p = c
+        if p.exists() and p.is_file():
+            return p
+    return None
+
+
+def _load_cookie_header_from_storage_state(path: Optional[Path]) -> str:
+    if not path:
+        return ""
+    payload = _load_json(path)
+    if not isinstance(payload, dict):
+        return ""
+    cookies = payload.get("cookies")
+    if not isinstance(cookies, list):
+        return ""
+
+    parts: List[str] = []
+    now = datetime.now(timezone.utc).timestamp()
+    for c in cookies:
+        if not isinstance(c, dict):
+            continue
+        name = str(c.get("name") or "").strip()
+        value = str(c.get("value") or "")
+        if not name:
+            continue
+        expires = c.get("expires")
+        if isinstance(expires, (int, float)) and expires > 0 and expires < now:
+            continue
+        domain = str(c.get("domain") or "").lower()
+        if "atlascapture.io" not in domain:
+            continue
+        parts.append(f"{name}={value}")
+    return "; ".join(parts)
+
+
+def _probe_url(url: str, eid: str, cookie_header: str, timeout_sec: float) -> Dict[str, Any]:
+    headers = {
+        "User-Agent": "Mozilla/5.0 (AtlasReviewBuilder/1.0)",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    }
+    if cookie_header:
+        headers["Cookie"] = cookie_header
+
+    status: Optional[int] = None
+    final_url = url
+    body_bytes = b""
+    error = ""
+    try:
+        req = Request(url=url, headers=headers, method="GET")
+        with urlopen(req, timeout=max(1.0, float(timeout_sec))) as resp:
+            status = int(getattr(resp, "status", 200))
+            final_url = str(resp.geturl() or url)
+            body_bytes = resp.read(32768) or b""
+    except HTTPError as exc:
+        status = int(exc.code)
+        final_url = str(exc.geturl() or url)
+        try:
+            body_bytes = exc.read(8192) or b""
+        except Exception:
+            body_bytes = b""
+        error = f"http_{exc.code}"
+    except URLError as exc:
+        error = str(exc.reason)
+    except Exception as exc:
+        error = str(exc)
+
+    body_l = body_bytes.decode("utf-8", errors="replace").lower()
+    path_l = urlparse(final_url).path.lower()
+    login_redirect = ("/login" in path_l) or ("signin" in path_l)
+    has_not_found = any(token in body_l for token in NOT_FOUND_HINTS)
+    has_eid = eid in path_l or eid in body_l
+    body_hash = hashlib.sha1(body_bytes).hexdigest() if body_bytes else ""
+
+    requested_path = urlparse(url).path.lower()
+    path_match = bool(path_l and requested_path and (path_l == requested_path or requested_path in path_l))
+    positive = bool(status and status < 400 and path_match and not login_redirect and not has_not_found)
+
+    return {
+        "url": url,
+        "status": status,
+        "final_url": final_url,
+        "error": error,
+        "positive": positive,
+        "has_eid": has_eid,
+        "login_redirect": login_redirect,
+        "has_not_found": has_not_found,
+        "body_hash": body_hash,
+    }
+
+
+def _probe_episode_status_from_atlas(
+    eid: str,
+    cookie_header: str,
+    timeout_sec: float,
+) -> Dict[str, Any]:
+    urls = _build_atlas_urls(eid, status="unknown")
+    disputes_probe = _probe_url(urls["disputes_url"], eid=eid, cookie_header=cookie_header, timeout_sec=timeout_sec)
+    feedback_probe = _probe_url(urls["feedback_url"], eid=eid, cookie_header=cookie_header, timeout_sec=timeout_sec)
+
+    disputes_ok = bool(disputes_probe.get("positive"))
+    feedback_ok = bool(feedback_probe.get("positive"))
+
+    resolved: Optional[str] = None
+    reason = "no_positive_route"
+    inconclusive = False
+
+    if disputes_ok and not feedback_ok:
+        resolved = "disputed"
+        reason = "disputes_route_positive"
+    elif feedback_ok and not disputes_ok:
+        resolved = "submitted"
+        reason = "feedback_route_positive"
+    elif disputes_ok and feedback_ok:
+        # If both routes look positive and same page shell was served, treat as inconclusive.
+        if (
+            disputes_probe.get("body_hash")
+            and disputes_probe.get("body_hash") == feedback_probe.get("body_hash")
+            and not disputes_probe.get("has_eid")
+            and not feedback_probe.get("has_eid")
+        ):
+            inconclusive = True
+            reason = "both_positive_same_shell"
+        else:
+            # Prefer disputes if both are positive because it is more specific.
+            resolved = "disputed"
+            reason = "both_positive_prefer_disputes"
+
+    return {
+        "status": resolved,
+        "reason": reason,
+        "inconclusive": inconclusive,
+        "checked": [disputes_probe, feedback_probe],
+    }
 
 
 def _pick_first(paths: List[Path]) -> Optional[str]:
@@ -89,6 +260,8 @@ def _collect_episode_files(outputs_dir: Path) -> Dict[str, Dict[str, List[Path]]
             file_map[eid]["tier3_text"].append(path)
         if name_l.startswith("validation_") and path.suffix.lower() == ".json":
             file_map[eid]["validation"].append(path)
+        if name_l.startswith("task_state_") and path.suffix.lower() == ".json":
+            file_map[eid]["task_state_files"].append(path)
         if name_l.startswith("labels_") and path.suffix.lower() == ".json":
             file_map[eid]["labels"].append(path)
         if name_l.startswith("segments_") and path.suffix.lower() == ".json":
@@ -258,7 +431,12 @@ def _build_atlas_urls(eid: str, status: str) -> Dict[str, str]:
     }
 
 
-def build_index(outputs_dir: Path) -> Dict[str, Any]:
+def build_index(
+    outputs_dir: Path,
+    probe_atlas_status: str = "auto",
+    atlas_state_path: Optional[str] = None,
+    probe_timeout_sec: float = 2.5,
+) -> Dict[str, Any]:
     outputs_dir = outputs_dir.resolve()
     print(f"[review-builder] outputs_dir={outputs_dir}")
 
@@ -310,6 +488,7 @@ def build_index(outputs_dir: Path) -> Dict[str, Any]:
             "feedback_url": urls["feedback_url"],
             "disputes_url": urls["disputes_url"],
             "review_status": status,
+            "status_source": "local_evidence",
             "video_path": _pick_first(files.get("videos", [])),
             "tier2_text_path": tier2_text_path,
             "tier3_text_path": tier3_text_path,
@@ -328,6 +507,63 @@ def build_index(outputs_dir: Path) -> Dict[str, Any]:
         }
         episodes.append(episode_entry)
 
+    probe_mode = (probe_atlas_status or "auto").strip().lower()
+    atlas_state = _resolve_atlas_state_path(outputs_dir, atlas_state_path)
+    cookie_header = _load_cookie_header_from_storage_state(atlas_state)
+    should_probe = probe_mode in {"on", "auto"}
+    if should_probe and probe_mode == "auto" and not cookie_header:
+        should_probe = False
+
+    if should_probe:
+        probe_targets = [
+            ep
+            for ep in episodes
+            if str(ep.get("review_status") or "").lower() in {"unknown", "labeled_not_submitted", "policy_fail", "error"}
+        ]
+        print(
+            f"[review-builder] atlas probe: mode={probe_mode} targets={len(probe_targets)} "
+            f"state={'yes' if atlas_state else 'no'} cookies={'yes' if bool(cookie_header) else 'no'}"
+        )
+        if probe_targets:
+            max_workers = min(8, max(1, len(probe_targets)))
+            with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                future_to_ep = {}
+                for ep in probe_targets:
+                    eid = str(ep.get("episode_id") or "").lower().strip()
+                    if not eid:
+                        continue
+                    fut = pool.submit(
+                        _probe_episode_status_from_atlas,
+                        eid=eid,
+                        cookie_header=cookie_header,
+                        timeout_sec=probe_timeout_sec,
+                    )
+                    future_to_ep[fut] = ep
+
+                resolved_count = 0
+                for fut in as_completed(future_to_ep):
+                    ep = future_to_ep[fut]
+                    eid = str(ep.get("episode_id") or "").lower().strip()
+                    try:
+                        probe = fut.result()
+                    except Exception as exc:
+                        probe = {"status": None, "reason": f"probe_error:{exc}", "checked": []}
+                    ep["atlas_probe"] = probe
+                    resolved = str(probe.get("status") or "").strip().lower()
+                    if resolved in {"submitted", "disputed"}:
+                        resolved_count += 1
+                        ep["review_status"] = resolved
+                        ep["status_source"] = "atlas_url_probe"
+                        urls = _build_atlas_urls(eid, resolved)
+                        ep["atlas_url"] = urls["open_url"]
+                        ep["open_url"] = urls["open_url"]
+                        ep["task_url"] = urls["task_url"]
+                        ep["feedback_url"] = urls["feedback_url"]
+                        ep["disputes_url"] = urls["disputes_url"]
+            print(f"[review-builder] atlas probe resolved statuses: {resolved_count}/{len(probe_targets)}")
+    elif probe_mode == "on":
+        print("[review-builder] atlas probe requested but no valid auth cookies were found; skipping probe.")
+
     priority = {
         "disputed": 0,
         "policy_fail": 1,
@@ -343,6 +579,8 @@ def build_index(outputs_dir: Path) -> Dict[str, Any]:
         "generated_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "outputs_dir": str(outputs_dir),
         "total": len(episodes),
+        "probe_atlas_status": probe_mode,
+        "probe_state_file": str(atlas_state) if atlas_state else "",
         "status_counts": dict(counts),
         "episodes": episodes,
     }
@@ -357,9 +595,31 @@ def main() -> None:
         default="episodes_review_index.json",
         help="Output JSON file path (recommended: outputs/episodes_review_index.json)",
     )
+    parser.add_argument(
+        "--probe-atlas-status",
+        default="auto",
+        choices=["off", "auto", "on"],
+        help="Validate unresolved episode status via Atlas feedback/disputes URLs",
+    )
+    parser.add_argument(
+        "--atlas-state",
+        default="",
+        help="Path to Playwright storage state JSON (atlas_auth.json) used for URL probe cookies",
+    )
+    parser.add_argument(
+        "--probe-timeout-sec",
+        type=float,
+        default=2.5,
+        help="Timeout per URL probe request in seconds",
+    )
     args = parser.parse_args()
 
-    payload = build_index(Path(args.outputs_dir))
+    payload = build_index(
+        Path(args.outputs_dir),
+        probe_atlas_status=args.probe_atlas_status,
+        atlas_state_path=args.atlas_state or None,
+        probe_timeout_sec=float(args.probe_timeout_sec),
+    )
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
