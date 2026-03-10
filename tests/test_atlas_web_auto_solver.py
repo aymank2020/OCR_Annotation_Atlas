@@ -11,6 +11,7 @@ from atlas_web_auto_solver import (
     _normalize_operations,
     _normalize_upload_chunk_size,
     _rewrite_label_tier3,
+    _validate_segment_plan_against_policy,
     _update_chunk_consistency_memory,
 )
 
@@ -217,6 +218,51 @@ class TestAtlasWebAutoSolver(unittest.TestCase):
                 {"action": "merge", "segment_index": 2},
             ],
         )
+
+    def test_policy_guard_detects_object_identity_drift(self) -> None:
+        cfg = {
+            "run": {
+                "object_identity_guard_enabled": True,
+                "object_identity_guard_min_mentions": 2,
+                "object_identity_guard_min_ratio": 0.6,
+                "episode_end_guard_enabled": False,
+            }
+        }
+        source_segments = [
+            {"segment_index": 1, "start_sec": 0.0, "end_sec": 10.0, "current_label": "remove back panel from phone"},
+            {"segment_index": 2, "start_sec": 10.0, "end_sec": 20.0, "current_label": "unscrew phone component"},
+            {"segment_index": 3, "start_sec": 20.0, "end_sec": 30.0, "current_label": "adjust phone on mat"},
+        ]
+        segment_plan = {
+            1: {"start_sec": 0.0, "end_sec": 10.0, "label": "remove back panel from laptop"},
+            2: {"start_sec": 10.0, "end_sec": 20.0, "label": "unscrew laptop component"},
+            3: {"start_sec": 20.0, "end_sec": 30.0, "label": "adjust laptop on mat"},
+        }
+
+        report = _validate_segment_plan_against_policy(cfg, source_segments, segment_plan)
+        self.assertFalse(report["ok"])
+        self.assertTrue(any("object identity drift detected" in e for e in report["errors"]))
+
+    def test_policy_guard_detects_episode_end_drift(self) -> None:
+        cfg = {
+            "run": {
+                "object_identity_guard_enabled": False,
+                "episode_end_guard_enabled": True,
+                "max_episode_end_drift_sec": 2.0,
+            }
+        }
+        source_segments = [
+            {"segment_index": 1, "start_sec": 0.0, "end_sec": 30.0, "current_label": "unscrew component from laptop"},
+            {"segment_index": 2, "start_sec": 30.0, "end_sec": 60.0, "current_label": "adjust laptop on mat"},
+        ]
+        segment_plan = {
+            1: {"start_sec": 0.0, "end_sec": 25.0, "label": "unscrew component from laptop"},
+            2: {"start_sec": 25.0, "end_sec": 50.0, "label": "adjust laptop on mat"},
+        }
+
+        report = _validate_segment_plan_against_policy(cfg, source_segments, segment_plan)
+        self.assertFalse(report["ok"])
+        self.assertTrue(any("final end_sec drift exceeds limit" in e for e in report["errors"]))
 
 
 if __name__ == "__main__":

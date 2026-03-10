@@ -41,6 +41,11 @@ run:
   rag_few_shot_enabled: true
   rag_few_shot_top_k: 3
   rag_few_shot_min_score: 0.15
+  object_identity_guard_enabled: true
+  object_identity_guard_min_mentions: 2
+  object_identity_guard_min_ratio: 0.6
+  episode_end_guard_enabled: true
+  max_episode_end_drift_sec: 2.0
   execute_require_video_context: true
   use_task_scoped_artifacts: true
   enable_quality_review_submit: true

@@ -149,6 +149,11 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "skip_policy_lexical_checks_on_unchanged_labels": False,
         "ignore_timestamp_policy_errors_when_adjust_disabled": True,
         "ignore_no_action_standalone_policy_error": True,
+        "object_identity_guard_enabled": True,
+        "object_identity_guard_min_mentions": 2,
+        "object_identity_guard_min_ratio": 0.6,
+        "episode_end_guard_enabled": True,
+        "max_episode_end_drift_sec": 2.0,
         "no_action_pause_rewrite_enabled": True,
         "no_action_pause_rewrite_max_sec": 12.0,
         "no_action_pause_rewrite_min_overlap_tokens": 1,
@@ -4826,6 +4831,54 @@ def _normalize_gripper_terms(text: str) -> str:
     return re.sub(r"\s+", " ", out).strip()
 
 
+_DEVICE_FAMILY_ALIASES: Dict[str, Tuple[str, ...]] = {
+    "phone": ("phone", "smartphone", "mobile", "iphone", "android"),
+    "laptop": ("laptop", "notebook", "macbook", "ultrabook"),
+    "tablet": ("tablet", "ipad"),
+    "watch": ("watch", "smartwatch"),
+}
+
+
+def _extract_device_families_from_label(label: str) -> List[str]:
+    text = str(label or "").strip().lower()
+    if not text or text == "no action":
+        return []
+    found: List[str] = []
+    for family, aliases in _DEVICE_FAMILY_ALIASES.items():
+        for alias in aliases:
+            if re.search(rf"\b{re.escape(alias)}\b", text):
+                found.append(family)
+                break
+    return found
+
+
+def _dominant_device_family(
+    labels: List[str],
+    min_mentions: int,
+    min_ratio: float,
+) -> Optional[Tuple[str, int, int]]:
+    counts: Dict[str, int] = {}
+    total_non_empty = 0
+    for label in labels:
+        text = str(label or "").strip()
+        if not text or text.lower() == "no action":
+            continue
+        total_non_empty += 1
+        for family in _extract_device_families_from_label(text):
+            counts[family] = counts.get(family, 0) + 1
+
+    if total_non_empty <= 0 or not counts:
+        return None
+
+    family, count = sorted(counts.items(), key=lambda item: (-item[1], item[0]))[0]
+    ratio = float(count) / float(total_non_empty)
+    if count < max(1, int(min_mentions)):
+        return None
+    if ratio < max(0.0, float(min_ratio)):
+        return None
+    return family, count, total_non_empty
+
+
 def _validate_segment_plan_against_policy(
     cfg: Dict[str, Any],
     source_segments: List[Dict[str, Any]],
@@ -4848,6 +4901,15 @@ def _validate_segment_plan_against_policy(
     allowed_verb_token_patterns = _allowed_label_start_verb_token_patterns_from_cfg(cfg)
     forbidden_narrative_raw = _cfg_get(cfg, "run.forbidden_narrative_words", [])
     forbidden_narrative_words = [str(v).strip().lower() for v in forbidden_narrative_raw if str(v).strip()]
+    object_identity_guard_enabled = bool(_cfg_get(cfg, "run.object_identity_guard_enabled", True))
+    object_identity_guard_min_mentions = max(
+        1, int(_cfg_get(cfg, "run.object_identity_guard_min_mentions", 2))
+    )
+    object_identity_guard_min_ratio = max(
+        0.0, float(_cfg_get(cfg, "run.object_identity_guard_min_ratio", 0.6))
+    )
+    episode_end_guard_enabled = bool(_cfg_get(cfg, "run.episode_end_guard_enabled", True))
+    max_episode_end_drift_sec = max(0.0, float(_cfg_get(cfg, "run.max_episode_end_drift_sec", 2.0)))
     skip_unchanged_lexical = bool(
         _cfg_get(cfg, "run.skip_policy_lexical_checks_on_unchanged_labels", False)
     )
@@ -5005,6 +5067,50 @@ def _validate_segment_plan_against_policy(
             src_end = _safe_float(source.get("end_sec"), end)
             if abs(start - src_start) > 12 or abs(end - src_end) > 12:
                 warnings.append(f"segment {idx}: large timestamp drift from source")
+
+    if object_identity_guard_enabled:
+        source_labels = [str(seg.get("current_label", "")).strip() for seg in source_segments]
+        plan_labels = [
+            str((segment_plan.get(idx, {}) or {}).get("label", "")).strip() for idx in sorted(segment_plan)
+        ]
+        source_family = _dominant_device_family(
+            source_labels,
+            min_mentions=object_identity_guard_min_mentions,
+            min_ratio=object_identity_guard_min_ratio,
+        )
+        plan_family = _dominant_device_family(
+            plan_labels,
+            min_mentions=object_identity_guard_min_mentions,
+            min_ratio=object_identity_guard_min_ratio,
+        )
+        if source_family and plan_family and source_family[0] != plan_family[0]:
+            errors.append(
+                "episode: object identity drift detected "
+                f"(source={source_family[0]} {source_family[1]}/{source_family[2]} -> "
+                f"plan={plan_family[0]} {plan_family[1]}/{plan_family[2]})"
+            )
+
+    if episode_end_guard_enabled:
+        source_end_values = [
+            _safe_float(seg.get("end_sec"), -1.0)
+            for seg in source_segments
+            if _safe_float(seg.get("end_sec"), -1.0) >= 0
+        ]
+        plan_end_values = [
+            _safe_float((segment_plan.get(idx, {}) or {}).get("end_sec"), -1.0)
+            for idx in sorted(segment_plan)
+            if _safe_float((segment_plan.get(idx, {}) or {}).get("end_sec"), -1.0) >= 0
+        ]
+        if source_end_values and plan_end_values:
+            source_final_end = max(source_end_values)
+            plan_final_end = max(plan_end_values)
+            end_drift = abs(plan_final_end - source_final_end)
+            if end_drift > max_episode_end_drift_sec:
+                errors.append(
+                    "episode: final end_sec drift exceeds limit "
+                    f"({end_drift:.1f}s > {max_episode_end_drift_sec:.1f}s; "
+                    f"source={source_final_end:.1f}s plan={plan_final_end:.1f}s)"
+                )
 
     return {
         "ok": len(errors) == 0,
