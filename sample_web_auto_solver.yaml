@@ -48,6 +48,7 @@ run:
   segment_resolve_retry_ms: 800
   segment_resolve_sample_size: 8
   segment_resolve_row_text_timeout_ms: 350
+  policy_autofix_enabled: false
   output_dir: "outputs"
   segments_dump: "atlas_segments_dump.json"
   labels_dump: "atlas_labels_from_gemini.json"
@@ -139,6 +140,10 @@ gemini:
   optimize_video_min_fps: 4.0
   vision_preencode_fps: 4.0
   split_upload_reencode_fps: 4.0
+  retry_with_stronger_model_on_policy_fail: true
+  policy_retry_model: "gemini-3-pro-preview"
+  policy_retry_only_if_flash: true
+  policy_retry_accept_equal_error_count: false
   extra_instructions: |
     Keep labels concise and imperative.
     Use "No Action" only when there is clearly no hand/object interaction.

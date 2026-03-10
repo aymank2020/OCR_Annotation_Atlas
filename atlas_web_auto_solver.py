@@ -359,7 +359,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "quota_fallback_from_models": ["gemini-3.1-pro-preview"],
         "policy_retry_model": "gemini-3-pro-preview",
         "retry_with_stronger_model_on_policy_fail": True,
-        "policy_retry_only_if_flash": False,
+        "policy_retry_only_if_flash": True,
         "policy_retry_accept_equal_error_count": False,
         "system_instruction_file": "",
         "system_instruction_text": "",
@@ -6454,7 +6454,7 @@ def _request_labels_with_optional_segment_chunking(
     out_dir.mkdir(parents=True, exist_ok=True)
     temp_chunk_files: List[Path] = []
     collected_labels: Dict[int, str] = {}
-    prior_labels: List[str] = []
+    prior_labels: List[Dict[str, Any]] = []
     consistency_terms: List[str] = []
     consistency_alias_to_canonical: Dict[str, str] = {}
     meta_key_sources: List[str] = []
@@ -6526,10 +6526,15 @@ def _request_labels_with_optional_segment_chunking(
                         "instead of moving the action to another row."
                     )
             if include_previous_labels_context and max_previous_labels > 0 and prior_labels:
-                context_labels = prior_labels[-max_previous_labels:]
+                context_entries = prior_labels[-max_previous_labels:]
+                context_lines = " | ".join(
+                    f"[{e['start_sec']:.1f}-{e['end_sec']:.1f}s] {e['label']}"
+                    for e in context_entries
+                )
                 chunk_extra_parts.append(
-                    "Consistency context from previous chunks (keep object naming stable): "
-                    + " | ".join(context_labels)
+                    "EPISODE CONTEXT - already-labeled segments before this chunk "
+                    "(use for object naming consistency and goal continuity; do NOT relabel these):\n"
+                    + context_lines
                 )
             if consistency_memory_enabled and consistency_prompt_terms > 0 and consistency_terms:
                 chunk_hint = _build_chunk_consistency_prompt_hint(
@@ -6566,7 +6571,13 @@ def _request_labels_with_optional_segment_chunking(
                             memory_limit=consistency_memory_limit,
                         )
                     collected_labels[idx] = label
-                    prior_labels.append(label)
+                    prior_labels.append(
+                        {
+                            "start_sec": _safe_float(item.get("start_sec") or seg.get("start_sec"), 0.0),
+                            "end_sec": _safe_float(item.get("end_sec") or seg.get("end_sec"), 0.0),
+                            "label": label,
+                        }
+                    )
                     if len(prior_labels) > 128:
                         prior_labels = prior_labels[-128:]
 
@@ -8597,10 +8608,8 @@ def _apply_global_gemini_video_policy(cfg: Dict[str, Any]) -> None:
         gem["quota_fallback_model"] = quota_fallback_model
         print(f"[policy] gemini.quota_fallback_model forced to {quota_fallback_model}.")
 
-    configured_policy_retry_model = str(gem.get("policy_retry_model", "") or "").strip()
-    if configured_policy_retry_model != quota_fallback_model:
-        gem["policy_retry_model"] = quota_fallback_model
-        print(f"[policy] gemini.policy_retry_model forced to {quota_fallback_model}.")
+    # policy_retry_model is intentionally not forced:
+    # operators can set a custom stronger model in YAML.
 
     configured_quota_sources = gem.get("quota_fallback_from_models")
     if not isinstance(configured_quota_sources, list) or [str(x).strip().lower() for x in configured_quota_sources] != [preferred_model]:
@@ -8618,9 +8627,8 @@ def _apply_global_gemini_video_policy(cfg: Dict[str, Any]) -> None:
         gem["retry_with_stronger_model_on_policy_fail"] = True
         print("[policy] gemini.retry_with_stronger_model_on_policy_fail forced ON.")
 
-    if bool(gem.get("policy_retry_only_if_flash", False)):
-        gem["policy_retry_only_if_flash"] = False
-        print("[policy] gemini.policy_retry_only_if_flash forced OFF.")
+    # policy_retry_only_if_flash is intentionally not forced:
+    # operators can keep retry restricted to Flash->Pro when desired.
 
     if bool(gem.get("policy_retry_accept_equal_error_count", False)):
         gem["policy_retry_accept_equal_error_count"] = False
@@ -8796,9 +8804,8 @@ def _apply_global_run_policy(cfg: Dict[str, Any]) -> None:
     if not bool(run.get("require_action_verb_start", True)):
         run["require_action_verb_start"] = True
         print("[policy] run.require_action_verb_start forced ON.")
-    if not bool(run.get("policy_autofix_enabled", True)):
-        run["policy_autofix_enabled"] = True
-        print("[policy] run.policy_autofix_enabled forced ON.")
+    # policy_autofix_enabled is intentionally not forced:
+    # operators can disable Python autofix from YAML and rely on LLM retry.
     allowed_verbs_raw = run.get("allowed_label_start_verbs", list(_DEFAULT_ALLOWED_LABEL_START_VERBS))
     allowed_verbs = _normalize_allowed_label_start_verbs(allowed_verbs_raw)
     if not isinstance(allowed_verbs_raw, list) or not allowed_verbs_raw:
