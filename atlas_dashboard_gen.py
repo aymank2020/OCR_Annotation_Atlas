@@ -245,7 +245,7 @@ def compute_lesson_metrics(lessons: List[Dict[str, Any]]) -> Dict[str, Any]:
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 HTML_TEMPLATE = """<!DOCTYPE html>
-<html lang="ar" dir="rtl">
+<html lang="en" dir="ltr">
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
@@ -440,7 +440,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   .data-table { width: 100%; border-collapse: collapse; font-size: 0.78rem; }
 
   .data-table th {
-    text-align: right;
+    text-align: left;
     padding: 8px 10px;
     color: var(--text2);
     font-family: var(--mono);
@@ -548,28 +548,28 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
 <div class="topbar">
   <div>
-    <div class="topbar-title">â–¸ Atlas Pipeline Dashboard</div>
-    <div class="topbar-subtitle">OCR_Annotation_Atlas Â· aymank2020</div>
+    <div class="topbar-title">Atlas Pipeline Dashboard | لوحة متابعة أطلس</div>
+    <div class="topbar-subtitle">OCR_Annotation_Atlas · aymank2020</div>
   </div>
-  <div class="badge">Generated: __GENERATED_AT__</div>
+  <div class="badge">Generated | وقت الإنشاء: __GENERATED_AT__</div>
 </div>
 
 <main>
   <div id="coverage-note"></div>
 
   <!-- KPIs -->
-  <div class="section-label">Ù…Ù‚Ø§ÙŠÙŠØ³ Ø§Ù„ØªØ´ØºÙŠÙ„ â€” Key Metrics</div>
+  <div class="section-label">Key Metrics | مؤشرات الأداء</div>
   <div class="kpi-grid" id="kpi-grid"></div>
 
   <!-- Cost chart + Model breakdown -->
-  <div class="section-label">Ø§Ù„ØªÙƒÙ„ÙØ© ÙˆØ§Ù„Ù…ÙˆØ§Ø±Ø¯ â€” Cost & Resources</div>
+  <div class="section-label">Cost & Resources | التكلفة والموارد</div>
   <div class="charts-row">
     <div class="chart-card">
-      <div class="chart-title">Ø§Ù„ØªÙƒÙ„ÙØ© Ø§Ù„ÙŠÙˆÙ…ÙŠØ© (USD)</div>
+      <div class="chart-title">Daily Cost (USD) | التكلفة اليومية</div>
       <div class="chart-wrap"><canvas id="costChart"></canvas></div>
     </div>
     <div class="chart-card">
-      <div class="chart-title">ØªÙˆØ²ÙŠØ¹ Ø§Ù„Ù†Ù…Ø§Ø°Ø¬</div>
+      <div class="chart-title">Model Distribution | توزيع النماذج</div>
       <div class="chart-wrap"><canvas id="modelChart"></canvas></div>
     </div>
   </div>
@@ -579,28 +579,28 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   <div class="two-col">
 
     <div class="panel">
-      <div class="panel-title">Ø­Ø§Ù„Ø© Ø§Ù„Ù€ Episodes</div>
+      <div class="panel-title">Episode Status | حالة الحلقات</div>
       <div id="episode-panel"></div>
     </div>
 
     <div class="panel">
-      <div class="panel-title">Model Usage by Request</div>
+      <div class="panel-title">Model Usage by Request | استخدام النماذج حسب الطلب</div>
       <div id="model-table-panel"></div>
     </div>
 
   </div>
 
   <!-- Disputes + Lessons -->
-  <div class="section-label">Ø§Ù„ØªØ¹Ù„Ù… Ø§Ù„Ù…Ø³ØªÙ…Ø± â€” Continuous Learning</div>
+  <div class="section-label">Continuous Learning | التعلم المستمر</div>
   <div class="two-col">
 
     <div class="panel">
-      <div class="panel-title">Disputes / T4 Transitions <span id="dispute-count" class="pill"></span></div>
+      <div class="panel-title">Disputes / T4 Transitions | النزاعات <span id="dispute-count" class="pill"></span></div>
       <div id="dispute-panel"></div>
     </div>
 
     <div class="panel">
-      <div class="panel-title">Ø¢Ø®Ø± Ø§Ù„Ù€ Lessons</div>
+      <div class="panel-title">Latest Lessons | آخر الدروس</div>
       <div id="lessons-panel"></div>
     </div>
 
@@ -609,7 +609,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 </main>
 
 <div class="footer">
-  Atlas Pipeline Dashboard Â· Auto-generated Â· Data from outputs/ directory
+  Atlas Pipeline Dashboard · Auto-generated · Data from outputs/ directory
 </div>
 
 <script>
@@ -618,13 +618,13 @@ const DATA = __JSON_DATA__;
 // Data coverage notice
 const coverageMsgs = [];
 if (!DATA.coverage.has_task_state) {
-  coverageMsgs.push("Episode status source not found (.task_state/task_state). Episode KPIs are limited.");
+  coverageMsgs.push("Episode status source not found (.task_state/task_state) | مصدر حالة الحلقات غير موجود");
 }
 if (!DATA.coverage.has_live_transitions && DATA.coverage.has_runs_transition_files) {
-  coverageMsgs.push("Using fallback transition source from runs/*/t4_transitions.json.");
+  coverageMsgs.push("Using fallback source runs/*/t4_transitions.json | استخدام مصدر احتياطي من ملفات runs");
 }
 if (DATA.coverage.has_runs_transition_files && DATA.disputes.total_disputes === 0) {
-  coverageMsgs.push("Transition files exist, but contain no dispute rows yet.");
+  coverageMsgs.push("Transition files exist but contain no dispute rows yet | الملفات موجودة لكن بدون حالات نزاع");
 }
 if (coverageMsgs.length > 0) {
   const note = document.getElementById("coverage-note");
@@ -635,51 +635,51 @@ if (coverageMsgs.length > 0) {
 // â”€â”€ KPIs â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const kpis = [
   {
-    label: "Total Cost (USD)",
+    label: "Total Cost (USD) | إجمالي التكلفة",
     value: "$" + DATA.cost.total_cost_usd.toFixed(4),
-    sub: DATA.cost.total_requests + " requests",
+    sub: DATA.cost.total_requests + " requests | طلب",
     color: "#00e5c8"
   },
   {
-    label: "Cost / Request",
+    label: "Cost / Request | تكلفة الطلب",
     value: "$" + DATA.cost.avg_cost_per_request.toFixed(6),
-    sub: "avg per API call",
+    sub: "avg per API call | متوسط لكل استدعاء",
     color: "#00e5c8"
   },
   {
-    label: "Input Tokens",
+    label: "Input Tokens | توكنات الإدخال",
     value: (DATA.cost.total_input_tokens / 1000).toFixed(1) + "K",
-    sub: "prompt tokens total",
+    sub: "prompt tokens total | إجمالي توكنات البرومبت",
     color: "#7c6fff"
   },
   {
-    label: "Output Tokens",
+    label: "Output Tokens | توكنات الإخراج",
     value: (DATA.cost.total_output_tokens / 1000).toFixed(1) + "K",
-    sub: "candidate tokens total",
+    sub: "candidate tokens total | إجمالي توكنات الناتج",
     color: "#7c6fff"
   },
   {
-    label: "Episodes",
+    label: "Episodes | الحلقات",
     value: DATA.episodes.total,
-    sub: DATA.episodes.submitted + " submitted",
+    sub: DATA.episodes.submitted + " submitted | تم الإرسال",
     color: "#ffd166"
   },
   {
-    label: "Submit Rate",
+    label: "Submit Rate | معدل الإرسال",
     value: DATA.episodes.submit_rate_pct + "%",
     sub: DATA.episodes.submitted + "/" + DATA.episodes.total,
     color: "#22c55e"
   },
   {
-    label: "Policy Pass Rate",
+    label: "Policy Pass Rate | معدل نجاح السياسة",
     value: DATA.episodes.policy_pass_rate_pct + "%",
     sub: DATA.episodes.policy_passed + " passed / " + DATA.episodes.policy_failed + " failed",
     color: "#22c55e"
   },
   {
-    label: "Disputes",
+    label: "Disputes | النزاعات",
     value: DATA.disputes.total_disputes,
-    sub: "T4 transitions captured",
+    sub: "T4 transitions captured | حالات T4 الملتقطة",
     color: "#ff6b6b"
   },
 ];
@@ -724,7 +724,7 @@ if (dayData.length > 0) {
     }
   });
 } else {
-  document.getElementById("costChart").parentElement.innerHTML = '<div class="no-data">Ù„Ø§ ØªÙˆØ¬Ø¯ Ø¨ÙŠØ§Ù†Ø§Øª ØªÙƒÙ„ÙØ© Ø¨Ø¹Ø¯</div>';
+  document.getElementById("costChart").parentElement.innerHTML = '<div class="no-data">No cost data yet | لا توجد بيانات تكلفة بعد</div>';
 }
 
 // â”€â”€ Model pie â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -755,19 +755,19 @@ if (modelKeys.length > 0) {
     }
   });
 } else {
-  document.getElementById("modelChart").parentElement.innerHTML = '<div class="no-data">Ù„Ø§ ØªÙˆØ¬Ø¯ Ø¨ÙŠØ§Ù†Ø§Øª</div>';
+  document.getElementById("modelChart").parentElement.innerHTML = '<div class="no-data">No data available | لا توجد بيانات</div>';
 }
 
 // â”€â”€ Episode panel â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const ep = DATA.episodes;
 const epPanel = document.getElementById("episode-panel");
 const epRows = [
-  ["Submitted",      ep.submitted,      "dot-green"],
-  ["Labels Applied", ep.labels_applied, "dot-green"],
-  ["Labels Ready",   ep.labels_ready,   "dot-blue"],
-  ["Policy Passed",  ep.policy_passed,  "dot-green"],
-  ["Policy Failed",  ep.policy_failed,  "dot-red"],
-  ["Has Error",      ep.has_error,      "dot-red"],
+  ["Submitted | تم الإرسال",      ep.submitted,      "dot-green"],
+  ["Labels Applied | تم تطبيق التسميات", ep.labels_applied, "dot-green"],
+  ["Labels Ready | التسميات جاهزة",   ep.labels_ready,   "dot-blue"],
+  ["Policy Passed | سياسة ناجحة",  ep.policy_passed,  "dot-green"],
+  ["Policy Failed | سياسة فاشلة",  ep.policy_failed,  "dot-red"],
+  ["Has Error | يوجد خطأ",      ep.has_error,      "dot-red"],
 ];
 epPanel.innerHTML = epRows.map(([label, val, dot]) => `
   <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border)">
@@ -778,9 +778,9 @@ epPanel.innerHTML = epRows.map(([label, val, dot]) => `
   </div>
 `).join("") + `
   <div style="margin-top:16px">
-    <div style="font-family:var(--mono);font-size:0.68rem;color:var(--text2);margin-bottom:6px">Submit Rate: ${ep.submit_rate_pct}%</div>
+    <div style="font-family:var(--mono);font-size:0.68rem;color:var(--text2);margin-bottom:6px">Submit Rate | معدل الإرسال: ${ep.submit_rate_pct}%</div>
     <div class="progress-wrap"><div class="progress-fill" style="width:${ep.submit_rate_pct}%"></div></div>
-    <div style="font-family:var(--mono);font-size:0.68rem;color:var(--text2);margin-top:10px;margin-bottom:6px">Policy Pass: ${ep.policy_pass_rate_pct}%</div>
+    <div style="font-family:var(--mono);font-size:0.68rem;color:var(--text2);margin-top:10px;margin-bottom:6px">Policy Pass | نجاح السياسة: ${ep.policy_pass_rate_pct}%</div>
     <div class="progress-wrap"><div class="progress-fill" style="width:${ep.policy_pass_rate_pct}%;background:var(--accent4)"></div></div>
   </div>
 `;
@@ -791,7 +791,7 @@ if (modelKeys.length > 0) {
   mtPanel.innerHTML = `
     <table class="data-table">
       <thead><tr>
-        <th>Model</th><th>Requests</th><th>Cost $</th><th>Tokens</th>
+        <th>Model | النموذج</th><th>Requests | الطلبات</th><th>Cost $ | التكلفة</th><th>Tokens | التوكنز</th>
       </tr></thead>
       <tbody>
         ${modelKeys.map(k => `<tr>
@@ -804,7 +804,7 @@ if (modelKeys.length > 0) {
     </table>
   `;
 } else {
-  mtPanel.innerHTML = '<div class="no-data">Ù„Ø§ ØªÙˆØ¬Ø¯ Ø¨ÙŠØ§Ù†Ø§Øª</div>';
+  mtPanel.innerHTML = '<div class="no-data">No data available | لا توجد بيانات</div>';
 }
 
 // â”€â”€ Disputes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -814,13 +814,13 @@ if (DATA.disputes.recent.length > 0) {
   const bucketColors = { disputed: "#ff6b6b", awaiting_t2: "#ffd166", both_ok: "#22c55e" };
   dispPanel.innerHTML = `
     <table class="data-table">
-      <thead><tr><th>Episode</th><th>Status</th><th>Date</th></tr></thead>
+      <thead><tr><th>Episode | الحلقة</th><th>Status | الحالة</th><th>Date | التاريخ</th></tr></thead>
       <tbody>
         ${DATA.disputes.recent.map(t => {
           const bucket = t.dispute_bucket || t.status || "?";
           const col = bucketColors[bucket] || "#8892a4";
           const ts = (t.ts_utc || t.timestamp || "").substring(0,10);
-          const eid = t.episode_id || t._file || "â€”";
+          const eid = t.episode_id || t._file || "—";
           return `<tr>
             <td style="font-size:0.68rem">${eid.substring(0,16)}</td>
             <td><span style="color:${col};font-family:var(--mono);font-size:0.68rem">${bucket}</span></td>
@@ -831,7 +831,7 @@ if (DATA.disputes.recent.length > 0) {
     </table>
   `;
 } else {
-  dispPanel.innerHTML = '<div class="no-data">Ù„Ø§ ØªÙˆØ¬Ø¯ disputes Ø¨Ø¹Ø¯</div>';
+  dispPanel.innerHTML = '<div class="no-data">No disputes yet | لا توجد نزاعات بعد</div>';
 }
 
 // â”€â”€ Lessons â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -842,13 +842,13 @@ if (DATA.lessons.recent.length > 0) {
     const ts = (l.ts_utc || l.timestamp || "").substring(0,16);
     return `
       <div class="lesson-card">
-        ${text.substring(0,300)}${text.length > 300 ? "â€¦" : ""}
+        ${text.substring(0,300)}${text.length > 300 ? "…" : ""}
         <div class="lesson-ts">${ts}</div>
       </div>
     `;
   }).join("");
 } else {
-  lessPanel.innerHTML = '<div class="no-data">Ù„Ø§ ØªÙˆØ¬Ø¯ lessons Ø¨Ø¹Ø¯</div>';
+  lessPanel.innerHTML = '<div class="no-data">No lessons yet | لا توجد دروس بعد</div>';
 }
 </script>
 </body>
@@ -899,7 +899,7 @@ def generate_dashboard(outputs_dir: Path, open_browser: bool = False) -> Path:
     out_path = outputs_dir / "atlas_dashboard.html"
     outputs_dir.mkdir(parents=True, exist_ok=True)
     out_path.write_text(html, encoding="utf-8")
-    print(f"[dashboard] âœ“ saved: {out_path}")
+    print(f"[dashboard] saved: {out_path}")
 
     if open_browser:
         webbrowser.open(out_path.as_uri())
