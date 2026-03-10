@@ -24,6 +24,10 @@ Some operations modules discussed in architecture reviews (for example WhatsApp/
 - `atlas_tier3_gui.py`: desktop GUI to run the pipeline.
 - `app.js` + `atlas_annotation.html`: web annotation UI and local validation logic.
 - `safe_update_preserve_local.sh`: safe update script that preserves runtime secrets/session state.
+- `atlas_dashboard_gen.py`: local HTML dashboard from `outputs/`.
+- `atlas_finetune_exporter.py`: exports episodes/disputes for fine-tuning datasets.
+- `atlas_review_builder.py`: builds `episodes_review_index.json` for full historical re-audit.
+- `atlas_chat_exporter.py`: exports per-episode chat packages (`chat_prompt.txt` + metadata + optional video).
 
 ## Extended ecosystem modules (ops branches)
 
@@ -80,6 +84,27 @@ Set `output.save_debug_files: true` to keep intermediate artifacts.
 3. Optional repair pass (`anthropic` / `openai` / `gemini`).
 4. Re-validation.
 5. Optional audit judge pass.
+
+## Full Historical Re-Audit (all episodes)
+
+Build one index from all artifacts (video, Tier2, Tier3, validation, disputes, usage):
+
+```bash
+python atlas_review_builder.py --outputs-dir outputs --out outputs/episodes_review_index.json
+```
+
+Export ready-to-review chat folders:
+
+```bash
+python atlas_chat_exporter.py --index outputs/episodes_review_index.json --out-dir chat_reviews --only-status disputed,policy_fail,error,labeled_not_submitted --copy-video
+```
+
+Each folder in `chat_reviews/<episode_id>/` contains:
+
+- `chat_prompt.txt`
+- `episode_meta.json`
+- `atlas_url.txt`
+- episode video (when available)
 
 ## Production policy recommendations
 
