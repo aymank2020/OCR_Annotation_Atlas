@@ -127,10 +127,15 @@ echo "[drive-review] effective outputs dir: $EFFECTIVE_OUTPUTS"
 
 INDEX_PATH="$EFFECTIVE_OUTPUTS/episodes_review_index.json"
 CHAT_DIR="$EFFECTIVE_OUTPUTS/chat_reviews"
+VIEWER_PATH="$EFFECTIVE_OUTPUTS/atlas_review_viewer.html"
 
 python3 "$APP_DIR/atlas_review_builder.py" \
   --outputs-dir "$EFFECTIVE_OUTPUTS" \
   --out "$INDEX_PATH"
+
+python3 "$APP_DIR/atlas_review_viewer_gen.py" \
+  --index "$INDEX_PATH" \
+  --out "$VIEWER_PATH"
 
 python3 "$APP_DIR/atlas_chat_exporter.py" \
   --index "$INDEX_PATH" \
@@ -141,9 +146,11 @@ python3 "$APP_DIR/atlas_chat_exporter.py" \
 if [[ "$UPLOAD_RESULTS" == "1" ]]; then
   echo "[drive-review] uploading results back to Drive ..."
   rclone copy "$INDEX_PATH" "$DEST_BASE" "${DRIVE_ARGS[@]}" --progress
+  rclone copy "$VIEWER_PATH" "$DEST_BASE" "${DRIVE_ARGS[@]}" --progress
   rclone copy "$CHAT_DIR" "$DEST_BASE/chat_reviews" "${DRIVE_ARGS[@]}" --progress
 fi
 
 echo "[drive-review] done."
 echo "  index: $INDEX_PATH"
+echo "  viewer: $VIEWER_PATH"
 echo "  chat packages: $CHAT_DIR"

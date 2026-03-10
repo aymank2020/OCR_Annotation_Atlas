@@ -99,6 +99,12 @@ Export ready-to-review chat folders:
 python atlas_chat_exporter.py --index outputs/episodes_review_index.json --out-dir chat_reviews --only-status disputed,policy_fail,error,labeled_not_submitted --copy-video
 ```
 
+Generate interactive viewer page (video + Tier2/Tier3 + validation + disputes):
+
+```bash
+python atlas_review_viewer_gen.py --index outputs/episodes_review_index.json --out outputs/atlas_review_viewer.html
+```
+
 Each folder in `chat_reviews/<episode_id>/` contains:
 
 - `chat_prompt.txt`
@@ -142,8 +148,9 @@ What it does:
 
 1. Pulls metadata snapshot from Drive into `/tmp/atlas_drive_review/snapshot` (videos excluded by default).
 2. Builds `episodes_review_index.json`.
-3. Exports chat packages (`chat_reviews/<episode_id>/...`).
-4. Uploads generated index/packages back to the same Drive folder when `--upload-results 1`.
+3. Builds `atlas_review_viewer.html` (interactive page for manual QA).
+4. Exports chat packages (`chat_reviews/<episode_id>/...`).
+5. Uploads generated index/viewer/packages back to the same Drive folder when `--upload-results 1`.
 
 ## Production policy recommendations
 
