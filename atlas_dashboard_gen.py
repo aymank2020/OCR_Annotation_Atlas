@@ -1,6 +1,6 @@
-"""
+﻿"""
 atlas_dashboard_gen.py
-──────────────────────
+â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 Reads outputs/ directory and generates a standalone HTML operations dashboard.
 
 Usage:
@@ -9,9 +9,9 @@ Usage:
     python atlas_dashboard_gen.py --open                   # auto-open in browser
 
 Reads:
-    outputs/gemini_usage.jsonl       → cost & token metrics per request
-    outputs/.task_state/*.json       → per-episode state (submitted, errors, etc.)
-    outputs/training_feedback/live/t4_transitions_history.jsonl  → disputes
+    outputs/gemini_usage.jsonl       â†’ cost & token metrics per request
+    outputs/.task_state/*.json       â†’ per-episode state (submitted, errors, etc.)
+    outputs/training_feedback/live/t4_transitions_history.jsonl  â†’ disputes
     outputs/training_feedback/live/alignment_lessons_history.jsonl
 
 Writes:
@@ -31,9 +31,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 
-# ──────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Data loaders
-# ──────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def _load_jsonl(path: Path) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
@@ -66,6 +66,10 @@ def load_usage(outputs_dir: Path) -> List[Dict[str, Any]]:
 
 def load_task_states(outputs_dir: Path) -> List[Dict[str, Any]]:
     state_dir = outputs_dir / ".task_state"
+    if not state_dir.exists():
+        alt = outputs_dir / "task_state"
+        if alt.exists():
+            state_dir = alt
     states: List[Dict[str, Any]] = []
     if not state_dir.exists():
         return states
@@ -77,10 +81,47 @@ def load_task_states(outputs_dir: Path) -> List[Dict[str, Any]]:
     return states
 
 
+def _flatten_transition_rows(node: Any, out: List[Dict[str, Any]]) -> None:
+    if isinstance(node, dict):
+        # Candidate row: includes any transition-like marker.
+        if any(
+            k in node
+            for k in (
+                "dispute_bucket",
+                "status",
+                "episode_id",
+                "task_id",
+                "original_labels",
+                "corrected_labels",
+                "labels_before",
+                "labels_after",
+                "validator_errors",
+                "resolution_notes",
+            )
+        ):
+            out.append(node)
+        for v in node.values():
+            _flatten_transition_rows(v, out)
+    elif isinstance(node, list):
+        for v in node:
+            _flatten_transition_rows(v, out)
+
+
 def load_transitions(outputs_dir: Path) -> List[Dict[str, Any]]:
-    return _load_jsonl(
-        outputs_dir / "training_feedback" / "live" / "t4_transitions_history.jsonl"
-    )
+    live_path = outputs_dir / "training_feedback" / "live" / "t4_transitions_history.jsonl"
+    rows = _load_jsonl(live_path)
+    if rows:
+        return rows
+
+    # Fallback: aggregate from runs/*/t4_transitions.json
+    rows = []
+    runs_glob = outputs_dir / "training_feedback" / "runs"
+    for f in sorted(runs_glob.glob("*/t4_transitions.json")):
+        data = _load_json(f)
+        if data is None:
+            continue
+        _flatten_transition_rows(data, rows)
+    return rows
 
 
 def load_lessons(outputs_dir: Path) -> List[Dict[str, Any]]:
@@ -89,9 +130,9 @@ def load_lessons(outputs_dir: Path) -> List[Dict[str, Any]]:
     )
 
 
-# ──────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Metric computation
-# ──────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def compute_cost_metrics(usage: List[Dict[str, Any]]) -> Dict[str, Any]:
     if not usage:
@@ -199,9 +240,9 @@ def compute_lesson_metrics(lessons: List[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
-# ──────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # HTML generation
-# ──────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="ar" dir="rtl">
@@ -478,6 +519,19 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     opacity: 0.6;
   }
 
+  .notice {
+    background: #1b2130;
+    border: 1px solid #30405f;
+    border-right: 4px solid var(--accent4);
+    border-radius: 8px;
+    padding: 12px 14px;
+    margin-bottom: 18px;
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    color: var(--text);
+    line-height: 1.6;
+  }
+
   /* Footer */
   .footer {
     margin-top: 50px;
@@ -494,27 +548,28 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
 <div class="topbar">
   <div>
-    <div class="topbar-title">▸ Atlas Pipeline Dashboard</div>
-    <div class="topbar-subtitle">OCR_Annotation_Atlas · aymank2020</div>
+    <div class="topbar-title">â–¸ Atlas Pipeline Dashboard</div>
+    <div class="topbar-subtitle">OCR_Annotation_Atlas Â· aymank2020</div>
   </div>
   <div class="badge">Generated: __GENERATED_AT__</div>
 </div>
 
 <main>
+  <div id="coverage-note"></div>
 
   <!-- KPIs -->
-  <div class="section-label">مقاييس التشغيل — Key Metrics</div>
+  <div class="section-label">Ù…Ù‚Ø§ÙŠÙŠØ³ Ø§Ù„ØªØ´ØºÙŠÙ„ â€” Key Metrics</div>
   <div class="kpi-grid" id="kpi-grid"></div>
 
   <!-- Cost chart + Model breakdown -->
-  <div class="section-label">التكلفة والموارد — Cost & Resources</div>
+  <div class="section-label">Ø§Ù„ØªÙƒÙ„ÙØ© ÙˆØ§Ù„Ù…ÙˆØ§Ø±Ø¯ â€” Cost & Resources</div>
   <div class="charts-row">
     <div class="chart-card">
-      <div class="chart-title">التكلفة اليومية (USD)</div>
+      <div class="chart-title">Ø§Ù„ØªÙƒÙ„ÙØ© Ø§Ù„ÙŠÙˆÙ…ÙŠØ© (USD)</div>
       <div class="chart-wrap"><canvas id="costChart"></canvas></div>
     </div>
     <div class="chart-card">
-      <div class="chart-title">توزيع النماذج</div>
+      <div class="chart-title">ØªÙˆØ²ÙŠØ¹ Ø§Ù„Ù†Ù…Ø§Ø°Ø¬</div>
       <div class="chart-wrap"><canvas id="modelChart"></canvas></div>
     </div>
   </div>
@@ -524,7 +579,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   <div class="two-col">
 
     <div class="panel">
-      <div class="panel-title">حالة الـ Episodes</div>
+      <div class="panel-title">Ø­Ø§Ù„Ø© Ø§Ù„Ù€ Episodes</div>
       <div id="episode-panel"></div>
     </div>
 
@@ -536,7 +591,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   </div>
 
   <!-- Disputes + Lessons -->
-  <div class="section-label">التعلم المستمر — Continuous Learning</div>
+  <div class="section-label">Ø§Ù„ØªØ¹Ù„Ù… Ø§Ù„Ù…Ø³ØªÙ…Ø± â€” Continuous Learning</div>
   <div class="two-col">
 
     <div class="panel">
@@ -545,7 +600,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     </div>
 
     <div class="panel">
-      <div class="panel-title">آخر الـ Lessons</div>
+      <div class="panel-title">Ø¢Ø®Ø± Ø§Ù„Ù€ Lessons</div>
       <div id="lessons-panel"></div>
     </div>
 
@@ -554,13 +609,30 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 </main>
 
 <div class="footer">
-  Atlas Pipeline Dashboard · Auto-generated · Data from outputs/ directory
+  Atlas Pipeline Dashboard Â· Auto-generated Â· Data from outputs/ directory
 </div>
 
 <script>
 const DATA = __JSON_DATA__;
 
-// ── KPIs ──────────────────────────────────────────────────────────────────────
+// Data coverage notice
+const coverageMsgs = [];
+if (!DATA.coverage.has_task_state) {
+  coverageMsgs.push("Episode status source not found (.task_state/task_state). Episode KPIs are limited.");
+}
+if (!DATA.coverage.has_live_transitions && DATA.coverage.has_runs_transition_files) {
+  coverageMsgs.push("Using fallback transition source from runs/*/t4_transitions.json.");
+}
+if (DATA.coverage.has_runs_transition_files && DATA.disputes.total_disputes === 0) {
+  coverageMsgs.push("Transition files exist, but contain no dispute rows yet.");
+}
+if (coverageMsgs.length > 0) {
+  const note = document.getElementById("coverage-note");
+  note.className = "notice";
+  note.innerHTML = coverageMsgs.map(m => `- ${m}`).join("<br/>");
+}
+
+// â”€â”€ KPIs â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const kpis = [
   {
     label: "Total Cost (USD)",
@@ -625,7 +697,7 @@ kpis.forEach(k => {
   grid.appendChild(card);
 });
 
-// ── Cost chart ────────────────────────────────────────────────────────────────
+// â”€â”€ Cost chart â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const dayData = DATA.cost.by_day;
 if (dayData.length > 0) {
   const ctx = document.getElementById("costChart").getContext("2d");
@@ -652,10 +724,10 @@ if (dayData.length > 0) {
     }
   });
 } else {
-  document.getElementById("costChart").parentElement.innerHTML = '<div class="no-data">لا توجد بيانات تكلفة بعد</div>';
+  document.getElementById("costChart").parentElement.innerHTML = '<div class="no-data">Ù„Ø§ ØªÙˆØ¬Ø¯ Ø¨ÙŠØ§Ù†Ø§Øª ØªÙƒÙ„ÙØ© Ø¨Ø¹Ø¯</div>';
 }
 
-// ── Model pie ─────────────────────────────────────────────────────────────────
+// â”€â”€ Model pie â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const modelData = DATA.cost.by_model;
 const modelKeys = Object.keys(modelData);
 if (modelKeys.length > 0) {
@@ -683,10 +755,10 @@ if (modelKeys.length > 0) {
     }
   });
 } else {
-  document.getElementById("modelChart").parentElement.innerHTML = '<div class="no-data">لا توجد بيانات</div>';
+  document.getElementById("modelChart").parentElement.innerHTML = '<div class="no-data">Ù„Ø§ ØªÙˆØ¬Ø¯ Ø¨ÙŠØ§Ù†Ø§Øª</div>';
 }
 
-// ── Episode panel ─────────────────────────────────────────────────────────────
+// â”€â”€ Episode panel â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const ep = DATA.episodes;
 const epPanel = document.getElementById("episode-panel");
 const epRows = [
@@ -713,7 +785,7 @@ epPanel.innerHTML = epRows.map(([label, val, dot]) => `
   </div>
 `;
 
-// ── Model table ───────────────────────────────────────────────────────────────
+// â”€â”€ Model table â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const mtPanel = document.getElementById("model-table-panel");
 if (modelKeys.length > 0) {
   mtPanel.innerHTML = `
@@ -732,10 +804,10 @@ if (modelKeys.length > 0) {
     </table>
   `;
 } else {
-  mtPanel.innerHTML = '<div class="no-data">لا توجد بيانات</div>';
+  mtPanel.innerHTML = '<div class="no-data">Ù„Ø§ ØªÙˆØ¬Ø¯ Ø¨ÙŠØ§Ù†Ø§Øª</div>';
 }
 
-// ── Disputes ──────────────────────────────────────────────────────────────────
+// â”€â”€ Disputes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 document.getElementById("dispute-count").textContent = DATA.disputes.total_disputes;
 const dispPanel = document.getElementById("dispute-panel");
 if (DATA.disputes.recent.length > 0) {
@@ -748,7 +820,7 @@ if (DATA.disputes.recent.length > 0) {
           const bucket = t.dispute_bucket || t.status || "?";
           const col = bucketColors[bucket] || "#8892a4";
           const ts = (t.ts_utc || t.timestamp || "").substring(0,10);
-          const eid = t.episode_id || t._file || "—";
+          const eid = t.episode_id || t._file || "â€”";
           return `<tr>
             <td style="font-size:0.68rem">${eid.substring(0,16)}</td>
             <td><span style="color:${col};font-family:var(--mono);font-size:0.68rem">${bucket}</span></td>
@@ -759,10 +831,10 @@ if (DATA.disputes.recent.length > 0) {
     </table>
   `;
 } else {
-  dispPanel.innerHTML = '<div class="no-data">لا توجد disputes بعد</div>';
+  dispPanel.innerHTML = '<div class="no-data">Ù„Ø§ ØªÙˆØ¬Ø¯ disputes Ø¨Ø¹Ø¯</div>';
 }
 
-// ── Lessons ───────────────────────────────────────────────────────────────────
+// â”€â”€ Lessons â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const lessPanel = document.getElementById("lessons-panel");
 if (DATA.lessons.recent.length > 0) {
   lessPanel.innerHTML = DATA.lessons.recent.map(l => {
@@ -770,13 +842,13 @@ if (DATA.lessons.recent.length > 0) {
     const ts = (l.ts_utc || l.timestamp || "").substring(0,16);
     return `
       <div class="lesson-card">
-        ${text.substring(0,300)}${text.length > 300 ? "…" : ""}
+        ${text.substring(0,300)}${text.length > 300 ? "â€¦" : ""}
         <div class="lesson-ts">${ts}</div>
       </div>
     `;
   }).join("");
 } else {
-  lessPanel.innerHTML = '<div class="no-data">لا توجد lessons بعد</div>';
+  lessPanel.innerHTML = '<div class="no-data">Ù„Ø§ ØªÙˆØ¬Ø¯ lessons Ø¨Ø¹Ø¯</div>';
 }
 </script>
 </body>
@@ -784,9 +856,9 @@ if (DATA.lessons.recent.length > 0) {
 """
 
 
-# ──────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Main
-# ──────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def generate_dashboard(outputs_dir: Path, open_browser: bool = False) -> Path:
     print(f"[dashboard] reading outputs from: {outputs_dir}")
@@ -796,6 +868,19 @@ def generate_dashboard(outputs_dir: Path, open_browser: bool = False) -> Path:
     transitions = load_transitions(outputs_dir)
     lessons = load_lessons(outputs_dir)
 
+    coverage = {
+        "has_task_state": bool(
+            (outputs_dir / ".task_state").exists() or (outputs_dir / "task_state").exists()
+        ),
+        "has_live_transitions": bool(
+            (outputs_dir / "training_feedback" / "live" / "t4_transitions_history.jsonl").exists()
+            and (outputs_dir / "training_feedback" / "live" / "t4_transitions_history.jsonl").stat().st_size > 0
+        ),
+        "has_runs_transition_files": any(
+            (outputs_dir / "training_feedback" / "runs").glob("*/t4_transitions.json")
+        ),
+    }
+
     print(f"[dashboard] usage_rows={len(usage)} task_states={len(states)} "
           f"transitions={len(transitions)} lessons={len(lessons)}")
 
@@ -804,6 +889,7 @@ def generate_dashboard(outputs_dir: Path, open_browser: bool = False) -> Path:
         "episodes": compute_episode_metrics(states),
         "disputes": compute_dispute_metrics(transitions),
         "lessons": compute_lesson_metrics(lessons),
+        "coverage": coverage,
     }
 
     generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
@@ -813,7 +899,7 @@ def generate_dashboard(outputs_dir: Path, open_browser: bool = False) -> Path:
     out_path = outputs_dir / "atlas_dashboard.html"
     outputs_dir.mkdir(parents=True, exist_ok=True)
     out_path.write_text(html, encoding="utf-8")
-    print(f"[dashboard] ✓ saved: {out_path}")
+    print(f"[dashboard] âœ“ saved: {out_path}")
 
     if open_browser:
         webbrowser.open(out_path.as_uri())
@@ -831,3 +917,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
