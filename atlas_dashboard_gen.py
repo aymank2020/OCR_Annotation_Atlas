@@ -186,6 +186,7 @@ def compute_episode_metrics(states: List[Dict[str, Any]]) -> Dict[str, Any]:
             "labels_ready": 0, "has_error": 0,
             "policy_passed": 0, "policy_failed": 0,
             "submit_rate_pct": 0.0,
+            "policy_pass_rate_pct": None,
         }
     total = len(states)
     submitted = sum(1 for s in states if s.get("episode_submitted"))
@@ -204,7 +205,7 @@ def compute_episode_metrics(states: List[Dict[str, Any]]) -> Dict[str, Any]:
         "policy_failed": policy_fail,
         "submit_rate_pct": round(submitted / total * 100, 1) if total else 0.0,
         "policy_pass_rate_pct": round(policy_ok / (policy_ok + policy_fail) * 100, 1)
-            if (policy_ok + policy_fail) > 0 else 0.0,
+            if (policy_ok + policy_fail) > 0 else None,
     }
 
 
@@ -229,14 +230,59 @@ def compute_dispute_metrics(transitions: List[Dict[str, Any]]) -> Dict[str, Any]
     }
 
 
+def _lesson_ts(row: Dict[str, Any]) -> str:
+    for key in ("ts_utc", "timestamp", "generated_at"):
+        v = str(row.get(key, "") or "").strip()
+        if v:
+            return v
+    return ""
+
+
+def _lesson_text(row: Dict[str, Any]) -> str:
+    for key in ("lesson_text", "lesson", "summary", "insight", "title", "message"):
+        v = str(row.get(key, "") or "").strip()
+        if v:
+            return v
+
+    parsed = row.get("parsed")
+    if isinstance(parsed, dict):
+        bucket = parsed.get("bucket_summary")
+        if isinstance(bucket, dict) and bucket:
+            disputed = int(bucket.get("Disputed", 0) or 0)
+            awaiting = int(bucket.get("Awaiting T2", 0) or 0)
+            both_ok = int(bucket.get("Both OK", 0) or 0)
+            episodes = int(row.get("episodes_in_dataset", 0) or (disputed + awaiting + both_ok))
+            return (
+                f"Dataset episodes: {episodes} | "
+                f"Disputed: {disputed}, Awaiting T2: {awaiting}, Both OK: {both_ok}"
+            )
+        verdicts = parsed.get("episode_verdicts")
+        if isinstance(verdicts, list) and verdicts:
+            return f"Episode verdicts analyzed: {len(verdicts)}"
+
+    run_dir = str(row.get("run_dir", "") or "").strip()
+    if run_dir:
+        return f"Lesson snapshot generated from {Path(run_dir).name}"
+    return "Lesson snapshot generated."
+
+
 def compute_lesson_metrics(lessons: List[Dict[str, Any]]) -> Dict[str, Any]:
+    sorted_rows = sorted(
+        lessons,
+        key=lambda x: _lesson_ts(x),
+        reverse=True,
+    )[:5]
+    recent = []
+    for row in sorted_rows:
+        recent.append(
+            {
+                "display_text": _lesson_text(row),
+                "display_ts": _lesson_ts(row),
+            }
+        )
     return {
         "total_lessons": len(lessons),
-        "recent": sorted(
-            lessons,
-            key=lambda x: str(x.get("ts_utc") or x.get("timestamp") or ""),
-            reverse=True,
-        )[:5],
+        "recent": recent,
     }
 
 
@@ -532,6 +578,36 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     line-height: 1.6;
   }
 
+  .completeness-panel {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px;
+    margin-bottom: 20px;
+  }
+  .completeness-title {
+    font-size: 0.75rem;
+    font-family: var(--mono);
+    color: var(--text2);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-bottom: 10px;
+  }
+  .completeness-row {
+    margin-bottom: 10px;
+  }
+  .completeness-row:last-child {
+    margin-bottom: 0;
+  }
+  .completeness-label {
+    display: flex;
+    justify-content: space-between;
+    font-family: var(--mono);
+    font-size: 0.68rem;
+    color: var(--text2);
+    margin-bottom: 4px;
+  }
+
   /* Footer */
   .footer {
     margin-top: 50px;
@@ -556,6 +632,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
 <main>
   <div id="coverage-note"></div>
+  <div id="completeness-panel" class="completeness-panel"></div>
 
   <!-- KPIs -->
   <div class="section-label">Key Metrics | مؤشرات الأداء</div>
@@ -615,6 +692,16 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 <script>
 const DATA = __JSON_DATA__;
 
+function asPercentOrNA(v) {
+  if (v === null || v === undefined || Number.isNaN(Number(v))) return "N/A";
+  return `${Number(v).toFixed(1)}%`;
+}
+
+function asWidth(v) {
+  if (v === null || v === undefined || Number.isNaN(Number(v))) return 0;
+  return Math.max(0, Math.min(100, Number(v)));
+}
+
 // Data coverage notice
 const coverageMsgs = [];
 if (!DATA.coverage.has_task_state) {
@@ -632,7 +719,38 @@ if (coverageMsgs.length > 0) {
   note.innerHTML = coverageMsgs.map(m => `- ${m}`).join("<br/>");
 }
 
-// â”€â”€ KPIs â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Data completeness panel
+const c = DATA.coverage || {};
+const sRows = c.source_rows || {};
+const sAvail = c.source_available || {};
+const cPanel = document.getElementById("completeness-panel");
+const sources = [
+  { key: "usage", label: "Usage Log | سجل الاستخدام" },
+  { key: "task_state", label: "Episode State | حالة الحلقات" },
+  { key: "transitions", label: "Transitions | التحولات" },
+  { key: "lessons", label: "Lessons | الدروس" },
+];
+cPanel.innerHTML = `
+  <div class="completeness-title">Data Completeness | اكتمال البيانات (${asPercentOrNA(c.completeness_pct)})</div>
+  ${sources.map(src => {
+    const ok = !!sAvail[src.key];
+    const pct = ok ? 100 : 0;
+    const count = Number(sRows[src.key] || 0);
+    return `
+      <div class="completeness-row">
+        <div class="completeness-label">
+          <span>${src.label}</span>
+          <span>${ok ? "Available | متاح" : "Missing | غير متاح"} (${count})</span>
+        </div>
+        <div class="progress-wrap">
+          <div class="progress-fill" style="width:${pct}%;background:${ok ? "var(--accent)" : "var(--accent3)"}"></div>
+        </div>
+      </div>
+    `;
+  }).join("")}
+`;
+
+// KPIs
 const kpis = [
   {
     label: "Total Cost (USD) | إجمالي التكلفة",
@@ -672,7 +790,7 @@ const kpis = [
   },
   {
     label: "Policy Pass Rate | معدل نجاح السياسة",
-    value: DATA.episodes.policy_pass_rate_pct + "%",
+    value: asPercentOrNA(DATA.episodes.policy_pass_rate_pct),
     sub: DATA.episodes.policy_passed + " passed / " + DATA.episodes.policy_failed + " failed",
     color: "#22c55e"
   },
@@ -697,7 +815,7 @@ kpis.forEach(k => {
   grid.appendChild(card);
 });
 
-// â”€â”€ Cost chart â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Cost chart
 const dayData = DATA.cost.by_day;
 if (dayData.length > 0) {
   const ctx = document.getElementById("costChart").getContext("2d");
@@ -727,7 +845,7 @@ if (dayData.length > 0) {
   document.getElementById("costChart").parentElement.innerHTML = '<div class="no-data">No cost data yet | لا توجد بيانات تكلفة بعد</div>';
 }
 
-// â”€â”€ Model pie â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Model pie
 const modelData = DATA.cost.by_model;
 const modelKeys = Object.keys(modelData);
 if (modelKeys.length > 0) {
@@ -758,7 +876,7 @@ if (modelKeys.length > 0) {
   document.getElementById("modelChart").parentElement.innerHTML = '<div class="no-data">No data available | لا توجد بيانات</div>';
 }
 
-// â”€â”€ Episode panel â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Episode panel
 const ep = DATA.episodes;
 const epPanel = document.getElementById("episode-panel");
 const epRows = [
@@ -780,12 +898,12 @@ epPanel.innerHTML = epRows.map(([label, val, dot]) => `
   <div style="margin-top:16px">
     <div style="font-family:var(--mono);font-size:0.68rem;color:var(--text2);margin-bottom:6px">Submit Rate | معدل الإرسال: ${ep.submit_rate_pct}%</div>
     <div class="progress-wrap"><div class="progress-fill" style="width:${ep.submit_rate_pct}%"></div></div>
-    <div style="font-family:var(--mono);font-size:0.68rem;color:var(--text2);margin-top:10px;margin-bottom:6px">Policy Pass | نجاح السياسة: ${ep.policy_pass_rate_pct}%</div>
-    <div class="progress-wrap"><div class="progress-fill" style="width:${ep.policy_pass_rate_pct}%;background:var(--accent4)"></div></div>
+    <div style="font-family:var(--mono);font-size:0.68rem;color:var(--text2);margin-top:10px;margin-bottom:6px">Policy Pass | نجاح السياسة: ${asPercentOrNA(ep.policy_pass_rate_pct)}</div>
+    <div class="progress-wrap"><div class="progress-fill" style="width:${asWidth(ep.policy_pass_rate_pct)}%;background:var(--accent4)"></div></div>
   </div>
 `;
 
-// â”€â”€ Model table â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Model table
 const mtPanel = document.getElementById("model-table-panel");
 if (modelKeys.length > 0) {
   mtPanel.innerHTML = `
@@ -807,7 +925,7 @@ if (modelKeys.length > 0) {
   mtPanel.innerHTML = '<div class="no-data">No data available | لا توجد بيانات</div>';
 }
 
-// â”€â”€ Disputes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Disputes
 document.getElementById("dispute-count").textContent = DATA.disputes.total_disputes;
 const dispPanel = document.getElementById("dispute-panel");
 if (DATA.disputes.recent.length > 0) {
@@ -834,12 +952,12 @@ if (DATA.disputes.recent.length > 0) {
   dispPanel.innerHTML = '<div class="no-data">No disputes yet | لا توجد نزاعات بعد</div>';
 }
 
-// â”€â”€ Lessons â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Lessons
 const lessPanel = document.getElementById("lessons-panel");
 if (DATA.lessons.recent.length > 0) {
   lessPanel.innerHTML = DATA.lessons.recent.map(l => {
-    const text = l.lesson_text || l.lesson || l.summary || JSON.stringify(l).substring(0,200);
-    const ts = (l.ts_utc || l.timestamp || "").substring(0,16);
+    const text = l.display_text || "Lesson snapshot generated.";
+    const ts = (l.display_ts || "").toString().substring(0,19);
     return `
       <div class="lesson-card">
         ${text.substring(0,300)}${text.length > 300 ? "…" : ""}
@@ -868,17 +986,34 @@ def generate_dashboard(outputs_dir: Path, open_browser: bool = False) -> Path:
     transitions = load_transitions(outputs_dir)
     lessons = load_lessons(outputs_dir)
 
+    task_state_dir_exists = bool(
+        (outputs_dir / ".task_state").exists() or (outputs_dir / "task_state").exists()
+    )
+    live_transitions_path = outputs_dir / "training_feedback" / "live" / "t4_transitions_history.jsonl"
+    has_live_transitions = bool(live_transitions_path.exists() and live_transitions_path.stat().st_size > 0)
+    has_runs_transition_files = any((outputs_dir / "training_feedback" / "runs").glob("*/t4_transitions.json"))
+
+    source_rows = {
+        "usage": len(usage),
+        "task_state": len(states),
+        "transitions": len(transitions),
+        "lessons": len(lessons),
+    }
+    source_available = {
+        "usage": source_rows["usage"] > 0,
+        "task_state": source_rows["task_state"] > 0,
+        "transitions": source_rows["transitions"] > 0,
+        "lessons": source_rows["lessons"] > 0,
+    }
+    completeness_pct = round(sum(1 for v in source_available.values() if v) / 4 * 100, 1)
+
     coverage = {
-        "has_task_state": bool(
-            (outputs_dir / ".task_state").exists() or (outputs_dir / "task_state").exists()
-        ),
-        "has_live_transitions": bool(
-            (outputs_dir / "training_feedback" / "live" / "t4_transitions_history.jsonl").exists()
-            and (outputs_dir / "training_feedback" / "live" / "t4_transitions_history.jsonl").stat().st_size > 0
-        ),
-        "has_runs_transition_files": any(
-            (outputs_dir / "training_feedback" / "runs").glob("*/t4_transitions.json")
-        ),
+        "has_task_state": task_state_dir_exists,
+        "has_live_transitions": has_live_transitions,
+        "has_runs_transition_files": has_runs_transition_files,
+        "source_rows": source_rows,
+        "source_available": source_available,
+        "completeness_pct": completeness_pct,
     }
 
     print(f"[dashboard] usage_rows={len(usage)} task_states={len(states)} "
