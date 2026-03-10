@@ -6320,6 +6320,175 @@ def _update_chunk_consistency_memory(
     return rewritten
 
 
+def _rag_load_disputes(cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Load T4 dispute transitions from JSONL history (best-effort)."""
+    out_dir = Path(str(_cfg_get(cfg, "run.output_dir", "outputs") or "outputs"))
+    candidates = [
+        out_dir / "training_feedback" / "live" / "t4_transitions_history.jsonl",
+        out_dir / "t4_transitions_history.jsonl",
+    ]
+    rows: List[Dict[str, Any]] = []
+    for path in candidates:
+        if not path.exists():
+            continue
+        try:
+            with path.open(encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        row = json.loads(line)
+                        if isinstance(row, dict):
+                            rows.append(row)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        if rows:
+            break
+    return rows
+
+
+def _rag_extract_keywords(labels: Any) -> set[str]:
+    """Extract content words from labels list/string for lightweight matching."""
+    stopwords = {
+        "a",
+        "an",
+        "the",
+        "and",
+        "or",
+        "to",
+        "of",
+        "in",
+        "on",
+        "at",
+        "up",
+        "into",
+        "from",
+        "with",
+        "no",
+        "action",
+        "pick",
+        "place",
+        "put",
+        "set",
+        "hold",
+        "move",
+        "take",
+        "get",
+    }
+    words: set[str] = set()
+    if isinstance(labels, list):
+        texts = [str(x.get("label", x) if isinstance(x, dict) else x) for x in labels]
+    elif isinstance(labels, str):
+        texts = [labels]
+    else:
+        return words
+    for text in texts:
+        for word in re.split(r"[\s,/\-_]+", text.lower()):
+            word = re.sub(r"[^a-z]", "", word)
+            if word and len(word) > 2 and word not in stopwords:
+                words.add(word)
+    return words
+
+
+def _rag_score(dispute_keywords: set[str], current_keywords: set[str]) -> float:
+    """Jaccard overlap score."""
+    if not dispute_keywords or not current_keywords:
+        return 0.0
+    intersection = dispute_keywords.intersection(current_keywords)
+    union = dispute_keywords.union(current_keywords)
+    return len(intersection) / len(union)
+
+
+def _rag_find_similar(
+    disputes: List[Dict[str, Any]],
+    current_labels: List[str],
+    top_k: int = 3,
+    min_score: float = 0.15,
+) -> List[Dict[str, Any]]:
+    """Return top-k relevant disputes for current labels."""
+    current_kw = _rag_extract_keywords(current_labels)
+    if not current_kw:
+        return []
+    scored: List[Tuple[float, Dict[str, Any]]] = []
+    for d in disputes:
+        orig = d.get("original_labels") or d.get("labels_before") or []
+        corr = d.get("corrected_labels") or d.get("labels_after") or d.get("resolved_labels") or []
+        if not orig or not corr:
+            continue
+        dispute_kw = _rag_extract_keywords(orig)
+        score = _rag_score(dispute_kw, current_kw)
+        if score >= min_score:
+            scored.append((score, d))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [d for _, d in scored[:top_k]]
+
+
+def _rag_build_prompt_block(similar: List[Dict[str, Any]]) -> str:
+    """Format similar disputes as compact few-shot examples."""
+    if not similar:
+        return ""
+    lines: List[str] = [
+        "PAST CORRECTIONS (few-shot from real T4 dispute resolutions):",
+        "Study these and avoid repeating the same mistakes.",
+        "",
+    ]
+
+    def _fmt_labels(lbls: Any) -> str:
+        if isinstance(lbls, list):
+            parts: List[str] = []
+            for x in lbls:
+                if isinstance(x, dict):
+                    parts.append(str(x.get("label", str(x))))
+                else:
+                    parts.append(str(x))
+            return " | ".join(parts)
+        return str(lbls)
+
+    for i, d in enumerate(similar, 1):
+        orig = d.get("original_labels") or d.get("labels_before") or []
+        corr = d.get("corrected_labels") or d.get("labels_after") or d.get("resolved_labels") or []
+        notes = str(d.get("resolution_notes") or d.get("dispute_notes") or "").strip()
+        errors = d.get("validator_errors") or []
+
+        lines.append(f"Example {i}:")
+        lines.append(f"  WRONG : {_fmt_labels(orig)}")
+        lines.append(f"  CORRECT: {_fmt_labels(corr)}")
+        if errors:
+            lines.append(f"  ERRORS : {'; '.join(str(e) for e in errors[:3])}")
+        if notes:
+            lines.append(f"  WHY   : {notes[:200]}")
+        lines.append("")
+
+    lines.append("Apply these lessons to the current segments.")
+    return "\n".join(lines)
+
+
+def _rag_build_few_shot_context(
+    cfg: Dict[str, Any],
+    current_segment_labels: List[str],
+    disputes_cache: List[Dict[str, Any]],
+    top_k: int = 3,
+    min_score: float = 0.15,
+) -> str:
+    """RAG entry-point: returns prompt block or empty string."""
+    rag_enabled = bool(_cfg_get(cfg, "run.rag_few_shot_enabled", True))
+    if not rag_enabled:
+        return ""
+    if not disputes_cache:
+        return ""
+    top_k = max(1, int(_cfg_get(cfg, "run.rag_few_shot_top_k", top_k)))
+    min_score = float(_cfg_get(cfg, "run.rag_few_shot_min_score", min_score))
+    similar = _rag_find_similar(disputes_cache, current_segment_labels, top_k=top_k, min_score=min_score)
+    if not similar:
+        return ""
+    block = _rag_build_prompt_block(similar)
+    print(f"[rag] injected {len(similar)} dispute example(s) into prompt.")
+    return block
+
+
 def _build_chunk_consistency_prompt_hint(canonical_terms: List[str], max_terms: int) -> str:
     if not canonical_terms or max_terms <= 0:
         return ""
@@ -6438,7 +6607,17 @@ def _request_labels_with_optional_segment_chunking(
             )
 
     should_chunk = bool(can_chunk_by_shape and not short_video_for_chunking)
+
+    # Load disputes once and reuse for the whole request (single/chunk paths).
+    rag_disputes_cache: List[Dict[str, Any]] = _rag_load_disputes(cfg)
+    if rag_disputes_cache:
+        print(f"[rag] loaded {len(rag_disputes_cache)} dispute example(s).")
+
     if not should_chunk:
+        current_labels = [str(s.get("current_label", "")) for s in segments if s.get("current_label")]
+        rag_block = _rag_build_few_shot_context(cfg, current_labels, rag_disputes_cache)
+        if rag_block:
+            prompt = prompt + "\n\n" + rag_block
         return _call_labels(prompt, video_file, len(segments))
 
     ffmpeg_bin = _resolve_ffmpeg_binary()
@@ -6543,6 +6722,13 @@ def _request_labels_with_optional_segment_chunking(
                 )
                 if chunk_hint:
                     chunk_extra_parts.append(chunk_hint)
+
+            chunk_current_labels = [
+                str(s.get("current_label", "")) for s in chunk_segments if s.get("current_label")
+            ]
+            rag_block = _rag_build_few_shot_context(cfg, chunk_current_labels, rag_disputes_cache)
+            if rag_block:
+                chunk_extra_parts.append(rag_block)
 
             chunk_allow_operations = allow_operations and (not chunking_disable_operations)
             chunk_prompt = build_prompt(
