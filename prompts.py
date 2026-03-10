@@ -53,6 +53,9 @@ Strict rules:
 - timestamp strictness: label only what happens inside each exact segment start/end window; do not shift actions
 - avoid body-part wording (hands/fingers/body parts) unless unavoidable
 - if uncertain, use general nouns (tool/container/cloth/item)
+- Object Identity Continuity: if Tier-2 draft consistently identifies a device class (e.g., "phone"),
+  do not rename it to a different class (e.g., "laptop") unless visual evidence is unequivocal;
+  if uncertain, use generic "device" instead of guessing a different class
 - do not keep placeholder/default labels
 - do not hallucinate hidden actions
 - for retrieval from containers, prefer "remove [item] from [container]" over "take [item] out"
@@ -95,6 +98,7 @@ Rules to enforce:
 - place should include a location
 - verbs must be attached to objects (no "pick up and place box"; use "pick up box, place box ...")
 - avoid intent-only wording (prepare to, try to, about to)
+- preserve object/device identity continuity unless visual evidence clearly proves draft is wrong
 
 Timestamp handling:
 - do not change timestamps unless validator reports boundary/timestamp/coverage issues

@@ -8,7 +8,7 @@ import copy
 import json
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Sequence, Tuple
+from typing import Any, Dict, List, Sequence, Set, Tuple
 
 import prompts
 
@@ -183,6 +183,16 @@ UNCOUNTABLE_NOUN_HINTS = {
 }
 PLURAL_ONLY_NOUN_HINTS = {"scissors", "glasses", "pants", "shorts", "pliers", "tongs"}
 GENERIC_OBJECT_TOKENS = {"item", "object", "thing", "stuff", "tool", "container", "none", "surface", "mat"}
+
+# Mutually-exclusive device families. If output switches family from draft (Tier2),
+# raise a warning for human review.
+DEVICE_CLASS_GROUPS: Dict[str, Set[str]] = {
+    "phone": {"phone", "smartphone", "mobile", "cellphone", "iphone", "android"},
+    "laptop": {"laptop", "notebook", "computer", "macbook", "ultrabook"},
+    "tablet": {"tablet", "ipad"},
+    "camera": {"camera", "webcam", "camcorder"},
+    "remote": {"remote", "controller"},
+}
 
 
 def normalize_spaces(text: str) -> str:
@@ -488,6 +498,61 @@ def detect_object_naming_inconsistency(segments: Sequence[Dict[str, Any]]) -> Li
         variants = sorted(forms.keys(), key=lambda x: (len(x), x))
         idxs = sorted({idx for lst in forms.values() for idx in lst})
         warnings.append(f"object_naming_inconsistent:{head}:{'|'.join(variants)}@{','.join(map(str, idxs))}")
+    return warnings
+
+
+def detect_device_class_conflict(
+    output_segments: Sequence[Dict[str, Any]],
+    draft_segments: Sequence[Dict[str, Any]] | None = None,
+) -> List[str]:
+    """
+    Detect conflicts in device class naming.
+    - Internal conflict: output mixes device families (e.g., phone and laptop).
+    - Draft conflict: output device family differs from draft family.
+    Returns warning tokens suitable for episode_warnings.
+    """
+
+    alias_to_family: Dict[str, str] = {}
+    for family, aliases in DEVICE_CLASS_GROUPS.items():
+        for alias in aliases:
+            alias_to_family[alias] = family
+
+    def _label_text(seg: Dict[str, Any]) -> str:
+        for key in ("label", "current_label", "description", "action", "annotation"):
+            value = seg.get(key)
+            if isinstance(value, str) and value.strip():
+                return lower(value)
+        return ""
+
+    def _collect_families(segments: Sequence[Dict[str, Any]]) -> Dict[str, int]:
+        counts: Dict[str, int] = {}
+        for seg in segments:
+            text = _label_text(seg)
+            if not text:
+                continue
+            seen_in_seg: Set[str] = set()
+            for alias, family in alias_to_family.items():
+                if family in seen_in_seg:
+                    continue
+                if re.search(rf"\b{re.escape(alias)}\b", text):
+                    counts[family] = counts.get(family, 0) + 1
+                    seen_in_seg.add(family)
+        return counts
+
+    warnings: List[str] = []
+    out_counts = _collect_families(output_segments)
+    out_families = sorted(out_counts.keys())
+    if len(out_families) > 1:
+        warnings.append(f"device_class_internal_conflict:{'|'.join(out_families)}")
+
+    if draft_segments:
+        draft_counts = _collect_families(draft_segments)
+        if out_counts and draft_counts:
+            draft_family = sorted(draft_counts.items(), key=lambda x: (-x[1], x[0]))[0][0]
+            out_family = sorted(out_counts.items(), key=lambda x: (-x[1], x[0]))[0][0]
+            if draft_family != out_family:
+                warnings.append(f"device_class_conflict:{draft_family}->{out_family}")
+
     return warnings
 
 
@@ -876,6 +941,13 @@ def validate_episode(annotation: Dict[str, Any]) -> Dict[str, Any]:
     object_naming_warnings = detect_object_naming_inconsistency(segments)
     if object_naming_warnings:
         episode_warnings.append("object_naming_inconsistent")
+    draft_segments = ann.get("draft_segments") or ann.get("tier2_segments") or ann.get("source_segments")
+    device_conflicts = detect_device_class_conflict(
+        segments,
+        draft_segments=draft_segments if isinstance(draft_segments, list) else None,
+    )
+    if device_conflicts:
+        episode_warnings.extend(device_conflicts)
 
     starts_ends = []
     for seg in segments:
@@ -955,7 +1027,8 @@ def validate_episode(annotation: Dict[str, Any]) -> Dict[str, Any]:
         "normalized_annotation": ann,
         "episode_errors": sorted(set(episode_errors)),
         "episode_warnings": sorted(set(episode_warnings)),
-        "episode_warning_details": sorted(set(object_naming_warnings)),
+        "episode_warning_details": sorted(set(object_naming_warnings + device_conflicts)),
+        "device_class_conflicts": sorted(set(device_conflicts)),
         "segment_reports": seg_reports,
         "major_fail_triggers": sorted(set(major_fail_triggers)),
         "repair_recommended": bool(episode_errors or any_seg_errors or episode_warnings),

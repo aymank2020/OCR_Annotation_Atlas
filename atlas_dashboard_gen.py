@@ -65,13 +65,24 @@ def load_usage(outputs_dir: Path) -> List[Dict[str, Any]]:
 
 
 def load_task_states(outputs_dir: Path) -> List[Dict[str, Any]]:
-    state_dir = outputs_dir / ".task_state"
-    if not state_dir.exists():
-        alt = outputs_dir / "task_state"
-        if alt.exists():
-            state_dir = alt
+    candidates = [
+        outputs_dir / ".task_state",
+        outputs_dir / "task_state",
+        outputs_dir.parent / ".task_state",
+        outputs_dir.parent / "task_state",
+    ]
+    state_dir: Optional[Path] = None
+    for candidate in candidates:
+        if candidate.exists() and any(candidate.glob("*.json")):
+            state_dir = candidate
+            break
+    if state_dir is None:
+        for candidate in candidates:
+            if candidate.exists():
+                state_dir = candidate
+                break
     states: List[Dict[str, Any]] = []
-    if not state_dir.exists():
+    if state_dir is None or not state_dir.exists():
         return states
     for f in sorted(state_dir.glob("*.json")):
         data = _load_json(f)
@@ -186,7 +197,7 @@ def compute_episode_metrics(states: List[Dict[str, Any]]) -> Dict[str, Any]:
             "labels_ready": 0, "has_error": 0,
             "policy_passed": 0, "policy_failed": 0,
             "submit_rate_pct": 0.0,
-            "policy_pass_rate_pct": None,
+            "policy_pass_rate_pct": 0.0,
         }
     total = len(states)
     submitted = sum(1 for s in states if s.get("episode_submitted"))
@@ -205,7 +216,7 @@ def compute_episode_metrics(states: List[Dict[str, Any]]) -> Dict[str, Any]:
         "policy_failed": policy_fail,
         "submit_rate_pct": round(submitted / total * 100, 1) if total else 0.0,
         "policy_pass_rate_pct": round(policy_ok / (policy_ok + policy_fail) * 100, 1)
-            if (policy_ok + policy_fail) > 0 else None,
+            if (policy_ok + policy_fail) > 0 else 0.0,
     }
 
 
@@ -239,13 +250,56 @@ def _lesson_ts(row: Dict[str, Any]) -> str:
 
 
 def _lesson_text(row: Dict[str, Any]) -> str:
-    for key in ("lesson_text", "lesson", "summary", "insight", "title", "message"):
-        v = str(row.get(key, "") or "").strip()
-        if v:
-            return v
+    def _parse_maybe_json(value: Any) -> Any:
+        if isinstance(value, dict) or isinstance(value, list):
+            return value
+        if not isinstance(value, str):
+            return None
+        text = value.strip()
+        if not text:
+            return None
+        if not (text.startswith("{") or text.startswith("[")):
+            return None
+        try:
+            return json.loads(text)
+        except Exception:
+            return None
 
-    parsed = row.get("parsed")
+    parsed = _parse_maybe_json(row.get("parsed"))
     if isinstance(parsed, dict):
+        updates = parsed.get("global_policy_updates")
+        if isinstance(updates, list):
+            updates = [str(x).strip() for x in updates if str(x).strip()]
+            if updates:
+                return " | ".join(updates[:3])
+
+        patterns = parsed.get("top_failure_patterns")
+        if isinstance(patterns, list):
+            pretty_patterns: List[str] = []
+            for p in patterns:
+                if isinstance(p, dict):
+                    text = str(
+                        p.get("pattern")
+                        or p.get("summary")
+                        or p.get("issue")
+                        or p.get("name")
+                        or ""
+                    ).strip()
+                    if not text:
+                        text = json.dumps(p, ensure_ascii=False)
+                else:
+                    text = str(p).strip()
+                if text:
+                    pretty_patterns.append(text)
+            if pretty_patterns:
+                return "Top patterns: " + " | ".join(pretty_patterns[:3])
+
+        checklist = parsed.get("reviewer_checklist")
+        if isinstance(checklist, list):
+            checklist = [str(x).strip() for x in checklist if str(x).strip()]
+            if checklist:
+                return "Checklist: " + " | ".join(checklist[:3])
+
         bucket = parsed.get("bucket_summary")
         if isinstance(bucket, dict) and bucket:
             disputed = int(bucket.get("Disputed", 0) or 0)
@@ -259,6 +313,23 @@ def _lesson_text(row: Dict[str, Any]) -> str:
         verdicts = parsed.get("episode_verdicts")
         if isinstance(verdicts, list) and verdicts:
             return f"Episode verdicts analyzed: {len(verdicts)}"
+
+    for key in ("lesson_text", "lesson", "summary", "insight", "title", "message"):
+        v = str(row.get(key, "") or "").strip()
+        if v:
+            maybe = _parse_maybe_json(v)
+            if isinstance(maybe, dict):
+                if "summary" in maybe and str(maybe.get("summary", "")).strip():
+                    return str(maybe.get("summary")).strip()
+                if "message" in maybe and str(maybe.get("message", "")).strip():
+                    return str(maybe.get("message")).strip()
+                if "lesson" in maybe and str(maybe.get("lesson", "")).strip():
+                    return str(maybe.get("lesson")).strip()
+                if "parsed" in maybe:
+                    nested = _lesson_text({"parsed": maybe.get("parsed")})
+                    if nested and "Lesson snapshot generated" not in nested:
+                        return nested
+            return v
 
     run_dir = str(row.get("run_dir", "") or "").strip()
     if run_dir:
@@ -713,6 +784,9 @@ if (!DATA.coverage.has_live_transitions && DATA.coverage.has_runs_transition_fil
 if (DATA.coverage.has_runs_transition_files && DATA.disputes.total_disputes === 0) {
   coverageMsgs.push("Transition files exist but contain no dispute rows yet | الملفات موجودة لكن بدون حالات نزاع");
 }
+if (DATA.cost.total_requests > 0 && DATA.episodes.total === 0) {
+  coverageMsgs.push("Requests exist but episode states are zero (likely dry_run mode or missing task_state files) | توجد طلبات لكن حالات الحلقات صفر (غالباً وضع dry_run أو ملفات task_state غير موجودة)");
+}
 if (coverageMsgs.length > 0) {
   const note = document.getElementById("coverage-note");
   note.className = "notice";
@@ -986,9 +1060,13 @@ def generate_dashboard(outputs_dir: Path, open_browser: bool = False) -> Path:
     transitions = load_transitions(outputs_dir)
     lessons = load_lessons(outputs_dir)
 
-    task_state_dir_exists = bool(
-        (outputs_dir / ".task_state").exists() or (outputs_dir / "task_state").exists()
-    )
+    task_state_candidates = [
+        outputs_dir / ".task_state",
+        outputs_dir / "task_state",
+        outputs_dir.parent / ".task_state",
+        outputs_dir.parent / "task_state",
+    ]
+    task_state_dir_exists = any(p.exists() for p in task_state_candidates)
     live_transitions_path = outputs_dir / "training_feedback" / "live" / "t4_transitions_history.jsonl"
     has_live_transitions = bool(live_transitions_path.exists() and live_transitions_path.stat().st_size > 0)
     has_runs_transition_files = any((outputs_dir / "training_feedback" / "runs").glob("*/t4_transitions.json"))

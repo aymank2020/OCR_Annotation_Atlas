@@ -328,6 +328,68 @@ class TestValidator(unittest.TestCase):
         self.assertIn("object_naming_inconsistent", report["episode_warnings"])
         self.assertTrue(any("cardboard box" in w for w in report["episode_warning_details"]))
 
+    def test_validate_episode_warns_on_device_class_internal_conflict(self):
+        ann = validator.normalize_annotation(
+            {
+                "episode_id": "e10",
+                "video_duration_sec": 10.0,
+                "segments": [
+                    {
+                        "segment_index": 1,
+                        "start_sec": 0.0,
+                        "end_sec": 5.0,
+                        "duration_sec": 5.0,
+                        "label": "unscrew component from phone",
+                        "granularity": "coarse",
+                        "primary_goal": "unscrew component",
+                        "primary_object": "phone",
+                        "confidence": 0.8,
+                    },
+                    {
+                        "segment_index": 2,
+                        "start_sec": 5.0,
+                        "end_sec": 10.0,
+                        "duration_sec": 5.0,
+                        "label": "adjust laptop on table",
+                        "granularity": "coarse",
+                        "primary_goal": "adjust laptop",
+                        "primary_object": "laptop",
+                        "confidence": 0.8,
+                    },
+                ],
+            }
+        )
+        report = validator.validate_episode(ann)
+        self.assertTrue(any(w.startswith("device_class_internal_conflict:") for w in report["episode_warnings"]))
+
+    def test_validate_episode_warns_on_device_class_conflict_against_draft(self):
+        ann = validator.normalize_annotation(
+            {
+                "episode_id": "e11",
+                "video_duration_sec": 8.0,
+                "segments": [
+                    {
+                        "segment_index": 1,
+                        "start_sec": 0.0,
+                        "end_sec": 8.0,
+                        "duration_sec": 8.0,
+                        "label": "adjust laptop on table",
+                        "granularity": "coarse",
+                        "primary_goal": "adjust laptop",
+                        "primary_object": "laptop",
+                        "confidence": 0.8,
+                    }
+                ],
+            }
+        )
+        ann["draft_segments"] = [
+            {"segment_index": 1, "label": "pry open red phone frame"},
+            {"segment_index": 2, "label": "remove back panel from phone"},
+        ]
+        report = validator.validate_episode(ann)
+        self.assertIn("device_class_conflict:phone->laptop", report["episode_warnings"])
+        self.assertIn("device_class_conflict:phone->laptop", report.get("device_class_conflicts", []))
+
 
 if __name__ == "__main__":
     unittest.main()
