@@ -359,11 +359,11 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "prefer_fallback_key_as_primary": False,
         "quota_fallback_enabled": True,
         "quota_fallback_max_uses_per_run": 1000,
-        "model": "gemini-3.1-pro-preview",
+        "model": "gemini-2.5-pro",
         "retry_with_quota_fallback_model": True,
-        "quota_fallback_model": "gemini-3-pro-preview",
-        "quota_fallback_from_models": ["gemini-3.1-pro-preview"],
-        "policy_retry_model": "gemini-3-pro-preview",
+        "quota_fallback_model": "gemini-2.5-pro",
+        "quota_fallback_from_models": ["gemini-2.5-pro"],
+        "policy_retry_model": "gemini-2.5-pro",
         "retry_with_stronger_model_on_policy_fail": True,
         "policy_retry_only_if_flash": True,
         "policy_retry_accept_equal_error_count": False,
@@ -5761,7 +5761,7 @@ def call_gemini_labels(
     segment_count: int = 0,
     model_override: str = "",
 ) -> Dict[str, Any]:
-    model = str(model_override or _cfg_get(cfg, "gemini.model", "gemini-3.1-pro-preview")).strip()
+    model = str(model_override or _cfg_get(cfg, "gemini.model", "gemini-2.5-pro")).strip()
     key_entries = _resolve_gemini_api_key_entries(cfg)
     if not key_entries:
         raise RuntimeError(
@@ -6636,9 +6636,9 @@ def _request_labels_with_optional_segment_chunking(
     retry_with_quota_fallback_model = bool(
         _cfg_get(cfg, "gemini.retry_with_quota_fallback_model", True)
     )
-    quota_fallback_model = str(_cfg_get(cfg, "gemini.quota_fallback_model", "gemini-3-pro-preview") or "").strip()
+    quota_fallback_model = str(_cfg_get(cfg, "gemini.quota_fallback_model", "gemini-2.5-pro") or "").strip()
     quota_fallback_from_models_raw = _cfg_get(
-        cfg, "gemini.quota_fallback_from_models", ["gemini-3.1-pro-preview"]
+        cfg, "gemini.quota_fallback_from_models", ["gemini-2.5-pro"]
     )
     quota_fallback_from_models: set[str] = set()
     if isinstance(quota_fallback_from_models_raw, list):
@@ -6658,7 +6658,7 @@ def _request_labels_with_optional_segment_chunking(
     def _call_labels(prompt_text: str, media_file: Optional[Path], seg_count: int) -> Dict[str, Any]:
         nonlocal active_model_override
         request_model = str(
-            active_model_override or _cfg_get(cfg, "gemini.model", "gemini-3.1-pro-preview")
+            active_model_override or _cfg_get(cfg, "gemini.model", "gemini-2.5-pro")
         ).strip()
         try:
             return call_gemini_labels(
@@ -6909,7 +6909,7 @@ def _request_labels_with_optional_segment_chunking(
         if "secondary" in meta_key_sources:
             key_source_meta = "secondary"
         model_meta = meta_models[-1] if meta_models else str(
-            active_model_override or _cfg_get(cfg, "gemini.model", "gemini-3.1-pro-preview")
+            active_model_override or _cfg_get(cfg, "gemini.model", "gemini-2.5-pro")
         )
         result: Dict[str, Any] = {
             "operations": [],
@@ -8891,8 +8891,8 @@ def _apply_global_gemini_video_policy(cfg: Dict[str, Any]) -> None:
         gem["split_upload_overlap_sec"] = 0.6
         print("[policy] gemini.split_upload_overlap_sec raised to 0.6.")
 
-    preferred_model = "gemini-3.1-pro-preview"
-    quota_fallback_model = "gemini-3-pro-preview"
+    preferred_model = "gemini-2.5-pro"
+    quota_fallback_model = "gemini-2.5-pro"
     configured_model = str(gem.get("model", "") or "").strip()
     if configured_model != preferred_model:
         gem["model"] = preferred_model
@@ -10200,7 +10200,7 @@ def run(cfg: Dict[str, Any], execute: bool) -> None:
                     current_model = str(
                         (labels_payload.get("_meta", {}) or {}).get(
                             "model",
-                            _cfg_get(cfg, "gemini.model", "gemini-3.1-pro-preview"),
+                            _cfg_get(cfg, "gemini.model", "gemini-2.5-pro"),
                         )
                     ).strip()
 
@@ -10514,7 +10514,7 @@ def parse_args() -> argparse.Namespace:
         "--gemini-model",
         type=str,
         default="",
-        help="Override gemini.model for this process only (e.g., gemini-3.1-pro-preview).",
+        help="Override gemini.model for this process only (e.g., gemini-2.5-pro).",
     )
     parser.add_argument(
         "--use-fallback-key",

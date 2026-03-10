@@ -1,4 +1,4 @@
-﻿"""
+"""
 atlas_dashboard_gen.py
 â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 Reads outputs/ directory and generates a standalone HTML operations dashboard.

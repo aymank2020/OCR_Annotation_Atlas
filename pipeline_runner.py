@@ -1,4 +1,4 @@
-﻿"""
+"""
 Atlas multi-pass pipeline runner.
 
 Stages:
@@ -51,7 +51,7 @@ class PipelineConfig:
 
     run_repair: bool = True
     repair_provider: str = "none"
-    repair_model: str = "claude-opus-4-5"
+    repair_model: str = "claude-3-5-sonnet-20241022"
     repair_api_key: str = ""
     fail_open_on_repair_error: bool = True
     repair_policy: str = "major_only"  # always | major_only | on_fail
@@ -693,7 +693,7 @@ def _to_pipeline_config(raw: Dict[str, Any]) -> PipelineConfig:
         gemini_retry_base_delay_sec=float(candidate_cfg.get("gemini_retry_base_delay_sec", 2.0)),
         run_repair=bool(stages_cfg.get("run_repair", True)),
         repair_provider=str(repair_cfg.get("type", "none")),
-        repair_model=str(repair_cfg.get("model", "claude-opus-4-5")),
+        repair_model=str(repair_cfg.get("model", "claude-3-5-sonnet-20241022")),
         repair_api_key=str(repair_cfg.get("api_key", "")),
         fail_open_on_repair_error=bool(stages_cfg.get("fail_open_on_repair_error", True)),
         repair_policy=str(stages_cfg.get("repair_policy", "major_only")),
