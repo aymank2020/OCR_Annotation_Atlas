@@ -556,6 +556,46 @@ def detect_device_class_conflict(
     return warnings
 
 
+def detect_consecutive_duplicate_labels(
+    segments: Sequence[Dict[str, Any]],
+    contiguous_tolerance_sec: float = 0.25,
+) -> List[str]:
+    warnings: List[str] = []
+    if not segments:
+        return warnings
+
+    def _idx(seg: Dict[str, Any]) -> int:
+        try:
+            return int(seg.get("segment_index", 0) or 0)
+        except Exception:
+            return 0
+
+    ordered = sorted(list(segments), key=_idx)
+    for i in range(1, len(ordered)):
+        prev = ordered[i - 1]
+        cur = ordered[i]
+        prev_label = normalize_spaces(prev.get("label", ""))
+        cur_label = normalize_spaces(cur.get("label", ""))
+        if not prev_label or not cur_label:
+            continue
+        if lower(prev_label) == "no action" or lower(cur_label) == "no action":
+            continue
+        if lower(prev_label) != lower(cur_label):
+            continue
+        try:
+            prev_end = float(prev.get("end_sec", 0.0) or 0.0)
+            cur_start = float(cur.get("start_sec", 0.0) or 0.0)
+        except Exception:
+            continue
+        if abs(cur_start - prev_end) <= max(0.0, float(contiguous_tolerance_sec)):
+            prev_idx = _idx(prev)
+            cur_idx = _idx(cur)
+            warnings.append(
+                f"consecutive_duplicate_labels:{prev_idx}->{cur_idx}:{lower(cur_label)}"
+            )
+    return warnings
+
+
 def no_action_mixed_with_action(label: str) -> bool:
     l = lower(label)
     if l == "no action":
@@ -948,6 +988,9 @@ def validate_episode(annotation: Dict[str, Any]) -> Dict[str, Any]:
     )
     if device_conflicts:
         episode_warnings.extend(device_conflicts)
+    duplicate_label_warnings = detect_consecutive_duplicate_labels(segments)
+    if duplicate_label_warnings:
+        episode_warnings.append("consecutive_duplicate_labels")
 
     starts_ends = []
     for seg in segments:
@@ -1027,7 +1070,9 @@ def validate_episode(annotation: Dict[str, Any]) -> Dict[str, Any]:
         "normalized_annotation": ann,
         "episode_errors": sorted(set(episode_errors)),
         "episode_warnings": sorted(set(episode_warnings)),
-        "episode_warning_details": sorted(set(object_naming_warnings + device_conflicts)),
+        "episode_warning_details": sorted(
+            set(object_naming_warnings + device_conflicts + duplicate_label_warnings)
+        ),
         "device_class_conflicts": sorted(set(device_conflicts)),
         "segment_reports": seg_reports,
         "major_fail_triggers": sorted(set(major_fail_triggers)),

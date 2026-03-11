@@ -44,6 +44,8 @@ Strict rules:
 - no shortcuts: do not merge distinct physical interactions into one invalid phrase
 - if two adjacent segments are one continuous coarse action (no disengagement), merge them into one segment
 - if 3+ consecutive segments are the same ongoing action and tool/object is never dropped, merge them aggressively
+- action preservation: do not erase a clear primary action from Tier-2 draft (e.g., cut/screw/wipe) unless visual evidence proves Tier-2 is wrong
+- no back-to-back duplicates: never output two consecutive segments with exactly identical non-"No Action" labels
 - treat short tool reloading actions (dip/reload brush, wet sponge, etc.) as micro-actions of the same main goal
 - avoid mechanical-motion phrasing like "move saw back and forth"; use coarse goal verbs like "cut wood with saw"
 - never use mechanical tool-motion labels like "move comb through wig" or "move hair straightener to press hair";
@@ -60,6 +62,7 @@ Strict rules:
 - do not hallucinate hidden actions
 - for retrieval from containers, prefer "remove [item] from [container]" over "take [item] out"
 - temporal strictness is mandatory: action text must match only the exact row start_sec/end_sec window
+- handling empty draft rows: if draft row is blank/no-label and hands are disengaged, use "No Action" (do not invent an action)
 
 Output requirements:
 - JSON only, no markdown

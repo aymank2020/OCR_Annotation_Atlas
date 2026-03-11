@@ -226,6 +226,21 @@ def _build_html(data: Dict[str, Any], title: str) -> str:
       background: #000;
       border: 1px solid var(--border);
     }}
+    .shotimg {{
+      width: 100%;
+      max-height: 360px;
+      object-fit: contain;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      background: #060a16;
+      display: none;
+    }}
+    .fileline {{
+      font-size: 12px;
+      color: var(--muted);
+      margin-top: 6px;
+      word-break: break-word;
+    }}
     a {{
       color: var(--accent);
       text-decoration: none;
@@ -355,6 +370,31 @@ def _build_html(data: Dict[str, Any], title: str) -> str:
       </div>
 
       <div class="section">
+        <h3>Screenshot Compare | مقارنة الصور</h3>
+        <div class="grid2">
+          <div class="labelbox">
+            <div class="tt">Atlas Screenshot | صورة أطلس</div>
+            <div class="stats" style="margin-bottom:8px">
+              <span><input id="atlasShotInput" type="file" accept="image/*" /></span>
+              <span><button id="atlasShotClearBtn" class="btn" type="button">Clear</button></span>
+            </div>
+            <img id="atlasShotImg" class="shotimg" alt="Atlas screenshot preview" />
+            <div id="atlasShotMeta" class="fileline"></div>
+          </div>
+          <div class="labelbox">
+            <div class="tt">AI / Chat Screenshot | صورة الشات</div>
+            <div class="stats" style="margin-bottom:8px">
+              <span><input id="aiShotInput" type="file" accept="image/*" /></span>
+              <span><button id="aiShotClearBtn" class="btn" type="button">Clear</button></span>
+            </div>
+            <img id="aiShotImg" class="shotimg" alt="AI screenshot preview" />
+            <div id="aiShotMeta" class="fileline"></div>
+          </div>
+        </div>
+        <div class="warn">Screenshots are stored locally in this browser per episode for faster review.</div>
+      </div>
+
+      <div class="section">
         <h3>Gemini AI Evaluate | تقييم Gemini AI</h3>
         <div class="labelbox">
           <div class="stats" style="margin-bottom:8px">
@@ -411,6 +451,14 @@ def _build_html(data: Dict[str, Any], title: str) -> str:
     const tier3Timeline = document.getElementById("tier3Timeline");
     const validationBox = document.getElementById("validationBox");
     const disputesBox = document.getElementById("disputesBox");
+    const atlasShotInput = document.getElementById("atlasShotInput");
+    const aiShotInput = document.getElementById("aiShotInput");
+    const atlasShotClearBtn = document.getElementById("atlasShotClearBtn");
+    const aiShotClearBtn = document.getElementById("aiShotClearBtn");
+    const atlasShotImg = document.getElementById("atlasShotImg");
+    const aiShotImg = document.getElementById("aiShotImg");
+    const atlasShotMeta = document.getElementById("atlasShotMeta");
+    const aiShotMeta = document.getElementById("aiShotMeta");
     const geminiEvalText = document.getElementById("geminiEvalText");
     const geminiEvalScoreInput = document.getElementById("geminiEvalScoreInput");
     const geminiEvalScoreBadge = document.getElementById("geminiEvalScoreBadge");
@@ -425,6 +473,7 @@ def _build_html(data: Dict[str, Any], title: str) -> str:
     const GEMINI_CHAT_URL = "https://gemini.google.com/app/b3006ba9f325b55c";
     let currentEpisodeId = "";
     let evalStore = {{}};
+    let shotStore = {{}};
     let segStopAt = null;
 
     function loadLocalEvalStore() {{
@@ -472,6 +521,80 @@ def _build_html(data: Dict[str, Any], title: str) -> str:
       }} catch (_) {{
         // optional file
       }}
+    }}
+
+    function loadLocalShotStore() {{
+      try {{
+        const raw = localStorage.getItem("atlas_review_shot_store_v1");
+        if (!raw) return {{}};
+        const obj = JSON.parse(raw);
+        return obj && typeof obj === "object" ? obj : {{}};
+      }} catch (_) {{
+        return {{}};
+      }}
+    }}
+
+    function saveLocalShotStore() {{
+      try {{
+        localStorage.setItem("atlas_review_shot_store_v1", JSON.stringify(shotStore));
+      }} catch (_) {{}}
+    }}
+
+    function renderShotsForEpisode(eid) {{
+      const rec = shotStore[eid] || {{}};
+      const atlasSrc = String(rec.atlas_data_url || "");
+      const aiSrc = String(rec.ai_data_url || "");
+      atlasShotImg.style.display = atlasSrc ? "block" : "none";
+      aiShotImg.style.display = aiSrc ? "block" : "none";
+      atlasShotImg.src = atlasSrc || "";
+      aiShotImg.src = aiSrc || "";
+      atlasShotMeta.textContent = atlasSrc ? `file: ${{rec.atlas_name || "atlas.png"}}` : "No image";
+      aiShotMeta.textContent = aiSrc ? `file: ${{rec.ai_name || "ai.png"}}` : "No image";
+      if (atlasShotInput) atlasShotInput.value = "";
+      if (aiShotInput) aiShotInput.value = "";
+    }}
+
+    function fileToDataUrl(file) {{
+      return new Promise((resolve, reject) => {{
+        const r = new FileReader();
+        r.onload = () => resolve(String(r.result || ""));
+        r.onerror = reject;
+        r.readAsDataURL(file);
+      }});
+    }}
+
+    async function saveShotFromFile(kind, file) {{
+      if (!currentEpisodeId || !file) return;
+      const dataUrl = await fileToDataUrl(file);
+      const rec = Object.assign({{}}, shotStore[currentEpisodeId] || {{}});
+      const now = new Date().toISOString();
+      if (kind === "atlas") {{
+        rec.atlas_data_url = dataUrl;
+        rec.atlas_name = String(file.name || "atlas.png");
+      }} else {{
+        rec.ai_data_url = dataUrl;
+        rec.ai_name = String(file.name || "ai.png");
+      }}
+      rec.updated_at_utc = now;
+      shotStore[currentEpisodeId] = rec;
+      saveLocalShotStore();
+      renderShotsForEpisode(currentEpisodeId);
+    }}
+
+    function clearShot(kind) {{
+      if (!currentEpisodeId) return;
+      const rec = Object.assign({{}}, shotStore[currentEpisodeId] || {{}});
+      if (kind === "atlas") {{
+        delete rec.atlas_data_url;
+        delete rec.atlas_name;
+      }} else {{
+        delete rec.ai_data_url;
+        delete rec.ai_name;
+      }}
+      rec.updated_at_utc = new Date().toISOString();
+      shotStore[currentEpisodeId] = rec;
+      saveLocalShotStore();
+      renderShotsForEpisode(currentEpisodeId);
     }}
 
     function scoreToBadge(score) {{
@@ -611,6 +734,9 @@ def _build_html(data: Dict[str, Any], title: str) -> str:
       const tier3Raw = ep.tier3_text || ep.tier3;
       const validation = ep.validation || {{}};
       const disputes = Array.isArray(ep.disputes) ? ep.disputes : [];
+      const shotRec = shotStore[String(ep.episode_id || "")] || {{}};
+      const atlasShotAttached = Boolean(shotRec.atlas_data_url);
+      const aiShotAttached = Boolean(shotRec.ai_data_url);
 
       const validationSummary = {{
         ok: validation.ok,
@@ -640,6 +766,11 @@ def _build_html(data: Dict[str, Any], title: str) -> str:
         `Count: ${{disputes.length}}`,
         "Sample:",
         JSON.stringify(disputes.slice(0, 3), null, 2),
+        "",
+        "[Screenshot context]",
+        `Atlas screenshot attached: ${{atlasShotAttached ? "yes" : "no"}}`,
+        `AI/chat screenshot attached: ${{aiShotAttached ? "yes" : "no"}}`,
+        "If screenshots are attached in chat, treat Atlas screenshot as the final UI source of truth.",
         "",
         "Please evaluate:",
         "1) Which is better: Tier2 or Tier3?",
@@ -860,6 +991,7 @@ def _build_html(data: Dict[str, Any], title: str) -> str:
       validationBox.textContent = ep.validation ? JSON.stringify(ep.validation, null, 2) : "(missing)";
       const disputes = Array.isArray(ep.disputes) ? ep.disputes.slice(0, 5) : [];
       disputesBox.textContent = disputes.length ? JSON.stringify(disputes, null, 2) : "(none)";
+      renderShotsForEpisode(currentEpisodeId);
       renderEvalForEpisode(currentEpisodeId);
     }}
 
@@ -871,10 +1003,27 @@ def _build_html(data: Dict[str, Any], title: str) -> str:
 
     initFilter();
     evalStore = loadLocalEvalStore();
+    shotStore = loadLocalShotStore();
     loadExternalEvalStore();
 
     geminiEvalSaveBtn.addEventListener("click", saveCurrentEval);
     geminiEvalClearBtn.addEventListener("click", clearCurrentEval);
+    atlasShotInput.addEventListener("change", async (ev) => {{
+      const f = ev.target.files && ev.target.files[0];
+      if (!f) return;
+      try {{
+        await saveShotFromFile("atlas", f);
+      }} catch (_) {{}}
+    }});
+    aiShotInput.addEventListener("change", async (ev) => {{
+      const f = ev.target.files && ev.target.files[0];
+      if (!f) return;
+      try {{
+        await saveShotFromFile("ai", f);
+      }} catch (_) {{}}
+    }});
+    atlasShotClearBtn.addEventListener("click", () => clearShot("atlas"));
+    aiShotClearBtn.addEventListener("click", () => clearShot("ai"));
     geminiEvalAutoScoreBtn.addEventListener("click", () => {{
       const s = parseScoreFromText(geminiEvalText.value || "");
       if (s === null) {{
