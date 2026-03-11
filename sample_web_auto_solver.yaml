@@ -156,7 +156,7 @@ gemini:
   vision_preencode_fps: 4.0
   split_upload_reencode_fps: 4.0
   retry_with_stronger_model_on_policy_fail: true
-  policy_retry_model: "gemini-2.5-pro"
+  policy_retry_model: "gemini-3.1-pro-preview"
   policy_retry_only_if_flash: false
   policy_retry_accept_equal_error_count: false
   extra_instructions: |

@@ -28,6 +28,9 @@ Some operations modules discussed in architecture reviews (for example WhatsApp/
 - `atlas_finetune_exporter.py`: exports episodes/disputes for fine-tuning datasets.
 - `atlas_review_builder.py`: builds `episodes_review_index.json` for full historical re-audit.
 - `atlas_chat_exporter.py`: exports per-episode chat packages (`chat_prompt.txt` + metadata + optional video).
+- `atlas_auto_sync_and_rebuild.py`: one-shot Python workflow to auto-sync from Drive (if needed) and rebuild review artifacts.
+- `atlas_watchdog.py`: watchdog health check/restart for `atlas-autopilot.service`.
+- `install_watchdog_cron.sh`: installs cron watchdog runner on Linux VPS.
 
 ## Extended ecosystem modules (ops branches)
 
@@ -153,6 +156,25 @@ What it does:
 5. Exports chat packages (`chat_reviews/<episode_id>/...`).
 6. Uploads generated dashboard/index/viewer/packages back to the same Drive folder when `--upload-results 1`.
 
+## Auto Sync + Rebuild (Python one-shot)
+
+If dashboard values are zero because local `outputs/` is empty while historical data is on Drive:
+
+```bash
+python atlas_auto_sync_and_rebuild.py \
+  --outputs-dir outputs \
+  --drive-link "https://drive.google.com/drive/folders/<FOLDER_ID>?usp=sharing" \
+  --remote gdrive \
+  --build-power-queue
+```
+
+This command can:
+
+1. detect weak local outputs coverage,
+2. sync metadata snapshot from Drive (videos optional),
+3. rebuild index/dashboard/viewer/chat packages,
+4. generate `outputs/power_automate_queue.csv`.
+
 ## Production policy recommendations
 
 For safer execution quality, keep these settings in production configs:
@@ -264,6 +286,22 @@ chmod +x safe_update_preserve_local.sh
 ```
 
 This preserves local runtime files (such as `.env`, local YAML overrides, and `.state/atlas_auth.json`) before pulling updates, then restores them after update.
+
+## Watchdog (auto-restart on crash/stall)
+
+Install watchdog cron (every 5 minutes):
+
+```bash
+cd /root/OCR_annotation_Atlas
+chmod +x install_watchdog_cron.sh
+./install_watchdog_cron.sh /root/OCR_annotation_Atlas atlas-autopilot.service 5
+```
+
+Manual watchdog run:
+
+```bash
+python3 atlas_watchdog.py --service atlas-autopilot.service --outputs-dir outputs
+```
 
 ## Provider notes
 
