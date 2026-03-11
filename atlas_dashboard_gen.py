@@ -99,6 +99,27 @@ def load_review_index(outputs_dir: Path) -> Dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
+def load_chat_evaluations(outputs_dir: Path) -> List[Dict[str, Any]]:
+    payload = _load_json(outputs_dir / "gemini_chat_evaluations.json", default={})
+    if not isinstance(payload, dict):
+        return []
+    raw = payload.get("evaluations")
+    rows: List[Dict[str, Any]] = []
+    if isinstance(raw, dict):
+        for eid, item in raw.items():
+            if not isinstance(item, dict):
+                continue
+            row = dict(item)
+            row.setdefault("episode_id", str(eid or "").strip().lower())
+            rows.append(row)
+    elif isinstance(raw, list):
+        for item in raw:
+            if isinstance(item, dict):
+                rows.append(dict(item))
+    rows.sort(key=lambda x: str(x.get("updated_at_utc") or ""), reverse=True)
+    return rows
+
+
 def load_task_states(outputs_dir: Path) -> List[Dict[str, Any]]:
     by_episode: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
 
@@ -827,6 +848,68 @@ def compute_note_metrics(notes: List[Dict[str, Any]], max_recent: int = 50) -> D
     }
 
 
+def _safe_score(value: Any) -> Optional[float]:
+    try:
+        if value is None:
+            return None
+        v = float(value)
+        if math.isnan(v):
+            return None
+        return max(0.0, min(100.0, v))
+    except Exception:
+        return None
+
+
+def compute_chat_eval_metrics(rows: List[Dict[str, Any]], max_recent: int = 20) -> Dict[str, Any]:
+    if not rows:
+        return {
+            "total": 0,
+            "scored": 0,
+            "avg_score_pct": 0.0,
+            "green": 0,
+            "yellow": 0,
+            "red": 0,
+            "recent": [],
+        }
+
+    scores: List[float] = []
+    green = 0
+    yellow = 0
+    red = 0
+    recent: List[Dict[str, Any]] = []
+
+    for row in rows[: max(1, int(max_recent))]:
+        score = _safe_score(row.get("score_pct"))
+        if score is not None:
+            scores.append(score)
+            if score >= 90:
+                green += 1
+            elif score >= 70:
+                yellow += 1
+            else:
+                red += 1
+        recent.append(
+            {
+                "episode_id": str(row.get("episode_id") or ""),
+                "score_pct": score,
+                "source": str(row.get("source") or ""),
+                "updated_at_utc": str(row.get("updated_at_utc") or ""),
+                "text": str(row.get("text") or ""),
+            }
+        )
+
+    avg_score = (sum(scores) / len(scores)) if scores else 0.0
+    return {
+        "total": len(rows),
+        "scored": len(scores),
+        "avg_score_pct": round(avg_score, 1),
+        "green": green,
+        "yellow": yellow,
+        "red": red,
+        "recent": recent,
+    }
+
+
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # HTML generation
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -1267,6 +1350,22 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
   </div>
 
+  <!-- Gemini Chat QA -->
+  <div class="section-label">Gemini Chat QA | تقييم شات جيمناي</div>
+  <div class="two-col">
+
+    <div class="panel">
+      <div class="panel-title">Gemini AI Evaluate | تقييم Gemini AI <span id="chat-eval-count" class="pill"></span></div>
+      <div id="chat-eval-panel"></div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-title">Chat Score Distribution | توزيع درجات الشات</div>
+      <div id="chat-eval-stats-panel"></div>
+    </div>
+
+  </div>
+
 </main>
 
 <div class="footer">
@@ -1303,6 +1402,9 @@ if (DATA.coverage.has_runs_transition_files && DATA.disputes.total_disputes === 
 if (DATA.cost.total_requests > 0 && DATA.episodes.total === 0) {
   coverageMsgs.push("Requests exist but episode states are zero (likely dry_run mode or missing task_state files) | توجد طلبات لكن حالات الحلقات صفر (غالباً وضع dry_run أو ملفات task_state غير موجودة)");
 }
+if (!DATA.coverage.has_chat_evaluations) {
+  coverageMsgs.push("Gemini chat evaluations file not found (gemini_chat_evaluations.json) | ملف تقييمات شات جيمناي غير موجود");
+}
 if (coverageMsgs.length > 0) {
   const note = document.getElementById("coverage-note");
   note.className = "notice";
@@ -1319,6 +1421,7 @@ const sources = [
   { key: "task_state", label: "Episode State | حالة الحلقات" },
   { key: "transitions", label: "Transitions | التحولات" },
   { key: "lessons", label: "Lessons | الدروس" },
+  { key: "chat_evaluations", label: "Gemini Chat Evaluations | تقييمات شات جيمناي" },
   { key: "whatsapp_notes", label: "What'sup Notes | ملاحظات واتساب" },
   { key: "discord_notes", label: "Discord Notes | ملاحظات ديسكورد" },
   { key: "review_index", label: "Review Index | فهرس المراجعة" },
@@ -1392,6 +1495,18 @@ const kpis = [
     value: DATA.disputes.total_disputes,
     sub: "T4 transitions captured | حالات T4 الملتقطة",
     color: "#ff6b6b"
+  },
+  {
+    label: "Gemini Chat Reviews | مراجعات شات جيمناي",
+    value: DATA.chat_eval.total,
+    sub: DATA.chat_eval.scored + " scored | تم تقييمها بدرجة",
+    color: "#38bdf8"
+  },
+  {
+    label: "Chat Avg Score | متوسط درجة الشات",
+    value: asPercentOrNA(DATA.chat_eval.avg_score_pct),
+    sub: DATA.chat_eval.green + " green / " + DATA.chat_eval.yellow + " yellow / " + DATA.chat_eval.red + " red",
+    color: "#38bdf8"
   },
 ];
 
@@ -1606,6 +1721,66 @@ renderNotes(
   DATA.discord_notes,
   "No Discord notes yet | لا توجد ملاحظات ديسكورد بعد"
 );
+
+// Gemini chat evaluations
+const chat = DATA.chat_eval || { total: 0, scored: 0, avg_score_pct: 0, green: 0, yellow: 0, red: 0, recent: [] };
+const chatCount = document.getElementById("chat-eval-count");
+if (chatCount) {
+  chatCount.textContent = chat.total || 0;
+}
+const chatStatsPanel = document.getElementById("chat-eval-stats-panel");
+if (chatStatsPanel) {
+  chatStatsPanel.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border)">
+      <span style="font-family:var(--mono);font-size:0.75rem;color:var(--text2)">Scored | تم تقييمها</span>
+      <span style="font-family:var(--mono);font-size:0.8rem">${chat.scored || 0}</span>
+    </div>
+    <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border)">
+      <span style="font-family:var(--mono);font-size:0.75rem;color:var(--text2)">Average Score | متوسط الدرجة</span>
+      <span style="font-family:var(--mono);font-size:0.8rem">${asPercentOrNA(chat.avg_score_pct)}</span>
+    </div>
+    <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border)">
+      <span style="font-family:var(--mono);font-size:0.75rem;color:var(--text2)">Green (>=90) | أخضر</span>
+      <span style="font-family:var(--mono);font-size:0.8rem;color:#22c55e">${chat.green || 0}</span>
+    </div>
+    <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border)">
+      <span style="font-family:var(--mono);font-size:0.75rem;color:var(--text2)">Yellow (70-89) | أصفر</span>
+      <span style="font-family:var(--mono);font-size:0.8rem;color:#ffd166">${chat.yellow || 0}</span>
+    </div>
+    <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0">
+      <span style="font-family:var(--mono);font-size:0.75rem;color:var(--text2)">Red (<70) | أحمر</span>
+      <span style="font-family:var(--mono);font-size:0.8rem;color:#ff6b6b">${chat.red || 0}</span>
+    </div>
+  `;
+}
+
+const chatPanel = document.getElementById("chat-eval-panel");
+if (chatPanel) {
+  const rows = Array.isArray(chat.recent) ? chat.recent : [];
+  if (rows.length === 0) {
+    chatPanel.innerHTML = '<div class="no-data">No chat evaluations yet | لا توجد تقييمات شات بعد</div>';
+  } else {
+    chatPanel.innerHTML = `
+      <table class="data-table">
+        <thead><tr><th>Episode | الحلقة</th><th>Score | الدرجة</th><th>Source | المصدر</th><th>Date | التاريخ</th></tr></thead>
+        <tbody>
+          ${rows.map(r => {
+            const eid = (r.episode_id || "").toString();
+            const score = (r.score_pct === null || r.score_pct === undefined) ? "N/A" : `${Number(r.score_pct).toFixed(0)}%`;
+            const src = (r.source || "").toString();
+            const ts = (r.updated_at_utc || "").toString().substring(0, 19);
+            return `<tr>
+              <td style="font-size:0.68rem">${eid.substring(0,16)}</td>
+              <td style="font-size:0.68rem">${score}</td>
+              <td style="font-size:0.68rem">${src}</td>
+              <td style="font-size:0.68rem">${ts}</td>
+            </tr>`;
+          }).join("")}
+        </tbody>
+      </table>
+    `;
+  }
+}
 </script>
 </body>
 </html>
@@ -1627,6 +1802,7 @@ def generate_dashboard(outputs_dir: Path, open_browser: bool = False) -> Path:
     whatsapp_notes = load_whatsapp_notes(outputs_dir)
     discord_notes = load_discord_notes(outputs_dir)
     review_index = load_review_index(outputs_dir)
+    chat_evaluations = load_chat_evaluations(outputs_dir)
 
     task_state_candidates = [
         outputs_dir / ".task_state",
@@ -1647,6 +1823,7 @@ def generate_dashboard(outputs_dir: Path, open_browser: bool = False) -> Path:
         "task_state": len(states),
         "transitions": len(transitions),
         "lessons": len(lessons),
+        "chat_evaluations": len(chat_evaluations),
         "whatsapp_notes": len(whatsapp_notes),
         "discord_notes": len(discord_notes),
         "review_index": len(review_index.get("episodes", [])) if has_review_index else 0,
@@ -1656,12 +1833,16 @@ def generate_dashboard(outputs_dir: Path, open_browser: bool = False) -> Path:
         "task_state": source_rows["task_state"] > 0,
         "transitions": source_rows["transitions"] > 0,
         "lessons": source_rows["lessons"] > 0,
+        "chat_evaluations": source_rows["chat_evaluations"] > 0,
+        "whatsapp_notes": source_rows["whatsapp_notes"] > 0,
+        "discord_notes": source_rows["discord_notes"] > 0,
         "review_index": source_rows["review_index"] > 0,
     }
     completeness_pct = round(sum(1 for v in source_available.values() if v) / len(source_available) * 100, 1)
 
     coverage = {
         "has_task_state": source_rows["task_state"] > 0,
+        "has_chat_evaluations": source_rows["chat_evaluations"] > 0,
         "task_state_dir_exists": task_state_dir_exists,
         "has_runs_task_state_files": has_runs_task_state_files,
         "has_live_transitions": has_live_transitions,
@@ -1674,6 +1855,7 @@ def generate_dashboard(outputs_dir: Path, open_browser: bool = False) -> Path:
 
     print(f"[dashboard] usage_rows={len(usage)} task_states={len(states)} "
           f"transitions={len(transitions)} lessons={len(lessons)} "
+          f"chat_evals={len(chat_evaluations)} "
           f"whatsapp_notes={len(whatsapp_notes)} discord_notes={len(discord_notes)}")
 
     generated_at_utc = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -1712,6 +1894,7 @@ def generate_dashboard(outputs_dir: Path, open_browser: bool = False) -> Path:
         else compute_episode_metrics(states),
         "disputes": compute_dispute_metrics(transitions),
         "lessons": compute_lesson_metrics(lessons),
+        "chat_eval": compute_chat_eval_metrics(chat_evaluations),
         "whatsapp_notes": compute_note_metrics(whatsapp_notes),
         "discord_notes": compute_note_metrics(discord_notes),
         "coverage": coverage,
