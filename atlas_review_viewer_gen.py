@@ -266,6 +266,34 @@ def _build_html(data: Dict[str, Any], title: str) -> str:
       font-size: 12px;
       margin-top: 8px;
     }}
+    textarea {{
+      width: 100%;
+      min-height: 140px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: #0a1022;
+      color: var(--text);
+      padding: 10px;
+      resize: vertical;
+      font-family: Consolas, "Courier New", monospace;
+      font-size: 12px;
+      line-height: 1.5;
+    }}
+    .score-badge {{
+      padding: 3px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 700;
+      border: 1px solid transparent;
+      display: inline-flex;
+      align-items: center;
+      min-width: 110px;
+      justify-content: center;
+    }}
+    .score-green {{ background: #0f2a20; color: #16c47f; border-color: #16c47f55; }}
+    .score-red {{ background: #341717; color: #ff6b6b; border-color: #ff6b6b55; }}
+    .score-yellow {{ background: #38280e; color: #f8c146; border-color: #f8c14655; }}
+    .score-gray {{ background: #222a42; color: #8893b3; border-color: #8893b355; }}
     @media (max-width: 1000px) {{
       .layout {{ grid-template-columns: 1fr; }}
       .grid2 {{ grid-template-columns: 1fr; }}
@@ -325,6 +353,29 @@ def _build_html(data: Dict[str, Any], title: str) -> str:
           <pre id="disputesBox">-</pre>
         </div>
       </div>
+
+      <div class="section">
+        <h3>Gemini AI Evaluate | تقييم Gemini AI</h3>
+        <div class="labelbox">
+          <div class="stats" style="margin-bottom:8px">
+            <span><a id="openGeminiChatLink" href="https://gemini.google.com/app/b3006ba9f325b55c" target="_blank">Open Gemini Chat</a></span>
+            <span><button id="geminiEvalSaveBtn" class="btn" type="button">Save Evaluate</button></span>
+            <span><button id="geminiEvalClearBtn" class="btn" type="button">Clear</button></span>
+            <span><button id="geminiEvalExportBtn" class="btn" type="button">Export JSON</button></span>
+            <span><button id="geminiEvalImportBtn" class="btn" type="button">Import JSON</button></span>
+            <input id="geminiEvalImportFile" type="file" accept=".json" style="display:none" />
+          </div>
+          <textarea id="geminiEvalText" placeholder="Paste Gemini chat evaluation here | الصق نتيجة Gemini هنا"></textarea>
+          <div class="stats" style="margin-top:8px">
+            <span>
+              <input id="geminiEvalScoreInput" type="number" min="0" max="100" step="1" style="width:90px" placeholder="Score %" />
+            </span>
+            <span><button id="geminiEvalAutoScoreBtn" class="btn" type="button">Auto Score</button></span>
+            <span id="geminiEvalScoreBadge" class="score-badge score-gray">N/A</span>
+            <span id="geminiEvalSavedAt" style="color:var(--muted)"></span>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -360,7 +411,130 @@ def _build_html(data: Dict[str, Any], title: str) -> str:
     const tier3Timeline = document.getElementById("tier3Timeline");
     const validationBox = document.getElementById("validationBox");
     const disputesBox = document.getElementById("disputesBox");
+    const geminiEvalText = document.getElementById("geminiEvalText");
+    const geminiEvalScoreInput = document.getElementById("geminiEvalScoreInput");
+    const geminiEvalScoreBadge = document.getElementById("geminiEvalScoreBadge");
+    const geminiEvalSavedAt = document.getElementById("geminiEvalSavedAt");
+    const geminiEvalSaveBtn = document.getElementById("geminiEvalSaveBtn");
+    const geminiEvalClearBtn = document.getElementById("geminiEvalClearBtn");
+    const geminiEvalAutoScoreBtn = document.getElementById("geminiEvalAutoScoreBtn");
+    const geminiEvalExportBtn = document.getElementById("geminiEvalExportBtn");
+    const geminiEvalImportBtn = document.getElementById("geminiEvalImportBtn");
+    const geminiEvalImportFile = document.getElementById("geminiEvalImportFile");
+    const openGeminiChatLink = document.getElementById("openGeminiChatLink");
+    const GEMINI_CHAT_URL = "https://gemini.google.com/app/b3006ba9f325b55c";
+    let currentEpisodeId = "";
+    let evalStore = {{}};
     let segStopAt = null;
+
+    function loadLocalEvalStore() {{
+      try {{
+        const raw = localStorage.getItem("atlas_gemini_eval_store_v1");
+        if (!raw) return {{}};
+        const obj = JSON.parse(raw);
+        return obj && typeof obj === "object" ? obj : {{}};
+      }} catch (_) {{
+        return {{}};
+      }}
+    }}
+
+    function saveLocalEvalStore() {{
+      try {{
+        localStorage.setItem("atlas_gemini_eval_store_v1", JSON.stringify(evalStore));
+      }} catch (_) {{}}
+    }}
+
+    function mergeEvalStores(base, incoming) {{
+      const out = Object.assign({{}}, base || {{}});
+      Object.entries(incoming || {{}}).forEach(([eid, rec]) => {{
+        if (!rec || typeof rec !== "object") return;
+        const oldRec = out[eid];
+        if (!oldRec) {{
+          out[eid] = rec;
+          return;
+        }}
+        const oldTs = String(oldRec.updated_at_utc || "");
+        const newTs = String(rec.updated_at_utc || "");
+        out[eid] = newTs >= oldTs ? rec : oldRec;
+      }});
+      return out;
+    }}
+
+    async function loadExternalEvalStore() {{
+      try {{
+        const res = await fetch("gemini_chat_evaluations.json", {{ cache: "no-cache" }});
+        if (!res.ok) return;
+        const data = await res.json();
+        const incoming = (data && data.evaluations && typeof data.evaluations === "object") ? data.evaluations : {{}};
+        evalStore = mergeEvalStores(evalStore, incoming);
+        saveLocalEvalStore();
+        if (currentEpisodeId) renderEvalForEpisode(currentEpisodeId);
+      }} catch (_) {{
+        // optional file
+      }}
+    }}
+
+    function scoreToBadge(score) {{
+      const n = Number(score);
+      if (!Number.isFinite(n)) {{
+        return {{ cls: "score-gray", txt: "N/A" }};
+      }}
+      const v = Math.max(0, Math.min(100, Math.round(n)));
+      if (v === 100) return {{ cls: "score-green", txt: "SUCCESS 100%" }};
+      if (v === 0) return {{ cls: "score-red", txt: "FAIL 0%" }};
+      return {{ cls: "score-yellow", txt: `${{v}}%` }};
+    }}
+
+    function applyScoreBadge(score) {{
+      const b = scoreToBadge(score);
+      geminiEvalScoreBadge.className = `score-badge ${{b.cls}}`;
+      geminiEvalScoreBadge.textContent = b.txt;
+    }}
+
+    function parseScoreFromText(text) {{
+      const t = String(text || "");
+      const m = t.match(/(?:score|confidence|accuracy|quality|percent|نسبة|تقييم)\\s*[:=\\-]?\\s*(\\d{{1,3}})\\s*%?/i) || t.match(/(\\d{{1,3}})\\s*%/);
+      if (!m) return null;
+      const n = Number(m[1]);
+      if (!Number.isFinite(n)) return null;
+      return Math.max(0, Math.min(100, Math.round(n)));
+    }}
+
+    function renderEvalForEpisode(eid) {{
+      const rec = evalStore[eid] || {{}};
+      geminiEvalText.value = String(rec.text || "");
+      if (rec.score_pct === null || rec.score_pct === undefined || rec.score_pct === "") {{
+        geminiEvalScoreInput.value = "";
+      }} else {{
+        geminiEvalScoreInput.value = String(rec.score_pct);
+      }}
+      applyScoreBadge(rec.score_pct);
+      geminiEvalSavedAt.textContent = rec.updated_at_utc ? `saved: ${{rec.updated_at_utc}}` : "";
+    }}
+
+    function saveCurrentEval() {{
+      if (!currentEpisodeId) return;
+      const txt = String(geminiEvalText.value || "").trim();
+      const manual = geminiEvalScoreInput.value === "" ? null : Number(geminiEvalScoreInput.value);
+      const score = Number.isFinite(manual) ? Math.max(0, Math.min(100, Math.round(manual))) : parseScoreFromText(txt);
+      const now = new Date().toISOString();
+      evalStore[currentEpisodeId] = {{
+        episode_id: currentEpisodeId,
+        text: txt,
+        score_pct: score,
+        updated_at_utc: now,
+        source: "viewer_manual",
+      }};
+      saveLocalEvalStore();
+      renderEvalForEpisode(currentEpisodeId);
+    }}
+
+    function clearCurrentEval() {{
+      if (!currentEpisodeId) return;
+      delete evalStore[currentEpisodeId];
+      saveLocalEvalStore();
+      renderEvalForEpisode(currentEpisodeId);
+    }}
 
     metaInfo.textContent = `generated: ${{DATA.generated_at_utc || "n/a"}}`;
     topStats.innerHTML = `
@@ -473,6 +647,8 @@ def _build_html(data: Dict[str, Any], title: str) -> str:
         "3) List exact segment-level issues with rule names.",
         "4) Provide corrected labels for failing segments.",
         "5) Final verdict: PASS / FAIL with confidence.",
+        "",
+        "مهم: اكتب الإجابة النهائية بالكامل باللغة العربية بشكل واضح ومباشر.",
       ].join("\\n");
     }}
 
@@ -619,6 +795,7 @@ def _build_html(data: Dict[str, Any], title: str) -> str:
       if (row) row.classList.add("active");
 
       const eid = ep.episode_id || "unknown";
+      currentEpisodeId = String(eid);
       const status = ep.review_status || "unknown";
       const cost = Number(ep.total_cost_usd || 0).toFixed(6);
       const atlasUrl = ep.atlas_url || ep.open_url || "";
@@ -645,6 +822,9 @@ def _build_html(data: Dict[str, Any], title: str) -> str:
           <span><button id="copyPromptBtn" class="btn" type="button">Copy Chat Prompt</button></span>
         </div>
       `;
+      if (openGeminiChatLink) {{
+        openGeminiChatLink.href = GEMINI_CHAT_URL;
+      }}
       const copyBtn = document.getElementById("copyPromptBtn");
       if (copyBtn) {{
         copyBtn.addEventListener("click", async () => {{
@@ -680,6 +860,7 @@ def _build_html(data: Dict[str, Any], title: str) -> str:
       validationBox.textContent = ep.validation ? JSON.stringify(ep.validation, null, 2) : "(missing)";
       const disputes = Array.isArray(ep.disputes) ? ep.disputes.slice(0, 5) : [];
       disputesBox.textContent = disputes.length ? JSON.stringify(disputes, null, 2) : "(none)";
+      renderEvalForEpisode(currentEpisodeId);
     }}
 
     function initFilter() {{
@@ -689,6 +870,49 @@ def _build_html(data: Dict[str, Any], title: str) -> str:
     }}
 
     initFilter();
+    evalStore = loadLocalEvalStore();
+    loadExternalEvalStore();
+
+    geminiEvalSaveBtn.addEventListener("click", saveCurrentEval);
+    geminiEvalClearBtn.addEventListener("click", clearCurrentEval);
+    geminiEvalAutoScoreBtn.addEventListener("click", () => {{
+      const s = parseScoreFromText(geminiEvalText.value || "");
+      if (s === null) {{
+        applyScoreBadge(null);
+        return;
+      }}
+      geminiEvalScoreInput.value = String(s);
+      applyScoreBadge(s);
+    }});
+    geminiEvalExportBtn.addEventListener("click", () => {{
+      const payload = {{
+        generated_at_utc: new Date().toISOString(),
+        source: "atlas_review_viewer",
+        evaluations: evalStore,
+      }};
+      const blob = new Blob([JSON.stringify(payload, null, 2)], {{ type: "application/json" }});
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = "gemini_chat_evaluations.json";
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    }});
+    geminiEvalImportBtn.addEventListener("click", () => geminiEvalImportFile.click());
+    geminiEvalImportFile.addEventListener("change", (ev) => {{
+      const f = ev.target.files && ev.target.files[0];
+      if (!f) return;
+      const r = new FileReader();
+      r.onload = () => {{
+        try {{
+          const obj = JSON.parse(String(r.result || "{{}}"));
+          const incoming = (obj && obj.evaluations && typeof obj.evaluations === "object") ? obj.evaluations : obj;
+          evalStore = mergeEvalStores(evalStore, incoming);
+          saveLocalEvalStore();
+          if (currentEpisodeId) renderEvalForEpisode(currentEpisodeId);
+        }} catch (_) {{}}
+      }};
+      r.readAsText(f);
+    }});
     video.addEventListener("timeupdate", () => {{
       if (segStopAt == null) return;
       if (video.currentTime >= segStopAt) {{

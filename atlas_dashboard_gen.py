@@ -247,30 +247,54 @@ def load_lessons(outputs_dir: Path) -> List[Dict[str, Any]]:
     )
 
 
-NOTE_KEYWORDS = (
+RULE_HINTS = (
     "policy",
     "guideline",
     "rule",
     "must",
     "should",
     "forbidden",
-    "dispute",
+    "required",
+    "validation",
+    "validator",
     "tier",
-    "trainer",
-    "team lead",
-    "teamleader",
-    "question",
-    "answer",
     "timestamp",
+    "segment",
+    "merge",
+    "split",
     "no action",
     "place",
     "location",
     "numeral",
-    "validator",
-    "segment",
-    "merge",
-    "split",
+    "atomic actions",
     "quality",
+)
+
+QA_HINTS = (
+    "q:",
+    "question",
+    "answer",
+    "a:",
+    "?",
+    "how",
+    "why",
+    "what",
+    "when",
+    "trainer",
+    "team lead",
+    "teamleader",
+)
+
+TRAINER_HINTS = (
+    "trainer",
+    "team lead",
+    "teamleader",
+    "frans",
+    "duwop",
+    "lead",
+    "admin",
+    "moderator",
+    "mod",
 )
 
 NOISE_PATTERNS = (
@@ -293,16 +317,32 @@ def _normalize_note_text(text: str) -> str:
     return text
 
 
-def _is_high_signal_note(text: str) -> bool:
+def _classify_note(
+    text: str,
+    *,
+    author: str = "",
+    channel: str = "",
+    category: str = "",
+) -> Optional[str]:
     t = _normalize_note_text(text).lower()
+    a = _normalize_note_text(author).lower()
+    ch = _normalize_note_text(channel).lower()
+    cat = _normalize_note_text(category).lower()
+
     if not t or len(t) < 8:
-        return False
+        return None
     if any(t == p or t.startswith(f"{p} ") for p in NOISE_PATTERNS):
-        return False
-    if any(k in t for k in NOTE_KEYWORDS):
-        return True
-    # Keep long, specific lines even without keywords.
-    return len(t.split()) >= 10
+        return None
+
+    trainer_context = any(h in a for h in TRAINER_HINTS) or any(h in ch for h in TRAINER_HINTS)
+    is_rule = ("rule" in cat) or ("checklist" in cat) or any(k in t for k in RULE_HINTS)
+    is_qa = trainer_context and any(h in t for h in QA_HINTS)
+
+    if is_rule:
+        return "rule"
+    if is_qa:
+        return "trainer_qa"
+    return None
 
 
 def _ts_from_run_name(path: Path) -> str:
@@ -318,7 +358,11 @@ def _dedupe_notes(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             continue
         canonical = re.sub(r"[^a-z0-9\u0600-\u06ff]+", " ", text.lower())
         canonical = re.sub(r"\s+", " ", canonical).strip()[:260]
-        key = (canonical, str(row.get("category") or "").lower())
+        key = (
+            canonical,
+            str(row.get("category") or "").lower(),
+            str(row.get("note_type") or "").lower(),
+        )
         row["text"] = text
         prev = by_key.get(key)
         if prev is None or str(row.get("ts") or "") > str(prev.get("ts") or ""):
@@ -337,9 +381,6 @@ def load_whatsapp_notes(outputs_dir: Path) -> List[Dict[str, Any]]:
     key_map = {
         "high_signal_rules": "rule",
         "operator_checklist": "checklist",
-        "prompt_additions": "prompt_addition",
-        "escalation_flags": "escalation",
-        "media_observations": "media_observation",
     }
     for f in sorted(runs_root.glob("*/gemini_whatsapp_parsed.json"), reverse=True)[:40]:
         obj = _load_json(f, default={})
@@ -352,12 +393,14 @@ def load_whatsapp_notes(outputs_dir: Path) -> List[Dict[str, Any]]:
                 continue
             for item in vals:
                 text = str(item or "").strip()
-                if not _is_high_signal_note(text):
+                note_type = _classify_note(text=text, category=category)
+                if not note_type:
                     continue
                 rows.append(
                     {
                         "source": "whatsapp",
                         "category": category,
+                        "note_type": note_type,
                         "ts": ts,
                         "run": f.parent.name,
                         "text": text,
@@ -384,12 +427,14 @@ def load_whatsapp_notes(outputs_dir: Path) -> List[Dict[str, Any]]:
                 if not isinstance(m, dict):
                     continue
                 text = str(m.get("text") or "").strip()
-                if not _is_high_signal_note(text):
+                note_type = _classify_note(text=text, category=group_name)
+                if not note_type:
                     continue
                 rows.append(
                     {
                         "source": "whatsapp",
                         "category": f"group:{group_name or 'unknown'}",
+                        "note_type": note_type,
                         "ts": ts,
                         "run": f.parent.name,
                         "text": text,
@@ -418,12 +463,14 @@ def load_discord_notes(outputs_dir: Path) -> List[Dict[str, Any]]:
                     )
                 else:
                     text = str(item or "")
-                if not _is_high_signal_note(text):
+                note_type = _classify_note(text=text, category="policy_update")
+                if not note_type:
                     continue
                 rows.append(
                     {
                         "source": "discord",
                         "category": "policy_update",
+                        "note_type": note_type,
                         "ts": ts,
                         "run": f.parent.name,
                         "text": text,
@@ -439,10 +486,16 @@ def load_discord_notes(outputs_dir: Path) -> List[Dict[str, Any]]:
                 if not isinstance(item, dict):
                     continue
                 content = str(item.get("content") or "").strip()
-                if not _is_high_signal_note(content):
-                    continue
                 author = str(item.get("author") or "").strip()
                 channel = str(item.get("channel_name") or "").strip()
+                note_type = _classify_note(
+                    text=content,
+                    author=author,
+                    channel=channel,
+                    category="new_message",
+                )
+                if not note_type:
+                    continue
                 meta = []
                 if author:
                     meta.append(author)
@@ -453,6 +506,7 @@ def load_discord_notes(outputs_dir: Path) -> List[Dict[str, Any]]:
                     {
                         "source": "discord",
                         "category": "new_message",
+                        "note_type": note_type,
                         "ts": ts,
                         "run": f.parent.name,
                         "text": text,
@@ -466,12 +520,14 @@ def load_discord_notes(outputs_dir: Path) -> List[Dict[str, Any]]:
             ts = _ts_from_run_name(txt)
             for raw in txt.read_text(encoding="utf-8", errors="replace").splitlines():
                 line = _normalize_note_text(raw)
-                if not _is_high_signal_note(line):
+                note_type = _classify_note(text=line, category="export_line")
+                if not note_type:
                     continue
                 rows.append(
                     {
                         "source": "discord",
                         "category": "export_line",
+                        "note_type": note_type,
                         "ts": ts,
                         "run": txt.name,
                         "text": line,
@@ -760,6 +816,7 @@ def compute_note_metrics(notes: List[Dict[str, Any]], max_recent: int = 50) -> D
                 "display_text": str(row.get("text") or ""),
                 "display_ts": str(row.get("ts") or ""),
                 "category": str(row.get("category") or ""),
+                "note_type": str(row.get("note_type") or ""),
                 "source": str(row.get("source") or ""),
                 "run": str(row.get("run") or ""),
             }
@@ -1517,16 +1574,18 @@ function renderNotes(panelId, countId, payload, emptyText) {
     panel.innerHTML = `<div class="no-data">${emptyText}</div>`;
     return;
   }
-  panel.innerHTML = rows.map(r => {
-    const text = (r.display_text || "").toString();
-    const ts = (r.display_ts || "").toString().substring(0, 19);
-    const category = (r.category || "").toString();
-    const run = (r.run || "").toString();
-    return `
+    panel.innerHTML = rows.map(r => {
+      const text = (r.display_text || "").toString();
+      const ts = (r.display_ts || "").toString().substring(0, 19);
+      const category = (r.category || "").toString();
+      const noteType = (r.note_type || "").toString();
+      const run = (r.run || "").toString();
+      return `
       <div class="note-card">
         ${text.substring(0, 420)}${text.length > 420 ? "…" : ""}
         <div class="note-meta">
           ${ts ? `<span>${ts}</span>` : ""}
+          ${noteType ? `<span>${noteType}</span>` : ""}
           ${category ? `<span>${category}</span>` : ""}
           ${run ? `<span>${run}</span>` : ""}
         </div>
