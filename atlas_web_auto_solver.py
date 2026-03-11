@@ -269,6 +269,12 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "submit_guard_max_failure_ratio": 0.25,
         "submit_guard_min_applied_ratio": 0.9,
         "submit_guard_block_on_budget_exceeded": True,
+        "pre_submit_live_recheck_enabled": True,
+        "pre_submit_live_recheck_block_on_timestamp_errors": True,
+        "pre_submit_live_recheck_block_on_any_policy_error": False,
+        "pre_submit_live_recheck_block_on_large_drift": False,
+        "pre_submit_live_recheck_require_count_match": False,
+        "pre_submit_live_recheck_log_success": True,
         "play_full_video_before_labeling": False,
         "play_full_video_max_wait_sec": 900,
         "segment_resolve_attempts": 24,
@@ -5337,6 +5343,117 @@ def _is_no_action_policy_error(message: str) -> bool:
     return "'no action' must be standalone" in m
 
 
+def _is_large_timestamp_drift_warning(message: str) -> bool:
+    m = str(message or "").strip().lower()
+    if not m:
+        return False
+    return "large timestamp drift from source" in m
+
+
+def _segment_plan_from_live_segments(segments: List[Dict[str, Any]]) -> Dict[int, Dict[str, Any]]:
+    out: Dict[int, Dict[str, Any]] = {}
+    for seg in segments or []:
+        try:
+            idx = int(seg.get("segment_index", 0) or 0)
+        except Exception:
+            idx = 0
+        if idx <= 0:
+            continue
+        try:
+            start_sec = float(seg.get("start_sec", 0.0) or 0.0)
+        except Exception:
+            start_sec = 0.0
+        try:
+            end_sec = float(seg.get("end_sec", 0.0) or 0.0)
+        except Exception:
+            end_sec = 0.0
+        out[idx] = {
+            "segment_index": idx,
+            "start_sec": start_sec,
+            "end_sec": end_sec,
+            "label": str(seg.get("current_label", "")).strip(),
+        }
+    return out
+
+
+def _pre_submit_live_policy_recheck(
+    page: Page,
+    cfg: Dict[str, Any],
+    source_segments: Optional[List[Dict[str, Any]]] = None,
+    expected_segment_count: int = 0,
+) -> Dict[str, Any]:
+    report: Dict[str, Any] = {
+        "ok": True,
+        "reasons": [],
+        "errors": [],
+        "warnings": [],
+        "live_segment_count": 0,
+    }
+    if not bool(_cfg_get(cfg, "run.pre_submit_live_recheck_enabled", True)):
+        return report
+
+    try:
+        live_segments = extract_segments(page, cfg)
+    except Exception as exc:
+        reason = f"live recheck extraction failed: {_short_error_text(exc)}"
+        report["ok"] = False
+        report["reasons"] = [reason]
+        report["errors"] = [reason]
+        return report
+
+    report["live_segment_count"] = len(live_segments)
+    if not live_segments:
+        report["ok"] = False
+        report["reasons"].append("live recheck found zero segments on page")
+        return report
+
+    if (
+        expected_segment_count > 0
+        and bool(_cfg_get(cfg, "run.pre_submit_live_recheck_require_count_match", False))
+        and len(live_segments) != int(expected_segment_count)
+    ):
+        report["reasons"].append(
+            f"live segment count mismatch: {len(live_segments)} != {int(expected_segment_count)}"
+        )
+
+    baseline_segments = source_segments if source_segments else live_segments
+    live_plan = _segment_plan_from_live_segments(live_segments)
+    validation_report = _validate_segment_plan_against_policy(cfg, baseline_segments, live_plan)
+    errors = [str(e).strip() for e in validation_report.get("errors", []) if str(e).strip()]
+    warnings = [str(w).strip() for w in validation_report.get("warnings", []) if str(w).strip()]
+    report["errors"] = errors
+    report["warnings"] = warnings
+
+    block_on_any_policy_error = bool(
+        _cfg_get(cfg, "run.pre_submit_live_recheck_block_on_any_policy_error", False)
+    )
+    block_on_timestamp_errors = bool(
+        _cfg_get(cfg, "run.pre_submit_live_recheck_block_on_timestamp_errors", True)
+    )
+    block_on_large_drift = bool(_cfg_get(cfg, "run.pre_submit_live_recheck_block_on_large_drift", False))
+
+    if block_on_any_policy_error and errors:
+        report["reasons"].append(f"live policy errors: {len(errors)}")
+        for item in errors[:8]:
+            report["reasons"].append(item)
+    elif block_on_timestamp_errors:
+        ts_errors = [item for item in errors if _is_timestamp_policy_error(item)]
+        if ts_errors:
+            report["reasons"].append(f"live timestamp policy errors: {len(ts_errors)}")
+            for item in ts_errors[:8]:
+                report["reasons"].append(item)
+
+    if block_on_large_drift:
+        drift_warnings = [item for item in warnings if _is_large_timestamp_drift_warning(item)]
+        if drift_warnings:
+            report["reasons"].append(f"live large timestamp drift warnings: {len(drift_warnings)}")
+            for item in drift_warnings[:8]:
+                report["reasons"].append(item)
+
+    report["ok"] = len(report["reasons"]) == 0
+    return report
+
+
 def _gemini_file_state(payload: Dict[str, Any]) -> str:
     if not isinstance(payload, dict):
         return ""
@@ -8510,7 +8627,12 @@ def _submit_episode(page: Page, cfg: Dict[str, Any]) -> bool:
     return bool(completed and reviewed)
 
 
-def apply_labels(page: Page, cfg: Dict[str, Any], label_map: Dict[int, str]) -> Dict[str, Any]:
+def apply_labels(
+    page: Page,
+    cfg: Dict[str, Any],
+    label_map: Dict[int, str],
+    source_segments: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
     _dismiss_blocking_modals(page)
     _dismiss_blocking_side_panel(page, cfg, aggressive=True)
 
@@ -8673,6 +8795,31 @@ def apply_labels(page: Page, cfg: Dict[str, Any], label_map: Dict[int, str]) -> 
                 f"applied ratio {applied_ratio:.1%} < {submit_guard_min_applied_ratio:.1%}"
             )
 
+    live_recheck_report: Dict[str, Any] = {
+        "ok": True,
+        "reasons": [],
+        "errors": [],
+        "warnings": [],
+        "live_segment_count": 0,
+    }
+    if not submit_guard_reasons and total_targets > 0:
+        expected_segment_count = len(source_segments or [])
+        live_recheck_report = _pre_submit_live_policy_recheck(
+            page,
+            cfg,
+            source_segments=source_segments,
+            expected_segment_count=expected_segment_count,
+        )
+        if not bool(live_recheck_report.get("ok", True)):
+            print("[run] submit guard blocked auto-submit: pre-submit live recheck failed:")
+            for reason in list(live_recheck_report.get("reasons", []))[:10]:
+                print(f"  - {reason}")
+            submit_guard_reasons.extend(
+                [f"live recheck: {item}" for item in list(live_recheck_report.get("reasons", []))[:10]]
+            )
+        elif bool(_cfg_get(cfg, "run.pre_submit_live_recheck_log_success", True)):
+            print("[run] pre-submit live recheck passed.")
+
     if submit_guard_reasons:
         print("[run] submit guard blocked auto-submit for this episode:")
         for reason in submit_guard_reasons:
@@ -8688,6 +8835,7 @@ def apply_labels(page: Page, cfg: Dict[str, Any], label_map: Dict[int, str]) -> 
         "completed": completed,
         "submit_guard_blocked": bool(submit_guard_reasons),
         "submit_guard_reasons": submit_guard_reasons,
+        "live_recheck": live_recheck_report,
     }
 
 
@@ -9024,6 +9172,12 @@ def _apply_global_run_policy(cfg: Dict[str, Any]) -> None:
     run.setdefault("auto_continuity_merge_enabled", True)
     run.setdefault("auto_continuity_merge_min_run_segments", 3)
     run.setdefault("auto_continuity_merge_min_token_overlap", 1)
+    run.setdefault("pre_submit_live_recheck_enabled", True)
+    run.setdefault("pre_submit_live_recheck_block_on_timestamp_errors", True)
+    run.setdefault("pre_submit_live_recheck_block_on_any_policy_error", False)
+    run.setdefault("pre_submit_live_recheck_block_on_large_drift", False)
+    run.setdefault("pre_submit_live_recheck_require_count_match", False)
+    run.setdefault("pre_submit_live_recheck_log_success", True)
     run.setdefault("segment_chunking_min_video_sec", 30.0)
     try:
         chunking_min_segments = int(run.get("segment_chunking_min_segments", 6) or 6)
@@ -10432,7 +10586,7 @@ def run(cfg: Dict[str, Any], execute: bool) -> None:
                         "completed": completed_from_resume,
                     }
                 else:
-                    result = apply_labels(page, cfg, label_map)
+                    result = apply_labels(page, cfg, label_map, source_segments=segments)
                 print(f"[run] applied labels: {result['applied']}")
                 skipped_total = int(pre_skipped_unchanged) + int(result.get("skipped_unchanged", 0))
                 if skipped_total:

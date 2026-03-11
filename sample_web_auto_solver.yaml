@@ -57,6 +57,13 @@ run:
   segment_resolve_sample_size: 8
   segment_resolve_row_text_timeout_ms: 350
   policy_autofix_enabled: false
+  # Final safety net before clicking Complete:
+  # re-read segments from Atlas UI and block submit if timestamp overlap is detected.
+  pre_submit_live_recheck_enabled: true
+  pre_submit_live_recheck_block_on_timestamp_errors: true
+  pre_submit_live_recheck_block_on_any_policy_error: false
+  pre_submit_live_recheck_block_on_large_drift: false
+  pre_submit_live_recheck_require_count_match: false
   output_dir: "outputs"
   segments_dump: "atlas_segments_dump.json"
   labels_dump: "atlas_labels_from_gemini.json"
