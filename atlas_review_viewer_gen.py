@@ -783,6 +783,59 @@ def _build_html(data: Dict[str, Any], title: str) -> str:
       ].join("\\n");
     }}
 
+    function buildAiInputBundle(ep) {{
+      const eid = String(ep.episode_id || "");
+      const evalRec = evalStore[eid] || null;
+      const shotRec = shotStore[eid] || {{}};
+      return {{
+        schema_version: "atlas_ai_input_bundle_v1",
+        generated_at_utc: new Date().toISOString(),
+        source: "atlas_review_viewer",
+        episode: {{
+          episode_id: eid,
+          review_status: ep.review_status || "unknown",
+          atlas_url: ep.atlas_url || ep.open_url || "",
+          task_url: ep.task_url || "",
+          feedback_url: ep.feedback_url || "",
+          disputes_url: ep.disputes_url || "",
+          total_cost_usd: Number(ep.total_cost_usd || 0),
+          tier2: ep.tier2_text || ep.tier2 || null,
+          tier3: ep.tier3_text || ep.tier3 || null,
+          validation: ep.validation || null,
+          disputes: Array.isArray(ep.disputes) ? ep.disputes : [],
+        }},
+        ai_evaluate: evalRec,
+        screenshots: {{
+          atlas_name: String(shotRec.atlas_name || ""),
+          atlas_data_url: String(shotRec.atlas_data_url || ""),
+          ai_name: String(shotRec.ai_name || ""),
+          ai_data_url: String(shotRec.ai_data_url || ""),
+          updated_at_utc: String(shotRec.updated_at_utc || ""),
+        }},
+      }};
+    }}
+
+    function buildAiInputPrompt(ep) {{
+      const bundle = buildAiInputBundle(ep);
+      return [
+        "Use this AI input bundle for strict Atlas Tier-4 audit.",
+        "اعتمد JSON التالي كمدخل مراجعة شامل للحلقة.",
+        "If screenshots are included, treat Atlas screenshot as UI ground truth.",
+        "",
+        "[AI_INPUT_BUNDLE_JSON]",
+        JSON.stringify(bundle, null, 2),
+        "",
+        "Required output:",
+        "1) Compare Tier2 vs Tier3",
+        "2) submit-safe or not",
+        "3) exact segment-level issues with rule names",
+        "4) corrected labels",
+        "5) final PASS/FAIL + confidence",
+        "",
+        "اكتب الإجابة النهائية بالعربية وبشكل مباشر.",
+      ].join("\\n");
+    }}
+
     function parseSegments(v) {{
       const out = [];
       if (!v) return out;
@@ -951,12 +1004,16 @@ def _build_html(data: Dict[str, Any], title: str) -> str:
           <span><a href="${{chatPromptRel}}" target="_blank">Chat Prompt</a></span>
           <span><a href="${{chatMetaRel}}" target="_blank">Episode Meta</a></span>
           <span><button id="copyPromptBtn" class="btn" type="button">Copy Chat Prompt</button></span>
+          <span><button id="copyAiInputBtn" class="btn" type="button">Copy AI Input</button></span>
+          <span><button id="exportAiBundleBtn" class="btn" type="button">Export AI Bundle</button></span>
         </div>
       `;
       if (openGeminiChatLink) {{
         openGeminiChatLink.href = GEMINI_CHAT_URL;
       }}
       const copyBtn = document.getElementById("copyPromptBtn");
+      const copyAiInputBtn = document.getElementById("copyAiInputBtn");
+      const exportAiBundleBtn = document.getElementById("exportAiBundleBtn");
       if (copyBtn) {{
         copyBtn.addEventListener("click", async () => {{
           const prompt = buildChatPrompt(ep);
@@ -968,6 +1025,30 @@ def _build_html(data: Dict[str, Any], title: str) -> str:
             copyBtn.textContent = "Copy failed";
             setTimeout(() => (copyBtn.textContent = "Copy Chat Prompt"), 1300);
           }}
+        }});
+      }}
+      if (copyAiInputBtn) {{
+        copyAiInputBtn.addEventListener("click", async () => {{
+          const prompt = buildAiInputPrompt(ep);
+          try {{
+            await navigator.clipboard.writeText(prompt);
+            copyAiInputBtn.textContent = "Copied";
+            setTimeout(() => (copyAiInputBtn.textContent = "Copy AI Input"), 1300);
+          }} catch (_) {{
+            copyAiInputBtn.textContent = "Copy failed";
+            setTimeout(() => (copyAiInputBtn.textContent = "Copy AI Input"), 1300);
+          }}
+        }});
+      }}
+      if (exportAiBundleBtn) {{
+        exportAiBundleBtn.addEventListener("click", () => {{
+          const bundle = buildAiInputBundle(ep);
+          const blob = new Blob([JSON.stringify(bundle, null, 2)], {{ type: "application/json" }});
+          const a = document.createElement("a");
+          a.href = URL.createObjectURL(blob);
+          a.download = `ai_input_bundle_${{eid}}.json`;
+          a.click();
+          setTimeout(() => URL.revokeObjectURL(a.href), 1000);
         }});
       }}
 
