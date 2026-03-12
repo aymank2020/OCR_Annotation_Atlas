@@ -39,6 +39,50 @@ def _status_counts(index_payload: dict) -> Dict[str, int]:
     return counts
 
 
+def _file_nonempty(path: Path) -> bool:
+    return path.exists() and path.is_file() and path.stat().st_size > 0
+
+
+def _count_json_files(path: Path) -> int:
+    if not path.exists() or not path.is_dir():
+        return 0
+    return sum(1 for _ in path.glob("*.json"))
+
+
+def _coverage_points(outputs_dir: Path, index_payload: dict | None) -> tuple[int, Dict[str, int | bool]]:
+    usage_ok = _file_nonempty(outputs_dir / "gemini_usage.jsonl")
+    transitions_ok = _file_nonempty(outputs_dir / "training_feedback" / "live" / "t4_transitions_history.jsonl")
+    lessons_ok = _file_nonempty(outputs_dir / "training_feedback" / "live" / "alignment_lessons_history.jsonl")
+    task_state_count = _count_json_files(outputs_dir / ".task_state") + _count_json_files(outputs_dir / "task_state")
+    review_index_ok = bool(isinstance(index_payload, dict))
+    episodes_count = 0
+    if isinstance(index_payload, dict):
+        eps = index_payload.get("episodes", [])
+        if isinstance(eps, list):
+            episodes_count = len(eps)
+    episode_signal_ok = episodes_count > 0
+
+    points = sum(
+        [
+            1 if usage_ok else 0,
+            1 if transitions_ok else 0,
+            1 if lessons_ok else 0,
+            1 if task_state_count > 0 else 0,
+            1 if review_index_ok else 0,
+            1 if episode_signal_ok else 0,
+        ]
+    )
+    details: Dict[str, int | bool] = {
+        "usage_ok": usage_ok,
+        "transitions_ok": transitions_ok,
+        "lessons_ok": lessons_ok,
+        "task_state_count": task_state_count,
+        "review_index_ok": review_index_ok,
+        "episodes_count": episodes_count,
+    }
+    return points, details
+
+
 def _looks_empty(outputs_dir: Path) -> tuple[bool, str]:
     index_path = outputs_dir / "episodes_review_index.json"
     dashboard_path = outputs_dir / "atlas_dashboard.html"
@@ -51,6 +95,11 @@ def _looks_empty(outputs_dir: Path) -> tuple[bool, str]:
     payload = _read_json(index_path)
     if not isinstance(payload, dict):
         return True, "invalid review index json"
+
+    coverage_points, details = _coverage_points(outputs_dir, payload)
+    # Strong fallback: if core coverage is weak, force sync even if index exists.
+    if coverage_points < 4:
+        return True, f"weak coverage ({coverage_points}) details={details}"
 
     episodes = payload.get("episodes", [])
     if not isinstance(episodes, list) or len(episodes) == 0:
@@ -67,7 +116,7 @@ def _looks_empty(outputs_dir: Path) -> tuple[bool, str]:
     if signal == 0:
         return True, "all key status buckets are zero"
 
-    return False, "signals look valid"
+    return False, f"signals look valid coverage={coverage_points}"
 
 
 def _run(cmd: list[str]) -> None:
