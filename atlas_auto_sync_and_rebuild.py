@@ -158,6 +158,29 @@ def _resolve_effective_outputs(snapshot_dir: Path) -> Path:
     return snapshot_dir
 
 
+def _copy_tree(src: Path, dst: Path) -> None:
+    if dst.exists():
+        shutil.rmtree(dst, ignore_errors=True)
+    shutil.copytree(src, dst)
+
+
+def _publish_artifacts_to_outputs(
+    effective_outputs: Path,
+    outputs_dir: Path,
+    index_path: Path,
+    dashboard_path: Path,
+    viewer_path: Path,
+    queue_path: Path,
+    chat_dir: Path,
+) -> None:
+    outputs_dir.mkdir(parents=True, exist_ok=True)
+    for src in (index_path, dashboard_path, viewer_path, queue_path):
+        if src.exists():
+            shutil.copy2(src, outputs_dir / src.name)
+    if chat_dir.exists():
+        _copy_tree(chat_dir, outputs_dir / "chat_reviews")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Auto sync outputs from Drive (if needed) and rebuild dashboard/review artifacts.")
     parser.add_argument("--outputs-dir", default="outputs", help="Local outputs directory")
@@ -170,6 +193,8 @@ def main() -> None:
     parser.add_argument("--remote", default=os.environ.get("RCLONE_REMOTE", "gdrive"), help="rclone remote name")
     parser.add_argument("--include-video", action="store_true", help="Include video files in pull step")
     parser.add_argument("--upload-results", action="store_true", help="Upload generated artifacts back to Drive")
+    parser.add_argument("--publish-to-project-outputs", dest="publish_to_project_outputs", action="store_true", default=True)
+    parser.add_argument("--no-publish-to-project-outputs", dest="publish_to_project_outputs", action="store_false")
 
     parser.add_argument("--probe-atlas-status", default="auto", choices=["off", "auto", "on"])
     parser.add_argument("--atlas-state", default=".state/atlas_auth.json", help="Path to atlas_auth.json for probe cookies")
@@ -289,6 +314,21 @@ def main() -> None:
             ]
         )
 
+    if bool(args.publish_to_project_outputs):
+        if effective_outputs.resolve() != outputs_dir.resolve():
+            _log("publishing artifacts into project outputs/")
+            _publish_artifacts_to_outputs(
+                effective_outputs=effective_outputs,
+                outputs_dir=outputs_dir,
+                index_path=index_path,
+                dashboard_path=dashboard_path,
+                viewer_path=viewer_path,
+                queue_path=queue_path,
+                chat_dir=chat_dir,
+            )
+        else:
+            _log("publish skipped: effective outputs already points to project outputs/")
+
     # Optional upload back to Drive.
     if args.upload_results and can_sync:
         _log("uploading generated artifacts back to Drive")
@@ -312,4 +352,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
