@@ -28,6 +28,7 @@ Some operations modules discussed in architecture reviews (for example WhatsApp/
 - `atlas_finetune_exporter.py`: exports episodes/disputes for fine-tuning datasets.
 - `atlas_review_builder.py`: builds `episodes_review_index.json` for full historical re-audit.
 - `atlas_chat_exporter.py`: exports per-episode chat packages (`chat_prompt.txt` + metadata + optional video).
+- `atlas_eval_store.py`: stores external Gemini Chat evaluations and writes per-episode chat text files to `outputs/chat_reviews/<episode_id>/text_<episode_id>_chat.txt`.
 - `atlas_auto_sync_and_rebuild.py`: one-shot Python workflow to auto-sync from Drive (if needed) and rebuild review artifacts.
 - `atlas_watchdog.py`: watchdog health check/restart for `atlas-autopilot.service`.
 - `install_watchdog_cron.sh`: installs cron watchdog runner on Linux VPS.

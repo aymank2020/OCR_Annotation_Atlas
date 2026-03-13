@@ -40,6 +40,17 @@ def _parse_score(text: str) -> Optional[int]:
     return max(0, min(100, n))
 
 
+def _write_episode_chat_text_file(outputs_dir: Path, episode_id: str, text: str) -> Optional[Path]:
+    eid = str(episode_id or "").strip().lower()
+    if not eid:
+        return None
+    target_dir = outputs_dir / "chat_reviews" / eid
+    target_dir.mkdir(parents=True, exist_ok=True)
+    out_path = target_dir / f"text_{eid}_chat.txt"
+    out_path.write_text(str(text or ""), encoding="utf-8")
+    return out_path
+
+
 def upsert_evaluation(
     outputs_dir: Path,
     episode_id: str,
@@ -74,6 +85,10 @@ def upsert_evaluation(
         "evaluations": evaluations,
     }
     path.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
+    try:
+        _write_episode_chat_text_file(outputs_dir, eid, text)
+    except Exception:
+        pass
     return path
 
 
@@ -101,6 +116,10 @@ def main() -> None:
         source=str(args.source or "power_automate"),
     )
     print(f"[eval-store] updated: {out}")
+    eid = str(args.episode_id or "").strip().lower()
+    if eid:
+        chat_file = Path(args.outputs_dir) / "chat_reviews" / eid / f"text_{eid}_chat.txt"
+        print(f"[eval-store] chat_text_file: {chat_file.resolve()}")
 
 
 if __name__ == "__main__":
