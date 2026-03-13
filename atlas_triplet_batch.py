@@ -13,12 +13,20 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from atlas_eval_store import upsert_evaluation
-from atlas_triplet_compare import run_triplet_compare
+from atlas_triplet_compare import (
+    generate_gemini_chat_timed_labels,
+    parse_timed_segments_payload,
+    parse_timed_segments_text,
+    run_triplet_compare,
+    segments_to_timed_text,
+)
 
 
 def _load_json(path: Path, default: Any) -> Any:
@@ -86,6 +94,27 @@ def _load_eval_map(outputs_dir: Path) -> Dict[str, Dict[str, Any]]:
     return out
 
 
+def _text_has_timed_segments(text: str) -> bool:
+    return bool(parse_timed_segments_text(str(text or "")))
+
+
+def _path_has_timed_segments(path: Path) -> bool:
+    try:
+        if not path.exists() or not path.is_file():
+            return False
+        raw = path.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return False
+    if path.suffix.lower() == ".json":
+        try:
+            payload = json.loads(raw)
+            if parse_timed_segments_payload(payload):
+                return True
+        except Exception:
+            pass
+    return _text_has_timed_segments(raw)
+
+
 def _ensure_chat_text_from_eval(
     outputs_dir: Path,
     episode_id: str,
@@ -98,10 +127,88 @@ def _ensure_chat_text_from_eval(
     text = str(rec.get("text") or "").strip()
     if not text:
         return None
+    # Do not pollute timed-chat slots with compare summaries.
+    if not _text_has_timed_segments(text):
+        return None
     target_dir = outputs_dir / "chat_reviews" / eid
     target_dir.mkdir(parents=True, exist_ok=True)
     out_path = target_dir / f"text_{eid}_chat.txt"
     out_path.write_text(text, encoding="utf-8")
+    return out_path
+
+
+def _ensure_upload_opt_video(outputs_dir: Path, episode_id: str, video_main: Path) -> Optional[Path]:
+    eid = str(episode_id or "").strip().lower()
+    if not eid:
+        return None
+    if not video_main.exists():
+        return None
+    target = outputs_dir / f"video_{eid}_upload_opt.mp4"
+    if target.exists() and target.stat().st_size > 0:
+        return target
+    if shutil.which("ffmpeg") is None:
+        return None
+    target.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-i",
+        str(video_main),
+        "-vf",
+        "scale='min(960,iw)':-2:flags=lanczos,fps=8",
+        "-an",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-crf",
+        "30",
+        "-movflags",
+        "+faststart",
+        str(target),
+    ]
+    try:
+        subprocess.run(cmd, check=True)
+    except Exception:
+        return None
+    if target.exists() and target.stat().st_size > 0:
+        return target
+    return None
+
+
+def _ensure_api_text_from_labels(outputs_dir: Path, episode_id: str, labels_path: str) -> Optional[Path]:
+    eid = str(episode_id or "").strip().lower()
+    src = Path(str(labels_path or "").strip())
+    if not eid or not src.exists():
+        return None
+    payload = _load_json(src, default=None)
+    segments = parse_timed_segments_payload(payload)
+    if not segments:
+        return None
+    text = segments_to_timed_text(segments)
+    if not text:
+        return None
+    out_path = outputs_dir / f"text_{eid}_update.txt"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(text + "\n", encoding="utf-8")
+    return out_path
+
+
+def _ensure_api_text_from_chat(outputs_dir: Path, episode_id: str, chat_path: str) -> Optional[Path]:
+    eid = str(episode_id or "").strip().lower()
+    src = Path(str(chat_path or "").strip())
+    if not eid or not src.exists():
+        return None
+    raw = src.read_text(encoding="utf-8", errors="replace")
+    segments = parse_timed_segments_text(raw)
+    if not segments:
+        return None
+    text = segments_to_timed_text(segments)
+    if not text:
+        return None
+    out_path = outputs_dir / f"text_{eid}_update.txt"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(text + "\n", encoding="utf-8")
     return out_path
 
 
@@ -184,6 +291,52 @@ def _pick_episode_inputs(
         "task_state_path": str(task_state_path) if task_state_path is not None else "",
         "labels_path": str(labels_path) if labels_path is not None else "",
     }
+
+
+def _ensure_chat_timed_from_video(
+    *,
+    config: str,
+    outputs_dir: Path,
+    cache_dir: Path,
+    remote: str,
+    model: str,
+    episode_id: str,
+    video_path: str,
+    video_path_limit: str,
+) -> Optional[str]:
+    eid = str(episode_id or "").strip().lower()
+    main_video = Path(str(video_path or "").strip())
+    if not eid or not main_video.exists():
+        return None
+    limit_video_raw = str(video_path_limit or "").strip()
+    limit_video = Path(limit_video_raw) if limit_video_raw else None
+    if limit_video is None or not limit_video.exists():
+        generated_limit = _ensure_upload_opt_video(outputs_dir, eid, main_video)
+        if generated_limit is not None:
+            limit_video = generated_limit
+
+    chat_dir = outputs_dir / "chat_reviews" / eid
+    chat_dir.mkdir(parents=True, exist_ok=True)
+    chat_txt = chat_dir / f"text_{eid}_chat.txt"
+    chat_json = chat_dir / f"labels_{eid}.json"
+
+    result = generate_gemini_chat_timed_labels(
+        config_path=config,
+        video_path=str(main_video),
+        video_path_limit=str(limit_video) if limit_video is not None else "",
+        remote=remote,
+        cache_dir=str(cache_dir / eid / "chat_timed"),
+        model=model,
+        out_txt=str(chat_txt),
+        out_json=str(chat_json),
+        episode_id=eid,
+    )
+    out_txt = str(result.get("out_txt") or "").strip()
+    if out_txt and Path(out_txt).exists():
+        return out_txt
+    if chat_txt.exists():
+        return str(chat_txt)
+    return None
 
 
 def _safe_score(value: Any) -> Optional[float]:
@@ -277,6 +430,8 @@ def run_batch(
     limit: int,
     require_chat_path: bool,
     write_chat_from_evals: bool,
+    generate_chat_timed_missing: bool,
+    regenerate_api_missing: bool,
     update_evals: bool,
     overwrite_evals: bool,
     source: str,
@@ -335,6 +490,60 @@ def run_batch(
         }
 
         inputs = _pick_episode_inputs(ep, outputs_dir, eval_map, write_chat_from_evals)
+
+        # Reject non-timed chat placeholders (legacy compare summaries).
+        chat_candidate = str(inputs.get("chat_path") or "").strip()
+        if chat_candidate:
+            cp = Path(chat_candidate)
+            if (not cp.exists()) or (not _path_has_timed_segments(cp)):
+                inputs["chat_path"] = ""
+
+        # Ensure Gemini Chat timed labels exist by calling Gemini with video.
+        if generate_chat_timed_missing and not str(inputs.get("chat_path") or "").strip():
+            try:
+                generated_chat = _ensure_chat_timed_from_video(
+                    config=config,
+                    outputs_dir=outputs_dir,
+                    cache_dir=cache_dir,
+                    remote=remote,
+                    model=model,
+                    episode_id=eid,
+                    video_path=str(inputs.get("video_path") or ""),
+                    video_path_limit=str(inputs.get("video_path_limit") or ""),
+                )
+                if generated_chat:
+                    inputs["chat_path"] = generated_chat
+                    print(f"[triplet-batch] info episode={eid} generated_chat_timed={generated_chat}")
+            except Exception as exc:
+                print(f"[triplet-batch] warn episode={eid} chat_timed_generation_failed={exc}")
+
+        # Rebuild missing API update text when absent.
+        if regenerate_api_missing and not str(inputs.get("api_path") or "").strip():
+            rebuilt_api = _ensure_api_text_from_labels(outputs_dir, eid, str(inputs.get("labels_path") or ""))
+            if rebuilt_api is None:
+                rebuilt_api = _ensure_api_text_from_chat(outputs_dir, eid, str(inputs.get("chat_path") or ""))
+            if rebuilt_api is None and generate_chat_timed_missing:
+                try:
+                    generated_chat = str(inputs.get("chat_path") or "").strip()
+                    if not generated_chat:
+                        generated_chat = _ensure_chat_timed_from_video(
+                            config=config,
+                            outputs_dir=outputs_dir,
+                            cache_dir=cache_dir,
+                            remote=remote,
+                            model=model,
+                            episode_id=eid,
+                            video_path=str(inputs.get("video_path") or ""),
+                            video_path_limit=str(inputs.get("video_path_limit") or ""),
+                        ) or ""
+                    if generated_chat:
+                        rebuilt_api = _ensure_api_text_from_chat(outputs_dir, eid, generated_chat)
+                except Exception as exc:
+                    print(f"[triplet-batch] warn episode={eid} api_rebuild_from_chat_failed={exc}")
+            if rebuilt_api is not None:
+                inputs["api_path"] = str(rebuilt_api)
+                print(f"[triplet-batch] info episode={eid} regenerated_api_update={rebuilt_api}")
+
         missing: List[str] = []
         for key in ("video_path", "tier2_path", "api_path"):
             if not str(inputs.get(key) or "").strip():
@@ -450,8 +659,12 @@ def main() -> None:
     parser.add_argument("--only-status", default="", help="Comma-separated review_status filter (empty = all)")
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--require-chat-path", action="store_true")
-    parser.add_argument("--write-chat-from-evals", dest="write_chat_from_evals", action="store_true", default=True)
+    parser.add_argument("--write-chat-from-evals", dest="write_chat_from_evals", action="store_true", default=False)
     parser.add_argument("--no-write-chat-from-evals", dest="write_chat_from_evals", action="store_false")
+    parser.add_argument("--generate-chat-timed-missing", dest="generate_chat_timed_missing", action="store_true", default=True)
+    parser.add_argument("--no-generate-chat-timed-missing", dest="generate_chat_timed_missing", action="store_false")
+    parser.add_argument("--regenerate-api-missing", dest="regenerate_api_missing", action="store_true", default=True)
+    parser.add_argument("--no-regenerate-api-missing", dest="regenerate_api_missing", action="store_false")
     parser.add_argument("--update-evals", dest="update_evals", action="store_true", default=True)
     parser.add_argument("--no-update-evals", dest="update_evals", action="store_false")
     parser.add_argument("--overwrite-evals", action="store_true", default=False)
@@ -473,6 +686,8 @@ def main() -> None:
         limit=max(0, int(args.limit)),
         require_chat_path=bool(args.require_chat_path),
         write_chat_from_evals=bool(args.write_chat_from_evals),
+        generate_chat_timed_missing=bool(args.generate_chat_timed_missing),
+        regenerate_api_missing=bool(args.regenerate_api_missing),
         update_evals=bool(args.update_evals),
         overwrite_evals=bool(args.overwrite_evals),
         source=str(args.source or "triplet_compare_batch"),

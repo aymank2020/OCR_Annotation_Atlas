@@ -336,6 +336,12 @@ def main() -> None:
             str(args.triplet_model),
             "--limit",
             str(max(0, int(args.triplet_limit))),
+            "--results-dir",
+            str(effective_outputs / "triplet_compare"),
+            "--results-jsonl",
+            str(effective_outputs / "triplet_compare_results.jsonl"),
+            "--generate-chat-timed-missing",
+            "--regenerate-api-missing",
         ]
         if triplet_status:
             cmd.extend(["--only-status", triplet_status])

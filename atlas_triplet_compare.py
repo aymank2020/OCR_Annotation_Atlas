@@ -252,6 +252,203 @@ def _clean_json_text(text: str) -> str:
     return clean
 
 
+def _parse_time_like_to_sec(value: Any) -> Optional[float]:
+    if isinstance(value, (int, float)):
+        sec = float(value)
+        if sec >= 0:
+            return sec
+        return None
+    src = str(value or "").strip()
+    if not src:
+        return None
+    if re.fullmatch(r"\d+(?:\.\d+)?", src):
+        try:
+            sec = float(src)
+            if sec >= 0:
+                return sec
+        except Exception:
+            return None
+        return None
+    parts = src.split(":")
+    if len(parts) not in {2, 3}:
+        return None
+    nums: List[float] = []
+    for part in parts:
+        if not re.fullmatch(r"\d+(?:\.\d+)?", part.strip()):
+            return None
+        try:
+            nums.append(float(part.strip()))
+        except Exception:
+            return None
+    if len(nums) == 2:
+        mm, ss = nums
+        return mm * 60.0 + ss
+    hh, mm, ss = nums
+    return hh * 3600.0 + mm * 60.0 + ss
+
+
+def _format_time_sec(value: float) -> str:
+    txt = f"{float(value):.3f}".rstrip("0").rstrip(".")
+    if "." not in txt:
+        txt += ".0"
+    return txt
+
+
+def _segment_from_obj(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    start_raw = (
+        item.get("start_sec")
+        if isinstance(item, dict)
+        else None
+    )
+    if start_raw is None:
+        start_raw = item.get("start") if isinstance(item, dict) else None
+    if start_raw is None:
+        start_raw = item.get("start_time") if isinstance(item, dict) else None
+    if start_raw is None:
+        start_raw = item.get("from") if isinstance(item, dict) else None
+    if start_raw is None:
+        start_raw = item.get("t0") if isinstance(item, dict) else None
+
+    end_raw = (
+        item.get("end_sec")
+        if isinstance(item, dict)
+        else None
+    )
+    if end_raw is None:
+        end_raw = item.get("end") if isinstance(item, dict) else None
+    if end_raw is None:
+        end_raw = item.get("end_time") if isinstance(item, dict) else None
+    if end_raw is None:
+        end_raw = item.get("to") if isinstance(item, dict) else None
+    if end_raw is None:
+        end_raw = item.get("t1") if isinstance(item, dict) else None
+
+    label_raw: Any = ""
+    if isinstance(item, dict):
+        label_raw = item.get("label")
+        if label_raw in (None, ""):
+            label_raw = item.get("action")
+        if label_raw in (None, ""):
+            label_raw = item.get("text")
+        if label_raw in (None, "") and isinstance(item.get("actions"), list):
+            label_raw = ", ".join(str(x or "").strip() for x in item.get("actions", []) if str(x or "").strip())
+    label = str(label_raw or "").strip()
+
+    a = _parse_time_like_to_sec(start_raw)
+    b = _parse_time_like_to_sec(end_raw)
+    if a is None or b is None:
+        return None
+    if b <= a:
+        return None
+    return {"start_sec": a, "end_sec": b, "label": label}
+
+
+def parse_timed_segments_payload(payload: Any) -> List[Dict[str, Any]]:
+    obj = payload
+    if isinstance(obj, dict):
+        if isinstance(obj.get("segments"), list):
+            obj = obj.get("segments")
+        elif isinstance(obj.get("labels"), list):
+            obj = obj.get("labels")
+        elif isinstance(obj.get("data"), dict) and isinstance(obj.get("data", {}).get("segments"), list):
+            obj = obj.get("data", {}).get("segments")
+    if not isinstance(obj, list):
+        return []
+
+    out: List[Dict[str, Any]] = []
+    seen: set[Tuple[str, str, str]] = set()
+    for item in obj:
+        if not isinstance(item, dict):
+            continue
+        seg = _segment_from_obj(item)
+        if not seg:
+            continue
+        key = (
+            _format_time_sec(seg["start_sec"]),
+            _format_time_sec(seg["end_sec"]),
+            str(seg.get("label") or ""),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(seg)
+    out.sort(key=lambda s: (float(s.get("start_sec", 0.0)), float(s.get("end_sec", 0.0))))
+    return out
+
+
+def parse_timed_segments_text(raw_text: str) -> List[Dict[str, Any]]:
+    src = str(raw_text or "")
+    if not src.strip():
+        return []
+
+    # JSON first (most reliable).
+    try:
+        parsed = json.loads(_clean_json_text(src))
+        segs = parse_timed_segments_payload(parsed)
+        if segs:
+            return segs
+    except Exception:
+        pass
+
+    out: List[Dict[str, Any]] = []
+    seen: set[Tuple[str, str, str]] = set()
+    lines = [ln.strip() for ln in src.replace("\r", "\n").split("\n") if str(ln or "").strip()]
+    for line in lines:
+        # Tab-separated forms:
+        # 1\t0.0\t4.2\tlabel
+        # 0.0\t4.2\tlabel
+        parts = [p.strip() for p in re.split(r"\t+", line) if p.strip()]
+        candidates: List[Tuple[str, str, str]] = []
+        if len(parts) >= 4:
+            candidates.append((parts[1], parts[2], " ".join(parts[3:]).strip()))
+        if len(parts) >= 3:
+            candidates.append((parts[0], parts[1], " ".join(parts[2:]).strip()))
+
+        # Markdown table-like row:
+        # | 1 | 0.0 | 4.2 | label |
+        pipe_parts = [p.strip() for p in line.split("|") if p.strip()]
+        if len(pipe_parts) >= 4:
+            candidates.append((pipe_parts[1], pipe_parts[2], " ".join(pipe_parts[3:]).strip()))
+        elif len(pipe_parts) >= 3:
+            candidates.append((pipe_parts[0], pipe_parts[1], " ".join(pipe_parts[2:]).strip()))
+
+        # Time range in free text:
+        # 00:00.0 -> 00:04.2 label
+        m = re.search(
+            r"(?P<a>\d{1,2}:\d{1,2}(?::\d{1,2})?(?:\.\d+)?)\s*(?:->|=>|[-–—])\s*(?P<b>\d{1,2}:\d{1,2}(?::\d{1,2})?(?:\.\d+)?)",
+            line,
+        )
+        if m:
+            end_idx = m.end("b")
+            candidates.append((m.group("a"), m.group("b"), line[end_idx:].strip()))
+
+        for a_raw, b_raw, label_raw in candidates:
+            a = _parse_time_like_to_sec(a_raw)
+            b = _parse_time_like_to_sec(b_raw)
+            if a is None or b is None or b <= a:
+                continue
+            label = str(label_raw or "").strip()
+            key = (_format_time_sec(a), _format_time_sec(b), label)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append({"start_sec": a, "end_sec": b, "label": label})
+            break
+    out.sort(key=lambda s: (float(s.get("start_sec", 0.0)), float(s.get("end_sec", 0.0))))
+    return out
+
+
+def segments_to_timed_text(segments: List[Dict[str, Any]]) -> str:
+    normalized = parse_timed_segments_payload({"segments": segments})
+    lines: List[str] = []
+    for idx, seg in enumerate(normalized, 1):
+        label = str(seg.get("label") or "").strip() or "No Action"
+        lines.append(
+            f"{idx}\t{_format_time_sec(float(seg['start_sec']))}\t{_format_time_sec(float(seg['end_sec']))}\t{label}"
+        )
+    return "\n".join(lines).strip()
+
+
 def _translate_payload_for_vertex(value: Any) -> Any:
     if isinstance(value, dict):
         out: Dict[str, Any] = {}
@@ -666,6 +863,188 @@ def _call_gemini_compare(
         "raw_text": text,
         "attach_notes": attach_notes,
         "usage": data.get("usageMetadata", {}) if isinstance(data, dict) else {},
+    }
+
+
+def _build_timed_labels_prompt(episode_id: str = "") -> str:
+    eid = str(episode_id or "").strip()
+    eid_line = f"Episode ID: {eid}\n" if eid else ""
+    return f"""
+You are generating Atlas timed action labels from the attached video.
+{eid_line}Rules:
+1) Output ONLY valid JSON (no markdown, no commentary).
+2) JSON schema:
+{{
+  "segments": [
+    {{"start_sec": 0.0, "end_sec": 1.2, "label": "action 1, action 2"}}
+  ]
+}}
+3) Keep timestamps in seconds.
+4) Ensure segments are chronological and non-overlapping.
+5) Use "No Action" only when there is clearly no relevant action.
+""".strip()
+
+
+def generate_gemini_chat_timed_labels(
+    *,
+    config_path: str,
+    video_path: str,
+    video_path_limit: str = "",
+    remote: str = "",
+    cache_dir: str = "tmp/triplet_chat_labels_cache",
+    model: str = "",
+    out_txt: str = "",
+    out_json: str = "",
+    episode_id: str = "",
+) -> Dict[str, Any]:
+    cfg_path = Path(config_path)
+    if not cfg_path.exists():
+        raise RuntimeError(f"Config file not found: {cfg_path}")
+    cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+    if not isinstance(cfg, dict):
+        raise RuntimeError("Config root must be a YAML object.")
+
+    dotenv = _load_dotenv(Path(".env"))
+    resolved_remote = str(remote or os.environ.get("RCLONE_REMOTE", "gdrive")).strip() or "gdrive"
+    cache_root = Path(cache_dir).resolve()
+    cache_root.mkdir(parents=True, exist_ok=True)
+
+    video_main = _resolve_input_path(video_path, cache_root / "inputs", resolved_remote)
+    video_limit: Optional[Path] = None
+    if str(video_path_limit or "").strip():
+        video_limit = _resolve_input_path(video_path_limit, cache_root / "inputs", resolved_remote)
+
+    prompt = _build_timed_labels_prompt(episode_id=episode_id)
+    gem_cfg = cfg.get("gemini", {}) if isinstance(cfg.get("gemini"), dict) else {}
+    selected_model = str(model or "").strip() or str(gem_cfg.get("model", "gemini-3.1-pro-preview") or "").strip()
+    fallback_model = str(gem_cfg.get("triplet_fallback_model", "gemini-2.5-pro") or "").strip()
+
+    cfg_for_call = dict(cfg)
+    cfg_gem = dict(gem_cfg) if isinstance(gem_cfg, dict) else {}
+    # For chat_web mode: allow secondary attach so upload_opt can be used automatically.
+    cfg_gem["chat_web_attach_secondary_video"] = True
+    cfg_for_call["gemini"] = cfg_gem
+
+    model_candidates = [selected_model] if selected_model else []
+    if fallback_model and fallback_model not in model_candidates:
+        model_candidates.append(fallback_model)
+    if not model_candidates:
+        model_candidates = ["gemini-3.1-pro-preview"]
+
+    result: Optional[Dict[str, Any]] = None
+    used_model = model_candidates[0]
+    attempt_errors: List[str] = []
+    run_notes: List[str] = []
+
+    for model_name in model_candidates:
+        try:
+            result = _call_gemini_compare(
+                cfg=cfg_for_call,
+                dotenv=dotenv,
+                model=model_name,
+                prompt=prompt,
+                video_a=video_main,
+                video_b=video_limit,
+                cache_dir=cache_root / "video_inline",
+            )
+            used_model = model_name
+            notes = result.get("attach_notes", [])
+            attached_any = False
+            if isinstance(notes, list):
+                attached_any = any("attached" in str(n or "").lower() for n in notes)
+            # If no video was attached, retry once using upload_opt only (if available).
+            if not attached_any and video_limit is not None:
+                retry = _call_gemini_compare(
+                    cfg=cfg_for_call,
+                    dotenv=dotenv,
+                    model=model_name,
+                    prompt=prompt,
+                    video_a=video_limit,
+                    video_b=None,
+                    cache_dir=cache_root / "video_inline",
+                )
+                retry_notes = retry.get("attach_notes", [])
+                if isinstance(retry_notes, list):
+                    retry_notes = [*retry_notes, "retry_with_upload_opt_video"]
+                else:
+                    retry_notes = ["retry_with_upload_opt_video"]
+                retry["attach_notes"] = retry_notes
+                result = retry
+            break
+        except Exception as exc:
+            attempt_errors.append(f"{model_name}: {exc}")
+            if video_limit is not None:
+                try:
+                    retry = _call_gemini_compare(
+                        cfg=cfg_for_call,
+                        dotenv=dotenv,
+                        model=model_name,
+                        prompt=prompt,
+                        video_a=video_limit,
+                        video_b=None,
+                        cache_dir=cache_root / "video_inline",
+                    )
+                    retry_notes = retry.get("attach_notes", [])
+                    if isinstance(retry_notes, list):
+                        retry_notes = [*retry_notes, "retry_after_error_with_upload_opt_video"]
+                    else:
+                        retry_notes = ["retry_after_error_with_upload_opt_video"]
+                    retry["attach_notes"] = retry_notes
+                    result = retry
+                    used_model = model_name
+                    run_notes.append("fallback_to_upload_opt_after_error")
+                    break
+                except Exception as retry_exc:
+                    attempt_errors.append(f"{model_name}/upload_opt: {retry_exc}")
+                    continue
+            continue
+
+    if result is None:
+        tail = " | ".join(attempt_errors[-4:]) if attempt_errors else "unknown timed labels failure"
+        raise RuntimeError(tail)
+
+    parsed = result.get("parsed", {})
+    raw_text = str(result.get("raw_text") or "")
+    segments = parse_timed_segments_payload(parsed)
+    if not segments:
+        segments = parse_timed_segments_text(raw_text)
+    if not segments:
+        raise RuntimeError("Gemini timed labels response did not contain parseable segments.")
+    timed_text = segments_to_timed_text(segments)
+    if not timed_text:
+        raise RuntimeError("Gemini timed labels were parsed but empty after normalization.")
+
+    out_txt_path = Path(out_txt).resolve() if str(out_txt or "").strip() else cache_root / "text_chat_generated.txt"
+    out_txt_path.parent.mkdir(parents=True, exist_ok=True)
+    out_txt_path.write_text(timed_text + "\n", encoding="utf-8")
+
+    out_json_path: Optional[Path] = None
+    if str(out_json or "").strip():
+        out_json_path = Path(out_json).resolve()
+        out_json_path.parent.mkdir(parents=True, exist_ok=True)
+        out_json_path.write_text(
+            json.dumps(
+                {
+                    "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+                    "episode_id": str(episode_id or "").strip().lower(),
+                    "model": used_model,
+                    "segments": segments,
+                    "attach_notes": [*(result.get("attach_notes", []) if isinstance(result.get("attach_notes"), list) else []), *run_notes],
+                    "raw_text": raw_text,
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+
+    return {
+        "episode_id": str(episode_id or "").strip().lower(),
+        "model": used_model,
+        "segment_count": len(segments),
+        "out_txt": str(out_txt_path),
+        "out_json": str(out_json_path) if out_json_path else "",
+        "attach_notes": [*(result.get("attach_notes", []) if isinstance(result.get("attach_notes"), list) else []), *run_notes],
     }
 
 
