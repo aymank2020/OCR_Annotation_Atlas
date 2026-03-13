@@ -291,6 +291,7 @@ def run_batch(
     cache_dir.mkdir(parents=True, exist_ok=True)
     results_dir.mkdir(parents=True, exist_ok=True)
     results_jsonl.parent.mkdir(parents=True, exist_ok=True)
+    results_jsonl.write_text("", encoding="utf-8")
 
     status_filter = _parse_status_filter(only_status)
     eval_map = _load_eval_map(outputs_dir)
@@ -302,6 +303,11 @@ def run_batch(
     errors = 0
     eval_updated = 0
     eval_skipped = 0
+
+    def _append_result_row(row: Dict[str, Any]) -> None:
+        with results_jsonl.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+            f.flush()
 
     for ep in episodes:
         if not isinstance(ep, dict):
@@ -315,6 +321,7 @@ def run_batch(
         if limit > 0 and done >= limit:
             break
         done += 1
+        print(f"[triplet-batch] start {done} episode={eid} status={st}")
 
         row: Dict[str, Any] = {
             "episode_id": eid,
@@ -338,7 +345,9 @@ def run_batch(
             row["skipped"] = True
             row["reason"] = f"missing_inputs: {', '.join(sorted(set(missing)))}"
             summaries.append(row)
+            _append_result_row(row)
             skipped += 1
+            print(f"[triplet-batch] skip episode={eid} reason={row['reason']}")
             continue
 
         out_path = results_dir / f"triplet_compare_{eid}.json"
@@ -371,7 +380,9 @@ def run_batch(
             except Exception as exc:
                 row["reason"] = f"triplet_error: {exc}"
                 summaries.append(row)
+                _append_result_row(row)
                 errors += 1
+                print(f"[triplet-batch] error episode={eid} reason={row['reason']}")
                 continue
 
         judge = payload_obj.get("judge_result", {}) if isinstance(payload_obj, dict) else {}
@@ -382,7 +393,12 @@ def run_batch(
         score_pct = _derive_eval_score(payload_obj if isinstance(payload_obj, dict) else {})
         row["score_pct"] = score_pct
         summaries.append(row)
+        _append_result_row(row)
         ok += 1
+        print(
+            f"[triplet-batch] ok episode={eid} winner={row.get('winner') or 'unknown'} "
+            f"score={row.get('score_pct')}"
+        )
 
         if update_evals:
             existing = eval_map.get(eid)
@@ -405,10 +421,6 @@ def run_batch(
                     "source": source,
                     "updated_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                 }
-
-    with results_jsonl.open("w", encoding="utf-8") as f:
-        for row in summaries:
-            f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
     summary = {
         "generated_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
