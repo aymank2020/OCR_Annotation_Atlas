@@ -3965,11 +3965,36 @@ def _body_has_rate_limit(page: Page) -> bool:
     return "too many request" in text or "rate limit" in text
 
 
+def _is_banned_or_suspended_page(page: Page) -> bool:
+    try:
+        url = (page.url or "").lower()
+    except Exception:
+        url = ""
+    if "/banned" in url or "suspend" in url:
+        return True
+    try:
+        text = (page.inner_text("body") or "").lower()
+    except Exception:
+        text = ""
+    markers = (
+        "banned",
+        "suspend",
+        "suspended",
+        "account is banned",
+        "account suspended",
+    )
+    return any(token in text for token in markers)
+
+
 def _wait_until_authenticated(page: Page, cfg: Dict[str, Any], timeout_sec: int) -> None:
     tasks_nav = str(_cfg_get(cfg, "atlas.selectors.tasks_nav", ""))
     deadline = time.time() + timeout_sec
     while time.time() < deadline:
         current = page.url.lower()
+        if _is_banned_or_suspended_page(page):
+            raise RuntimeError(
+                "Atlas account/IP appears banned or suspended (detected /banned or suspend markers)."
+            )
         is_loginish = "/login" in current or "/verify" in current
         if ("/dashboard" in current or "/tasks" in current) and not is_loginish:
             print(f"[auth] authenticated at {page.url}")
@@ -10254,11 +10279,15 @@ def _apply_global_run_policy(cfg: Dict[str, Any]) -> None:
     run["gemini_quota_global_pause_step_sec"] = 5.0
     # Disable long global quota pauses; keep short per-task cooldown instead.
     run["gemini_quota_global_pause_min_sec"] = 999999.0
-    browser["force_disable_proxy"] = True
-    for proxy_key in ("proxy_server", "proxy_username", "proxy_password", "proxy_bypass"):
-        if str(browser.get(proxy_key, "") or "").strip():
-            browser[proxy_key] = ""
-            print(f"[policy] browser.{proxy_key} cleared (direct server IP mode).")
+    force_disable_proxy = bool(browser.get("force_disable_proxy", True))
+    browser["force_disable_proxy"] = force_disable_proxy
+    if force_disable_proxy:
+        for proxy_key in ("proxy_server", "proxy_username", "proxy_password", "proxy_bypass"):
+            if str(browser.get(proxy_key, "") or "").strip():
+                browser[proxy_key] = ""
+                print(f"[policy] browser.{proxy_key} cleared (direct server IP mode).")
+    else:
+        print("[policy] browser.force_disable_proxy=false; keeping proxy settings.")
     if not bool(run.get("execute_require_video_context", True)):
         run["execute_require_video_context"] = True
         print("[policy] run.execute_require_video_context forced ON.")
