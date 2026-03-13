@@ -103,29 +103,16 @@ def _build_html(data: Dict[str, Any], title: str) -> str:
       background: #0a1022;
       color: var(--text);
     }}
-    .list {{
-      overflow: auto;
-      padding: 8px;
-      display: grid;
-      gap: 8px;
-    }}
-    .ep {{
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      padding: 10px;
-      background: #0f1730;
-      cursor: pointer;
-    }}
-    .ep:hover {{ border-color: #36528a; }}
-    .ep.active {{
-      border-color: var(--accent);
-      background: #152346;
-    }}
-    .eid {{
+    .episode-select {{
+      width: 100%;
+      min-height: 44px;
       font-family: Consolas, "Courier New", monospace;
       font-size: 12px;
+      background: #0a1022;
       color: var(--text);
-      margin-bottom: 6px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px 10px;
     }}
     .meta {{
       display: flex;
@@ -162,11 +149,33 @@ def _build_html(data: Dict[str, Any], title: str) -> str:
       grid-template-columns: 1fr 1fr;
       gap: 10px;
     }}
+    .grid3 {{
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+    }}
     .labelbox {{
       border: 1px solid var(--border);
       border-radius: 10px;
       padding: 10px;
       background: #0d1429;
+    }}
+    .labels-row .labelbox {{
+      display: flex;
+      flex-direction: column;
+      min-height: 460px;
+    }}
+    .labels-row pre {{
+      flex: 1;
+    }}
+    .equal-row .labelbox {{
+      display: flex;
+      flex-direction: column;
+      min-height: 280px;
+    }}
+    .equal-row pre {{
+      flex: 1;
+      max-height: none;
     }}
     .labelbox .tt {{
       margin: 0 0 8px 0;
@@ -225,21 +234,6 @@ def _build_html(data: Dict[str, Any], title: str) -> str:
       border-radius: 10px;
       background: #000;
       border: 1px solid var(--border);
-    }}
-    .shotimg {{
-      width: 100%;
-      max-height: 360px;
-      object-fit: contain;
-      border-radius: 10px;
-      border: 1px solid var(--border);
-      background: #060a16;
-      display: none;
-    }}
-    .fileline {{
-      font-size: 12px;
-      color: var(--muted);
-      margin-top: 6px;
-      word-break: break-word;
     }}
     a {{
       color: var(--accent);
@@ -309,9 +303,17 @@ def _build_html(data: Dict[str, Any], title: str) -> str:
     .score-red {{ background: #341717; color: #ff6b6b; border-color: #ff6b6b55; }}
     .score-yellow {{ background: #38280e; color: #f8c146; border-color: #f8c14655; }}
     .score-gray {{ background: #222a42; color: #8893b3; border-color: #8893b355; }}
+    .compare-summary {{
+      gap: 10px;
+      margin-bottom: 10px;
+    }}
+    .compare-summary b {{
+      color: #dce6ff;
+    }}
     @media (max-width: 1000px) {{
       .layout {{ grid-template-columns: 1fr; }}
       .grid2 {{ grid-template-columns: 1fr; }}
+      .grid3 {{ grid-template-columns: 1fr; }}
     }}
   </style>
 </head>
@@ -329,8 +331,8 @@ def _build_html(data: Dict[str, Any], title: str) -> str:
       <div class="controls">
         <input id="search" placeholder="Search episode id | ابحث برقم الحلقة" />
         <select id="statusFilter"></select>
+        <select id="episodeSelect" class="episode-select"></select>
       </div>
-      <div id="episodeList" class="list"></div>
     </div>
 
     <div class="card main">
@@ -345,7 +347,12 @@ def _build_html(data: Dict[str, Any], title: str) -> str:
         <div id="videoNote" class="warn"></div>
       </div>
 
-      <div class="section grid2">
+      <div class="section grid3 labels-row">
+        <div class="labelbox">
+          <div class="tt">Gemini Chat (Timed) | إجابة جيمناي شات بالتوقيت</div>
+          <div id="chatTimeline" class="timeline"></div>
+          <pre id="chatBox">-</pre>
+        </div>
         <div class="labelbox">
           <div class="tt">Tier2 (Before) | قبل التعديل</div>
           <div id="tier2Timeline" class="timeline"></div>
@@ -358,7 +365,7 @@ def _build_html(data: Dict[str, Any], title: str) -> str:
         </div>
       </div>
 
-      <div class="section grid2">
+      <div class="section grid2 equal-row">
         <div class="labelbox">
           <div class="tt">Validation | التحقق</div>
           <pre id="validationBox">-</pre>
@@ -370,33 +377,9 @@ def _build_html(data: Dict[str, Any], title: str) -> str:
       </div>
 
       <div class="section">
-        <h3>Screenshot Compare | مقارنة الصور</h3>
-        <div class="grid2">
-          <div class="labelbox">
-            <div class="tt">Atlas Screenshot | صورة أطلس</div>
-            <div class="stats" style="margin-bottom:8px">
-              <span><input id="atlasShotInput" type="file" accept="image/*" /></span>
-              <span><button id="atlasShotClearBtn" class="btn" type="button">Clear</button></span>
-            </div>
-            <img id="atlasShotImg" class="shotimg" alt="Atlas screenshot preview" />
-            <div id="atlasShotMeta" class="fileline"></div>
-          </div>
-          <div class="labelbox">
-            <div class="tt">AI / Chat Screenshot | صورة الشات</div>
-            <div class="stats" style="margin-bottom:8px">
-              <span><input id="aiShotInput" type="file" accept="image/*" /></span>
-              <span><button id="aiShotClearBtn" class="btn" type="button">Clear</button></span>
-            </div>
-            <img id="aiShotImg" class="shotimg" alt="AI screenshot preview" />
-            <div id="aiShotMeta" class="fileline"></div>
-          </div>
-        </div>
-        <div class="warn">Screenshots are stored locally in this browser per episode for faster review.</div>
-      </div>
-
-      <div class="section">
-        <h3>Gemini AI Evaluate | تقييم Gemini AI</h3>
+        <h3>Comparison Result | نتيجة المقارنة</h3>
         <div class="labelbox">
+          <div id="tripletCompareSummary" class="stats compare-summary"></div>
           <div class="stats" style="margin-bottom:8px">
             <span><a id="openGeminiChatLink" href="https://gemini.google.com/app/b3006ba9f325b55c" target="_blank">Open Gemini Chat</a></span>
             <span><button id="geminiEvalSaveBtn" class="btn" type="button">Save Evaluate</button></span>
@@ -414,6 +397,7 @@ def _build_html(data: Dict[str, Any], title: str) -> str:
             <span id="geminiEvalScoreBadge" class="score-badge score-gray">N/A</span>
             <span id="geminiEvalSavedAt" style="color:var(--muted)"></span>
           </div>
+          <pre id="tripletCompareBox">-</pre>
         </div>
       </div>
     </div>
@@ -439,7 +423,7 @@ def _build_html(data: Dict[str, Any], title: str) -> str:
 
     const metaInfo = document.getElementById("metaInfo");
     const topStats = document.getElementById("topStats");
-    const listEl = document.getElementById("episodeList");
+    const episodeSelectEl = document.getElementById("episodeSelect");
     const searchEl = document.getElementById("search");
     const statusEl = document.getElementById("statusFilter");
     const episodeInfo = document.getElementById("episodeInfo");
@@ -449,16 +433,12 @@ def _build_html(data: Dict[str, Any], title: str) -> str:
     const tier3Box = document.getElementById("tier3Box");
     const tier2Timeline = document.getElementById("tier2Timeline");
     const tier3Timeline = document.getElementById("tier3Timeline");
+    const chatBox = document.getElementById("chatBox");
+    const chatTimeline = document.getElementById("chatTimeline");
     const validationBox = document.getElementById("validationBox");
     const disputesBox = document.getElementById("disputesBox");
-    const atlasShotInput = document.getElementById("atlasShotInput");
-    const aiShotInput = document.getElementById("aiShotInput");
-    const atlasShotClearBtn = document.getElementById("atlasShotClearBtn");
-    const aiShotClearBtn = document.getElementById("aiShotClearBtn");
-    const atlasShotImg = document.getElementById("atlasShotImg");
-    const aiShotImg = document.getElementById("aiShotImg");
-    const atlasShotMeta = document.getElementById("atlasShotMeta");
-    const aiShotMeta = document.getElementById("aiShotMeta");
+    const tripletCompareSummary = document.getElementById("tripletCompareSummary");
+    const tripletCompareBox = document.getElementById("tripletCompareBox");
     const geminiEvalText = document.getElementById("geminiEvalText");
     const geminiEvalScoreInput = document.getElementById("geminiEvalScoreInput");
     const geminiEvalScoreBadge = document.getElementById("geminiEvalScoreBadge");
@@ -473,7 +453,7 @@ def _build_html(data: Dict[str, Any], title: str) -> str:
     const GEMINI_CHAT_URL = "https://gemini.google.com/app/b3006ba9f325b55c";
     let currentEpisodeId = "";
     let evalStore = {{}};
-    let shotStore = {{}};
+    let tripletCompareStore = {{}};
     let segStopAt = null;
 
     function loadLocalEvalStore() {{
@@ -514,7 +494,32 @@ def _build_html(data: Dict[str, Any], title: str) -> str:
         const res = await fetch("gemini_chat_evaluations.json", {{ cache: "no-cache" }});
         if (!res.ok) return;
         const data = await res.json();
-        const incoming = (data && data.evaluations && typeof data.evaluations === "object") ? data.evaluations : {{}};
+        let incoming = {{}};
+        if (Array.isArray(data)) {{
+          data.forEach((rec) => {{
+            if (!rec || typeof rec !== "object") return;
+            const eid = String(rec.episode_id || "");
+            if (!eid) return;
+            incoming[eid] = rec;
+          }});
+        }} else if (data && typeof data === "object") {{
+          if (Array.isArray(data.evaluations)) {{
+            data.evaluations.forEach((rec) => {{
+              if (!rec || typeof rec !== "object") return;
+              const eid = String(rec.episode_id || "");
+              if (!eid) return;
+              incoming[eid] = rec;
+            }});
+          }} else if (data.evaluations && typeof data.evaluations === "object") {{
+            incoming = data.evaluations;
+          }} else {{
+            Object.entries(data).forEach(([eid, rec]) => {{
+              if (!rec || typeof rec !== "object") return;
+              if (!("text" in rec) && !("score_pct" in rec) && !("episode_id" in rec)) return;
+              incoming[String(eid)] = rec;
+            }});
+          }}
+        }}
         evalStore = mergeEvalStores(evalStore, incoming);
         saveLocalEvalStore();
         if (currentEpisodeId) renderEvalForEpisode(currentEpisodeId);
@@ -523,78 +528,27 @@ def _build_html(data: Dict[str, Any], title: str) -> str:
       }}
     }}
 
-    function loadLocalShotStore() {{
+    async function loadTripletCompareStore() {{
       try {{
-        const raw = localStorage.getItem("atlas_review_shot_store_v1");
-        if (!raw) return {{}};
-        const obj = JSON.parse(raw);
-        return obj && typeof obj === "object" ? obj : {{}};
+        const res = await fetch("triplet_compare_results.jsonl", {{ cache: "no-cache" }});
+        if (!res.ok) return;
+        const raw = await res.text();
+        const map = {{}};
+        raw.split(/\\r?\\n/).forEach((line) => {{
+          const txt = String(line || "").trim();
+          if (!txt) return;
+          try {{
+            const rec = JSON.parse(txt);
+            const eid = String(rec.episode_id || "");
+            if (!eid) return;
+            map[eid] = rec;
+          }} catch (_) {{}}
+        }});
+        tripletCompareStore = map;
+        if (currentEpisodeId) renderTripletCompareForEpisode(currentEpisodeId);
       }} catch (_) {{
-        return {{}};
+        // optional file
       }}
-    }}
-
-    function saveLocalShotStore() {{
-      try {{
-        localStorage.setItem("atlas_review_shot_store_v1", JSON.stringify(shotStore));
-      }} catch (_) {{}}
-    }}
-
-    function renderShotsForEpisode(eid) {{
-      const rec = shotStore[eid] || {{}};
-      const atlasSrc = String(rec.atlas_data_url || "");
-      const aiSrc = String(rec.ai_data_url || "");
-      atlasShotImg.style.display = atlasSrc ? "block" : "none";
-      aiShotImg.style.display = aiSrc ? "block" : "none";
-      atlasShotImg.src = atlasSrc || "";
-      aiShotImg.src = aiSrc || "";
-      atlasShotMeta.textContent = atlasSrc ? `file: ${{rec.atlas_name || "atlas.png"}}` : "No image";
-      aiShotMeta.textContent = aiSrc ? `file: ${{rec.ai_name || "ai.png"}}` : "No image";
-      if (atlasShotInput) atlasShotInput.value = "";
-      if (aiShotInput) aiShotInput.value = "";
-    }}
-
-    function fileToDataUrl(file) {{
-      return new Promise((resolve, reject) => {{
-        const r = new FileReader();
-        r.onload = () => resolve(String(r.result || ""));
-        r.onerror = reject;
-        r.readAsDataURL(file);
-      }});
-    }}
-
-    async function saveShotFromFile(kind, file) {{
-      if (!currentEpisodeId || !file) return;
-      const dataUrl = await fileToDataUrl(file);
-      const rec = Object.assign({{}}, shotStore[currentEpisodeId] || {{}});
-      const now = new Date().toISOString();
-      if (kind === "atlas") {{
-        rec.atlas_data_url = dataUrl;
-        rec.atlas_name = String(file.name || "atlas.png");
-      }} else {{
-        rec.ai_data_url = dataUrl;
-        rec.ai_name = String(file.name || "ai.png");
-      }}
-      rec.updated_at_utc = now;
-      shotStore[currentEpisodeId] = rec;
-      saveLocalShotStore();
-      renderShotsForEpisode(currentEpisodeId);
-    }}
-
-    function clearShot(kind) {{
-      if (!currentEpisodeId) return;
-      const rec = Object.assign({{}}, shotStore[currentEpisodeId] || {{}});
-      if (kind === "atlas") {{
-        delete rec.atlas_data_url;
-        delete rec.atlas_name;
-      }} else {{
-        delete rec.ai_data_url;
-        delete rec.ai_name;
-      }}
-      rec.updated_at_utc = new Date().toISOString();
-      shotStore[currentEpisodeId] = rec;
-      saveLocalShotStore();
-      renderShotsForEpisode(currentEpisodeId);
     }}
 
     function scoreToBadge(score) {{
@@ -633,6 +587,45 @@ def _build_html(data: Dict[str, Any], title: str) -> str:
       }}
       applyScoreBadge(rec.score_pct);
       geminiEvalSavedAt.textContent = rec.updated_at_utc ? `saved: ${{rec.updated_at_utc}}` : "";
+      renderChatForEpisode(eid);
+    }}
+
+    function renderChatForEpisode(eid) {{
+      const rec = evalStore[eid] || {{}};
+      const chatRaw = rec && typeof rec === "object" ? (rec.text || "") : "";
+      chatBox.textContent = chatRaw ? String(chatRaw) : "(missing)";
+      renderTimeline(chatTimeline, parseSegments(chatRaw));
+    }}
+
+    function renderTripletCompareForEpisode(eid) {{
+      const rec = tripletCompareStore[eid] || null;
+      if (!rec) {{
+        tripletCompareSummary.innerHTML = `<span>No triplet result loaded for this episode.</span>`;
+        tripletCompareBox.textContent = "(missing)";
+        return;
+      }}
+      const winner = String(rec.winner || "none");
+      const score = rec.score_pct === null || rec.score_pct === undefined ? "n/a" : String(rec.score_pct);
+      const reason = String(rec.reason || "");
+      const submitSafe = String(rec.submit_safe_solution || "n/a");
+      const statusTxt = rec.ok ? "ok" : (rec.skipped ? "skipped" : "error");
+      tripletCompareSummary.innerHTML = `
+        <span><b>Status:</b> ${{statusTxt}}</span>
+        <span><b>Winner:</b> ${{winner}}</span>
+        <span><b>Score:</b> ${{score}}</span>
+        <span><b>Submit Safe:</b> ${{submitSafe}}</span>
+      `;
+      const details = {{
+        episode_id: rec.episode_id || eid,
+        status: statusTxt,
+        winner: winner,
+        score_pct: rec.score_pct,
+        submit_safe_solution: rec.submit_safe_solution,
+        reason: reason,
+        issues: rec.issues || null,
+        result_path: rec.result_path || "",
+      }};
+      tripletCompareBox.textContent = JSON.stringify(details, null, 2);
     }}
 
     function saveCurrentEval() {{
@@ -734,9 +727,6 @@ def _build_html(data: Dict[str, Any], title: str) -> str:
       const tier3Raw = ep.tier3_text || ep.tier3;
       const validation = ep.validation || {{}};
       const disputes = Array.isArray(ep.disputes) ? ep.disputes : [];
-      const shotRec = shotStore[String(ep.episode_id || "")] || {{}};
-      const atlasShotAttached = Boolean(shotRec.atlas_data_url);
-      const aiShotAttached = Boolean(shotRec.ai_data_url);
 
       const validationSummary = {{
         ok: validation.ok,
@@ -767,11 +757,6 @@ def _build_html(data: Dict[str, Any], title: str) -> str:
         "Sample:",
         JSON.stringify(disputes.slice(0, 3), null, 2),
         "",
-        "[Screenshot context]",
-        `Atlas screenshot attached: ${{atlasShotAttached ? "yes" : "no"}}`,
-        `AI/chat screenshot attached: ${{aiShotAttached ? "yes" : "no"}}`,
-        "If screenshots are attached in chat, treat Atlas screenshot as the final UI source of truth.",
-        "",
         "Please evaluate:",
         "1) Which is better: Tier2 or Tier3?",
         "2) Is Tier3 submit-safe according to Atlas policy?",
@@ -786,7 +771,6 @@ def _build_html(data: Dict[str, Any], title: str) -> str:
     function buildAiInputBundle(ep) {{
       const eid = String(ep.episode_id || "");
       const evalRec = evalStore[eid] || null;
-      const shotRec = shotStore[eid] || {{}};
       return {{
         schema_version: "atlas_ai_input_bundle_v1",
         generated_at_utc: new Date().toISOString(),
@@ -805,13 +789,6 @@ def _build_html(data: Dict[str, Any], title: str) -> str:
           disputes: Array.isArray(ep.disputes) ? ep.disputes : [],
         }},
         ai_evaluate: evalRec,
-        screenshots: {{
-          atlas_name: String(shotRec.atlas_name || ""),
-          atlas_data_url: String(shotRec.atlas_data_url || ""),
-          ai_name: String(shotRec.ai_name || ""),
-          ai_data_url: String(shotRec.ai_data_url || ""),
-          updated_at_utc: String(shotRec.updated_at_utc || ""),
-        }},
       }};
     }}
 
@@ -820,7 +797,6 @@ def _build_html(data: Dict[str, Any], title: str) -> str:
       return [
         "Use this AI input bundle for strict Atlas Tier-4 audit.",
         "اعتمد JSON التالي كمدخل مراجعة شامل للحلقة.",
-        "If screenshots are included, treat Atlas screenshot as UI ground truth.",
         "",
         "[AI_INPUT_BUNDLE_JSON]",
         JSON.stringify(bundle, null, 2),
@@ -941,43 +917,66 @@ def _build_html(data: Dict[str, Any], title: str) -> str:
       }});
     }}
 
-    function renderList() {{
+    function clearEpisodeView(msg) {{
+      const text = msg || "No episodes match filter | لا توجد حلقات مطابقة";
+      episodeInfo.innerHTML = `<div class="empty">${{text}}</div>`;
+      video.removeAttribute("src");
+      video.load();
+      videoNote.textContent = "";
+      tier2Box.textContent = "-";
+      tier3Box.textContent = "-";
+      chatBox.textContent = "-";
+      validationBox.textContent = "-";
+      disputesBox.textContent = "-";
+      tripletCompareSummary.innerHTML = `<span>-</span>`;
+      tripletCompareBox.textContent = "-";
+      renderTimeline(tier2Timeline, []);
+      renderTimeline(tier3Timeline, []);
+      renderTimeline(chatTimeline, []);
+      renderEvalForEpisode("__none__");
+    }}
+
+    function getFilteredEpisodes() {{
       const q = (searchEl.value || "").trim().toLowerCase();
       const sf = statusEl.value;
-      const filtered = episodes.filter((ep) => {{
+      return episodes.filter((ep) => {{
         const okStatus = sf === "all" ? true : (ep.review_status || "unknown") === sf;
         const okSearch = !q ? true : String(ep.episode_id || "").toLowerCase().includes(q);
         return okStatus && okSearch;
       }});
-
-      listEl.innerHTML = "";
-      if (!filtered.length) {{
-        listEl.innerHTML = `<div class="empty">No episodes match filter | لا توجد حلقات مطابقة</div>`;
-        return;
-      }}
-      filtered.forEach((ep, idx) => {{
-        const row = document.createElement("div");
-        row.className = "ep";
-        row.dataset.eid = ep.episode_id || "";
-        row.innerHTML = `
-          <div class="eid">${{ep.episode_id || "unknown"}}</div>
-          <div class="meta">
-            ${{statusBadge(ep.review_status || "unknown")}}
-            <span>$${{Number(ep.total_cost_usd || 0).toFixed(4)}} | disputes: ${{ep.disputes_count || 0}}</span>
-          </div>
-        `;
-        row.addEventListener("click", () => selectEpisode(ep, row));
-        listEl.appendChild(row);
-        if (idx === 0 && !document.querySelector(".ep.active")) {{
-          selectEpisode(ep, row);
-        }}
-      }});
     }}
 
-    function selectEpisode(ep, row) {{
-      document.querySelectorAll(".ep.active").forEach((x) => x.classList.remove("active"));
-      if (row) row.classList.add("active");
+    function renderEpisodeSelect() {{
+      const filtered = getFilteredEpisodes();
+      episodeSelectEl.innerHTML = "";
+      if (!filtered.length) {{
+        const opt = document.createElement("option");
+        opt.value = "";
+        opt.textContent = "No episodes match filter | لا توجد حلقات مطابقة";
+        episodeSelectEl.appendChild(opt);
+        currentEpisodeId = "";
+        clearEpisodeView();
+        return;
+      }}
 
+      filtered.forEach((ep) => {{
+        const eid = String(ep.episode_id || "unknown");
+        const status = String(ep.review_status || "unknown");
+        const disputes = Number(ep.disputes_count || 0);
+        const opt = document.createElement("option");
+        opt.value = eid;
+        opt.textContent = `${{eid}} | ${{status}} | disputes:${{disputes}}`;
+        episodeSelectEl.appendChild(opt);
+      }});
+
+      const hasCurrent = filtered.some((ep) => String(ep.episode_id || "") === currentEpisodeId);
+      const nextId = hasCurrent ? currentEpisodeId : String(filtered[0].episode_id || "");
+      episodeSelectEl.value = nextId;
+      const nextEpisode = filtered.find((ep) => String(ep.episode_id || "") === nextId);
+      if (nextEpisode) selectEpisode(nextEpisode);
+    }}
+
+    function selectEpisode(ep) {{
       const eid = ep.episode_id || "unknown";
       currentEpisodeId = String(eid);
       const status = ep.review_status || "unknown";
@@ -1072,7 +1071,7 @@ def _build_html(data: Dict[str, Any], title: str) -> str:
       validationBox.textContent = ep.validation ? JSON.stringify(ep.validation, null, 2) : "(missing)";
       const disputes = Array.isArray(ep.disputes) ? ep.disputes.slice(0, 5) : [];
       disputesBox.textContent = disputes.length ? JSON.stringify(disputes, null, 2) : "(none)";
-      renderShotsForEpisode(currentEpisodeId);
+      renderTripletCompareForEpisode(currentEpisodeId);
       renderEvalForEpisode(currentEpisodeId);
     }}
 
@@ -1084,27 +1083,11 @@ def _build_html(data: Dict[str, Any], title: str) -> str:
 
     initFilter();
     evalStore = loadLocalEvalStore();
-    shotStore = loadLocalShotStore();
     loadExternalEvalStore();
+    loadTripletCompareStore();
 
     geminiEvalSaveBtn.addEventListener("click", saveCurrentEval);
     geminiEvalClearBtn.addEventListener("click", clearCurrentEval);
-    atlasShotInput.addEventListener("change", async (ev) => {{
-      const f = ev.target.files && ev.target.files[0];
-      if (!f) return;
-      try {{
-        await saveShotFromFile("atlas", f);
-      }} catch (_) {{}}
-    }});
-    aiShotInput.addEventListener("change", async (ev) => {{
-      const f = ev.target.files && ev.target.files[0];
-      if (!f) return;
-      try {{
-        await saveShotFromFile("ai", f);
-      }} catch (_) {{}}
-    }});
-    atlasShotClearBtn.addEventListener("click", () => clearShot("atlas"));
-    aiShotClearBtn.addEventListener("click", () => clearShot("ai"));
     geminiEvalAutoScoreBtn.addEventListener("click", () => {{
       const s = parseScoreFromText(geminiEvalText.value || "");
       if (s === null) {{
@@ -1135,7 +1118,28 @@ def _build_html(data: Dict[str, Any], title: str) -> str:
       r.onload = () => {{
         try {{
           const obj = JSON.parse(String(r.result || "{{}}"));
-          const incoming = (obj && obj.evaluations && typeof obj.evaluations === "object") ? obj.evaluations : obj;
+          let incoming = {{}};
+          if (Array.isArray(obj)) {{
+            obj.forEach((rec) => {{
+              if (!rec || typeof rec !== "object") return;
+              const eid = String(rec.episode_id || "");
+              if (!eid) return;
+              incoming[eid] = rec;
+            }});
+          }} else if (obj && typeof obj === "object") {{
+            if (Array.isArray(obj.evaluations)) {{
+              obj.evaluations.forEach((rec) => {{
+                if (!rec || typeof rec !== "object") return;
+                const eid = String(rec.episode_id || "");
+                if (!eid) return;
+                incoming[eid] = rec;
+              }});
+            }} else if (obj.evaluations && typeof obj.evaluations === "object") {{
+              incoming = obj.evaluations;
+            }} else {{
+              incoming = obj;
+            }}
+          }}
           evalStore = mergeEvalStores(evalStore, incoming);
           saveLocalEvalStore();
           if (currentEpisodeId) renderEvalForEpisode(currentEpisodeId);
@@ -1150,9 +1154,15 @@ def _build_html(data: Dict[str, Any], title: str) -> str:
         segStopAt = null;
       }}
     }});
-    searchEl.addEventListener("input", renderList);
-    statusEl.addEventListener("change", renderList);
-    renderList();
+    episodeSelectEl.addEventListener("change", () => {{
+      const eid = String(episodeSelectEl.value || "");
+      if (!eid) return;
+      const ep = episodes.find((x) => String(x.episode_id || "") === eid);
+      if (ep) selectEpisode(ep);
+    }});
+    searchEl.addEventListener("input", renderEpisodeSelect);
+    statusEl.addEventListener("change", renderEpisodeSelect);
+    renderEpisodeSelect();
   </script>
 </body>
 </html>
