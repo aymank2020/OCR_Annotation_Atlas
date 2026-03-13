@@ -178,8 +178,29 @@ def _publish_artifacts_to_outputs(
     for src in (index_path, dashboard_path, viewer_path, queue_path):
         if src.exists():
             shutil.copy2(src, outputs_dir / src.name)
+    # Keep chat evaluation artifacts in the served outputs root so viewer/dashboard
+    # can load them from /gemini_chat_evaluations.json.
+    eval_json = effective_outputs / "gemini_chat_evaluations.json"
+    if eval_json.exists():
+        shutil.copy2(eval_json, outputs_dir / "gemini_chat_evaluations.json")
+    triplet_jsonl = effective_outputs / "triplet_compare_results.jsonl"
+    if triplet_jsonl.exists():
+        shutil.copy2(triplet_jsonl, outputs_dir / "triplet_compare_results.jsonl")
+    triplet_dir = effective_outputs / "triplet_compare"
+    if triplet_dir.exists() and triplet_dir.is_dir():
+        _copy_tree(triplet_dir, outputs_dir / "triplet_compare")
     if chat_dir.exists():
         _copy_tree(chat_dir, outputs_dir / "chat_reviews")
+    # Viewer may contain absolute /tmp paths from drive snapshot indexes.
+    # Expose /tmp under outputs/tmp so python -m http.server --directory outputs
+    # can serve those paths as /tmp/...
+    if os.name != "nt":
+        tmp_link = outputs_dir / "tmp"
+        try:
+            if not tmp_link.exists():
+                tmp_link.symlink_to(Path("/tmp"), target_is_directory=True)
+        except Exception:
+            pass
 
 
 def main() -> None:
