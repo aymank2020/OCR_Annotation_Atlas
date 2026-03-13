@@ -199,7 +199,19 @@ def _compress_video_for_inline(src: Path, out_dir: Path) -> Optional[Path]:
     return dst
 
 
-def _video_part_for_inline(path: Path, max_mb: float, cache_dir: Path) -> Tuple[Optional[Dict[str, Any]], str]:
+def _video_part_for_inline(
+    path: Path,
+    max_inline_mb: Optional[float] = None,
+    cache_dir: Optional[Path] = None,
+    **kwargs: Any,
+) -> Tuple[Optional[Dict[str, Any]], str]:
+    # Backward-compatible kwargs support:
+    # - old callsites may pass max_mb=...
+    # - newer callsites pass max_inline_mb=...
+    max_mb_raw = kwargs.pop("max_mb", None)
+    max_mb = float(max_mb_raw if max_mb_raw is not None else (max_inline_mb if max_inline_mb is not None else 20.0))
+    if cache_dir is None:
+        cache_dir = Path(tempfile.gettempdir()) / "triplet_inline_cache"
     src = path
     size_mb = src.stat().st_size / (1024 * 1024)
     if size_mb > max_mb:
