@@ -31,6 +31,7 @@ Some operations modules discussed in architecture reviews (for example WhatsApp/
 - `atlas_auto_sync_and_rebuild.py`: one-shot Python workflow to auto-sync from Drive (if needed) and rebuild review artifacts.
 - `atlas_watchdog.py`: watchdog health check/restart for `atlas-autopilot.service`.
 - `install_watchdog_cron.sh`: installs cron watchdog runner on Linux VPS.
+- `atlas_triplet_compare.py`: evaluates 3 candidates (Tier2 / Gemini API / Gemini Chat) against up to 2 videos and returns one JSON verdict.
 
 ## Extended ecosystem modules (ops branches)
 
@@ -155,6 +156,46 @@ What it does:
 4. Builds `atlas_review_viewer.html` (interactive page for manual QA).
 5. Exports chat packages (`chat_reviews/<episode_id>/...`).
 6. Uploads generated dashboard/index/viewer/packages back to the same Drive folder when `--upload-results 1`.
+
+## Triplet Compare (Tier2 vs API vs Chat)
+
+Use this when there are no live tasks and you want to evaluate archived files/videos from Drive.
+
+Inputs:
+
+- Video source of truth: `--video-path` (required), `--video-path-limit` (optional second video)
+- Candidate texts: `--tier2-path`, `--api-path`, `--chat-path` (or fallback `--labels-path`)
+- Optional context: `--task-state-path`
+
+Supported input refs:
+
+- local file path
+- Drive folder-link + filename suffix, e.g.:
+  - `https://drive.google.com/drive/folders/<FOLDER_ID>?usp=sharing\video_x.mp4`
+
+Example:
+
+```bash
+python atlas_triplet_compare.py \
+  --config sample_web_auto_solver_vps.yaml \
+  --video-path "https://drive.google.com/drive/folders/<FOLDER_ID>?usp=sharing\video_68d3c4ff6427d8caac511a05.mp4" \
+  --video-path-limit "https://drive.google.com/drive/folders/<FOLDER_ID>?usp=sharing\video_68d3c4ff6427d8caac511a05_upload_opt.mp4" \
+  --tier2-path "https://drive.google.com/drive/folders/<FOLDER_ID>?usp=sharing\text_68d3c4ff6427d8caac511a05_current.txt" \
+  --api-path "https://drive.google.com/drive/folders/<FOLDER_ID>?usp=sharing\text_68d3c4ff6427d8caac511a05_update.txt" \
+  --chat-path "https://drive.google.com/drive/folders/<FOLDER_ID>?usp=sharing\chat_68d3c4ff6427d8caac511a05.txt" \
+  --task-state-path "https://drive.google.com/drive/folders/<FOLDER_ID>?usp=sharing\task_state_68d3c4ff6427d8caac511a05.json" \
+  --labels-path "https://drive.google.com/drive/folders/<FOLDER_ID>?usp=sharing\labels_68d3c4ff6427d8caac511a05.json" \
+  --remote gdrive \
+  --model gemini-3.1-pro-preview \
+  --out outputs/triplet_compare_result.json
+```
+
+Output:
+
+- `outputs/triplet_compare_result.json` with:
+  - winner (`tier2|api|chat|none`)
+  - hallucination flags per candidate
+  - short recommendation and issue list
 
 ## Auto Sync + Rebuild (Python one-shot)
 
