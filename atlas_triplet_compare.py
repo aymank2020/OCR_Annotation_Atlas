@@ -371,59 +371,59 @@ def _call_gemini_compare(
     }
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Triplet compare: Tier2 vs Gemini API vs Gemini Chat")
-    parser.add_argument("--config", default="sample_web_auto_solver.yaml")
-    parser.add_argument("--video-path", required=True, help="Local path or Drive folder-link+filename reference")
-    parser.add_argument("--video-path-limit", default="", help="Second video path (optimized)")
-    parser.add_argument("--tier2-path", required=True, help="Tier2 text/json path reference")
-    parser.add_argument("--api-path", required=True, help="Gemini API output text/json path reference")
-    parser.add_argument("--chat-path", default="", help="Gemini Chat output text/json path reference")
-    parser.add_argument("--task-state-path", default="", help="Optional task_state JSON reference")
-    parser.add_argument("--labels-path", default="", help="Optional labels JSON reference (used as chat fallback)")
-    parser.add_argument("--remote", default=os.environ.get("RCLONE_REMOTE", "gdrive"))
-    parser.add_argument("--cache-dir", default="tmp/triplet_compare_cache")
-    parser.add_argument("--model", default="gemini-3.1-pro-preview")
-    parser.add_argument("--out", default="outputs/triplet_compare_result.json")
-    args = parser.parse_args()
-
-    cfg_path = Path(args.config)
+def run_triplet_compare(
+    *,
+    config_path: str,
+    video_path: str,
+    tier2_path: str,
+    api_path: str,
+    video_path_limit: str = "",
+    chat_path: str = "",
+    task_state_path: str = "",
+    labels_path: str = "",
+    remote: str = "",
+    cache_dir: str = "tmp/triplet_compare_cache",
+    model: str = "",
+    out: str = "outputs/triplet_compare_result.json",
+) -> Dict[str, Any]:
+    cfg_path = Path(config_path)
     if not cfg_path.exists():
-        raise SystemExit(f"Config file not found: {cfg_path}")
+        raise RuntimeError(f"Config file not found: {cfg_path}")
     cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
     if not isinstance(cfg, dict):
-        raise SystemExit("Config root must be a YAML object.")
+        raise RuntimeError("Config root must be a YAML object.")
 
     dotenv = _load_dotenv(Path(".env"))
-    cache_dir = Path(args.cache_dir).resolve()
-    cache_dir.mkdir(parents=True, exist_ok=True)
+    resolved_remote = str(remote or os.environ.get("RCLONE_REMOTE", "gdrive")).strip() or "gdrive"
+    cache_root = Path(cache_dir).resolve()
+    cache_root.mkdir(parents=True, exist_ok=True)
 
-    video_main = _resolve_input_path(args.video_path, cache_dir / "inputs", args.remote)
+    video_main = _resolve_input_path(video_path, cache_root / "inputs", resolved_remote)
     video_limit = (
-        _resolve_input_path(args.video_path_limit, cache_dir / "inputs", args.remote)
-        if str(args.video_path_limit or "").strip()
+        _resolve_input_path(video_path_limit, cache_root / "inputs", resolved_remote)
+        if str(video_path_limit or "").strip()
         else None
     )
 
-    tier2_file = _resolve_input_path(args.tier2_path, cache_dir / "inputs", args.remote)
-    api_file = _resolve_input_path(args.api_path, cache_dir / "inputs", args.remote)
+    tier2_file = _resolve_input_path(tier2_path, cache_root / "inputs", resolved_remote)
+    api_file = _resolve_input_path(api_path, cache_root / "inputs", resolved_remote)
 
     chat_file: Optional[Path] = None
-    if str(args.chat_path or "").strip():
-        chat_file = _resolve_input_path(args.chat_path, cache_dir / "inputs", args.remote)
-    elif str(args.labels_path or "").strip():
-        chat_file = _resolve_input_path(args.labels_path, cache_dir / "inputs", args.remote)
+    if str(chat_path or "").strip():
+        chat_file = _resolve_input_path(chat_path, cache_root / "inputs", resolved_remote)
+    elif str(labels_path or "").strip():
+        chat_file = _resolve_input_path(labels_path, cache_root / "inputs", resolved_remote)
 
     task_state_file: Optional[Path] = None
-    if str(args.task_state_path or "").strip():
-        task_state_file = _resolve_input_path(args.task_state_path, cache_dir / "inputs", args.remote)
+    if str(task_state_path or "").strip():
+        task_state_file = _resolve_input_path(task_state_path, cache_root / "inputs", resolved_remote)
 
     tier2_text = _load_text_or_json(tier2_file)
     api_text = _load_text_or_json(api_file)
     chat_text = _load_text_or_json(chat_file) if chat_file else ""
     task_state_text = _load_text_or_json(task_state_file) if task_state_file else ""
 
-    model = str(args.model or "").strip() or str(
+    selected_model = str(model or "").strip() or str(
         ((cfg.get("gemini", {}) if isinstance(cfg.get("gemini"), dict) else {}).get("model", "gemini-3.1-pro-preview"))
     ).strip()
 
@@ -470,30 +470,30 @@ Return ONLY valid JSON with this shape:
     result = _call_gemini_compare(
         cfg=cfg,
         dotenv=dotenv,
-        model=model,
+        model=selected_model,
         prompt=prompt,
         video_a=video_main,
         video_b=video_limit,
-        cache_dir=cache_dir / "video_inline",
+        cache_dir=cache_root / "video_inline",
     )
 
-    out_path = Path(args.out).resolve()
+    out_path = Path(out).resolve()
     out_path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
-        "model": model,
+        "model": selected_model,
         "video_refs": {
-            "video_path": args.video_path,
-            "video_path_limit": args.video_path_limit,
+            "video_path": video_path,
+            "video_path_limit": video_path_limit,
             "resolved_video_path": str(video_main),
             "resolved_video_path_limit": str(video_limit) if video_limit else "",
         },
         "text_refs": {
-            "tier2_path": args.tier2_path,
-            "api_path": args.api_path,
-            "chat_path": args.chat_path,
-            "labels_path": args.labels_path,
-            "task_state_path": args.task_state_path,
+            "tier2_path": tier2_path,
+            "api_path": api_path,
+            "chat_path": chat_path,
+            "labels_path": labels_path,
+            "task_state_path": task_state_path,
             "resolved_tier2_path": str(tier2_file),
             "resolved_api_path": str(api_file),
             "resolved_chat_path": str(chat_file) if chat_file else "",
@@ -505,13 +505,47 @@ Return ONLY valid JSON with this shape:
         "usage": result.get("usage", {}),
     }
     out_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    payload["output_path"] = str(out_path)
+    return payload
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Triplet compare: Tier2 vs Gemini API vs Gemini Chat")
+    parser.add_argument("--config", default="sample_web_auto_solver.yaml")
+    parser.add_argument("--video-path", required=True, help="Local path or Drive folder-link+filename reference")
+    parser.add_argument("--video-path-limit", default="", help="Second video path (optimized)")
+    parser.add_argument("--tier2-path", required=True, help="Tier2 text/json path reference")
+    parser.add_argument("--api-path", required=True, help="Gemini API output text/json path reference")
+    parser.add_argument("--chat-path", default="", help="Gemini Chat output text/json path reference")
+    parser.add_argument("--task-state-path", default="", help="Optional task_state JSON reference")
+    parser.add_argument("--labels-path", default="", help="Optional labels JSON reference (used as chat fallback)")
+    parser.add_argument("--remote", default=os.environ.get("RCLONE_REMOTE", "gdrive"))
+    parser.add_argument("--cache-dir", default="tmp/triplet_compare_cache")
+    parser.add_argument("--model", default="gemini-3.1-pro-preview")
+    parser.add_argument("--out", default="outputs/triplet_compare_result.json")
+    args = parser.parse_args()
+
+    payload = run_triplet_compare(
+        config_path=args.config,
+        video_path=args.video_path,
+        video_path_limit=args.video_path_limit,
+        tier2_path=args.tier2_path,
+        api_path=args.api_path,
+        chat_path=args.chat_path,
+        task_state_path=args.task_state_path,
+        labels_path=args.labels_path,
+        remote=args.remote,
+        cache_dir=args.cache_dir,
+        model=args.model,
+        out=args.out,
+    )
 
     judge = payload.get("judge_result", {})
     winner = ""
     if isinstance(judge, dict):
         winner = str(judge.get("winner", "") or "").strip()
     print(f"[triplet-compare] winner: {winner or 'unknown'}")
-    print(f"[triplet-compare] output: {out_path}")
+    print(f"[triplet-compare] output: {payload.get('output_path', '')}")
 
 
 if __name__ == "__main__":

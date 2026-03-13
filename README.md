@@ -33,6 +33,7 @@ Some operations modules discussed in architecture reviews (for example WhatsApp/
 - `atlas_watchdog.py`: watchdog health check/restart for `atlas-autopilot.service`.
 - `install_watchdog_cron.sh`: installs cron watchdog runner on Linux VPS.
 - `atlas_triplet_compare.py`: evaluates 3 candidates (Tier2 / Gemini API / Gemini Chat) against up to 2 videos and returns one JSON verdict.
+- `atlas_triplet_batch.py`: runs triplet compare in batch for many episodes and updates `gemini_chat_evaluations.json` so results appear in Dashboard/Viewer.
 
 ## Extended ecosystem modules (ops branches)
 
@@ -198,6 +199,28 @@ Output:
   - hallucination flags per candidate
   - short recommendation and issue list
 
+## Triplet Batch (All Cases)
+
+Run triplet compare across all episodes in `episodes_review_index.json`:
+
+```bash
+python atlas_triplet_batch.py \
+  --config sample_web_auto_solver_vps.yaml \
+  --outputs-dir outputs \
+  --index outputs/episodes_review_index.json \
+  --model gemini-3.1-pro-preview \
+  --results-dir outputs/triplet_compare \
+  --results-jsonl outputs/triplet_compare_results.jsonl \
+  --source triplet_compare_batch
+```
+
+What it updates:
+
+- per-episode compare files: `outputs/triplet_compare/triplet_compare_<episode_id>.json`
+- run summary rows: `outputs/triplet_compare_results.jsonl`
+- Gemini chat eval store: `outputs/gemini_chat_evaluations.json`
+- per-episode chat text file: `outputs/chat_reviews/<episode_id>/text_<episode_id>_chat.txt`
+
 ## Auto Sync + Rebuild (Python one-shot)
 
 If dashboard values are zero because local `outputs/` is empty while historical data is on Drive:
@@ -207,7 +230,10 @@ python atlas_auto_sync_and_rebuild.py \
   --outputs-dir outputs \
   --drive-link "https://drive.google.com/drive/folders/<FOLDER_ID>?usp=sharing" \
   --remote gdrive \
-  --build-power-queue
+  --build-power-queue \
+  --run-triplet-batch \
+  --triplet-config sample_web_auto_solver_vps.yaml \
+  --triplet-model gemini-3.1-pro-preview
 ```
 
 This command can:
@@ -216,6 +242,18 @@ This command can:
 2. sync metadata snapshot from Drive (videos optional),
 3. rebuild index/dashboard/viewer/chat packages,
 4. generate `outputs/power_automate_queue.csv`.
+5. (optional) run batch triplet compare and publish results to dashboard/viewer data sources.
+
+Open the generated pages on localhost:
+
+```bash
+python -m http.server 8080 --directory outputs
+```
+
+Then open:
+
+- `http://localhost:8080/atlas_review_viewer.html`
+- `http://localhost:8080/atlas_dashboard.html`
 
 ## Production policy recommendations
 

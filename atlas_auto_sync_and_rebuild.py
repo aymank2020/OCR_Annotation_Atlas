@@ -9,6 +9,7 @@ What it does:
 2) If coverage is weak and Drive source is provided, pulls metadata from Drive via rclone.
 3) Rebuilds:
    - episodes_review_index.json
+   - optional: batch triplet compare + gemini_chat_evaluations.json refresh
    - atlas_dashboard.html
    - atlas_review_viewer.html
    - chat_reviews/*
@@ -205,6 +206,13 @@ def main() -> None:
     parser.add_argument("--build-power-queue", action="store_true", help="Also generate outputs/power_automate_queue.csv")
     parser.add_argument("--video-dir", default=r"D:\atlas video", help="Video directory used by power queue")
     parser.add_argument("--gemini-chat-url", default="https://gemini.google.com/app/b3006ba9f325b55c")
+    parser.add_argument("--run-triplet-batch", action="store_true", help="Run triplet compare for episodes and update chat evaluations")
+    parser.add_argument("--triplet-config", default="sample_web_auto_solver_vps.yaml", help="Config path used by atlas_triplet_batch.py")
+    parser.add_argument("--triplet-model", default="gemini-3.1-pro-preview", help="Model used in triplet compare")
+    parser.add_argument("--triplet-only-status", default="", help="Optional review_status filter for triplet compare (comma-separated)")
+    parser.add_argument("--triplet-limit", type=int, default=0, help="Max episodes for triplet compare (0 = all)")
+    parser.add_argument("--triplet-require-chat-path", action="store_true", help="Skip episode if chat text path is missing")
+    parser.add_argument("--triplet-overwrite-evals", action="store_true", help="Overwrite existing non-batch eval entries")
     args = parser.parse_args()
 
     app_dir = Path(__file__).resolve().parent
@@ -277,6 +285,42 @@ def main() -> None:
             str(float(args.probe_timeout_sec)),
         ]
     )
+    if args.run_triplet_batch:
+        triplet_status = str(args.triplet_only_status or "").strip()
+        if not triplet_status:
+            triplet_status = str(args.only_status or "").strip()
+        triplet_config_path = Path(args.triplet_config)
+        if not triplet_config_path.is_absolute():
+            triplet_config_path = (app_dir / triplet_config_path).resolve()
+        if not triplet_config_path.exists():
+            fallback_cfg = (app_dir / "sample_web_auto_solver.yaml").resolve()
+            if fallback_cfg.exists():
+                _log(f"triplet config not found ({triplet_config_path}); fallback to {fallback_cfg}")
+                triplet_config_path = fallback_cfg
+        cmd = [
+            py,
+            str(app_dir / "atlas_triplet_batch.py"),
+            "--config",
+            str(triplet_config_path),
+            "--outputs-dir",
+            str(effective_outputs),
+            "--index",
+            str(index_path),
+            "--remote",
+            str(args.remote),
+            "--model",
+            str(args.triplet_model),
+            "--limit",
+            str(max(0, int(args.triplet_limit))),
+        ]
+        if triplet_status:
+            cmd.extend(["--only-status", triplet_status])
+        if args.triplet_require_chat_path:
+            cmd.append("--require-chat-path")
+        if args.triplet_overwrite_evals:
+            cmd.append("--overwrite-evals")
+        _run(cmd)
+
     _run([py, str(app_dir / "atlas_dashboard_gen.py"), "--outputs-dir", str(effective_outputs)])
     _run([py, str(app_dir / "atlas_review_viewer_gen.py"), "--index", str(index_path), "--out", str(viewer_path)])
     _run(
