@@ -454,6 +454,8 @@ def _build_html(data: Dict[str, Any], title: str) -> str:
     let currentEpisodeId = "";
     let evalStore = {{}};
     let tripletCompareStore = {{}};
+    let tripletDetailStore = {{}};
+    let textRefCache = {{}};
     let segStopAt = null;
 
     function loadLocalEvalStore() {{
@@ -545,7 +547,12 @@ def _build_html(data: Dict[str, Any], title: str) -> str:
           }} catch (_) {{}}
         }});
         tripletCompareStore = map;
-        if (currentEpisodeId) renderTripletCompareForEpisode(currentEpisodeId);
+        tripletDetailStore = {{}};
+        textRefCache = {{}};
+        if (currentEpisodeId) {{
+          renderTripletCompareForEpisode(currentEpisodeId);
+          renderChatForEpisode(currentEpisodeId);
+        }}
       }} catch (_) {{
         // optional file
       }}
@@ -590,24 +597,58 @@ def _build_html(data: Dict[str, Any], title: str) -> str:
       renderChatForEpisode(eid);
     }}
 
-    function renderChatForEpisode(eid) {{
-      const rec = evalStore[eid] || {{}};
-      const chatRaw = rec && typeof rec === "object" ? (rec.text || "") : "";
-      chatBox.textContent = chatRaw ? String(chatRaw) : "(missing)";
-      renderTimeline(chatTimeline, parseSegments(chatRaw));
+    async function renderChatForEpisode(eid) {{
+      const safeEid = String(eid || "");
+      if (!safeEid || safeEid === "__none__") {{
+        chatBox.textContent = "-";
+        renderTimeline(chatTimeline, []);
+        return;
+      }}
+      chatBox.textContent = "Loading timed chat labels...";
+      renderTimeline(chatTimeline, []);
+
+      const chatRaw = await resolveChatTimedText(safeEid);
+      if (safeEid !== currentEpisodeId) return;
+      if (!chatRaw) {{
+        chatBox.textContent = "(missing timed labels)";
+        renderTimeline(chatTimeline, []);
+        return;
+      }}
+      const segs = parseSegments(chatRaw);
+      if (!segs.length) {{
+        chatBox.textContent = "(missing timed labels)";
+        renderTimeline(chatTimeline, []);
+        return;
+      }}
+      chatBox.textContent = chatRaw;
+      renderTimeline(chatTimeline, segs);
     }}
 
-    function renderTripletCompareForEpisode(eid) {{
-      const rec = tripletCompareStore[eid] || null;
+    async function renderTripletCompareForEpisode(eid) {{
+      const safeEid = String(eid || "");
+      const rec = tripletCompareStore[safeEid] || null;
       if (!rec) {{
         tripletCompareSummary.innerHTML = `<span>No triplet result loaded for this episode.</span>`;
         tripletCompareBox.textContent = "(missing)";
         return;
       }}
-      const winner = String(rec.winner || "none");
-      const score = rec.score_pct === null || rec.score_pct === undefined ? "n/a" : String(rec.score_pct);
-      const reason = String(rec.reason || "");
-      const submitSafe = String(rec.submit_safe_solution || "n/a");
+      const detail = await getTripletDetailForEpisode(safeEid);
+      if (safeEid !== currentEpisodeId) return;
+      const judge = detail && typeof detail === "object" && detail.judge_result && typeof detail.judge_result === "object"
+        ? detail.judge_result
+        : null;
+
+      const winner = String((judge && judge.winner) || rec.winner || "none");
+      const scoreRaw = (judge && judge.scores && typeof judge.scores === "object")
+        ? judge.scores[winner]
+        : rec.score_pct;
+      const score = scoreRaw === null || scoreRaw === undefined || scoreRaw === "" ? "n/a" : String(scoreRaw);
+      const reason = String(
+        (judge && (judge.best_reason_short || judge.final_recommendation)) ||
+        rec.reason ||
+        ""
+      );
+      const submitSafe = String((judge && judge.submit_safe_solution) || rec.submit_safe_solution || "n/a");
       const statusTxt = rec.ok ? "ok" : (rec.skipped ? "skipped" : "error");
       tripletCompareSummary.innerHTML = `
         <span><b>Status:</b> ${{statusTxt}}</span>
@@ -615,7 +656,11 @@ def _build_html(data: Dict[str, Any], title: str) -> str:
         <span><b>Score:</b> ${{score}}</span>
         <span><b>Submit Safe:</b> ${{submitSafe}}</span>
       `;
-      const details = {{
+      if (judge) {{
+        tripletCompareBox.textContent = JSON.stringify(judge, null, 2);
+        return;
+      }}
+      const fallbackDetails = {{
         episode_id: rec.episode_id || eid,
         status: statusTxt,
         winner: winner,
@@ -625,7 +670,7 @@ def _build_html(data: Dict[str, Any], title: str) -> str:
         issues: rec.issues || null,
         result_path: rec.result_path || "",
       }};
-      tripletCompareBox.textContent = JSON.stringify(details, null, 2);
+      tripletCompareBox.textContent = JSON.stringify(fallbackDetails, null, 2);
     }}
 
     function saveCurrentEval() {{
@@ -883,6 +928,88 @@ def _build_html(data: Dict[str, Any], title: str) -> str:
         }});
       }});
       return out;
+    }}
+
+    async function loadTextFromRef(ref) {{
+      const key = normalizePath(ref);
+      if (!key) return "";
+      if (Object.prototype.hasOwnProperty.call(textRefCache, key)) {{
+        return String(textRefCache[key] || "");
+      }}
+      try {{
+        const res = await fetch(key, {{ cache: "no-cache" }});
+        if (!res.ok) {{
+          textRefCache[key] = "";
+          return "";
+        }}
+        const raw = await res.text();
+        let out = raw;
+        if (key.toLowerCase().endsWith(".json")) {{
+          try {{
+            out = toText(JSON.parse(raw));
+          }} catch (_) {{
+            out = raw;
+          }}
+        }}
+        textRefCache[key] = out;
+        return out;
+      }} catch (_) {{
+        textRefCache[key] = "";
+        return "";
+      }}
+    }}
+
+    async function getTripletDetailForEpisode(eid) {{
+      const key = String(eid || "");
+      if (!key) return null;
+      if (Object.prototype.hasOwnProperty.call(tripletDetailStore, key)) {{
+        return tripletDetailStore[key];
+      }}
+      const row = tripletCompareStore[key];
+      if (!row || !row.result_path) {{
+        tripletDetailStore[key] = null;
+        return null;
+      }}
+      const path = normalizePath(row.result_path);
+      if (!path) {{
+        tripletDetailStore[key] = null;
+        return null;
+      }}
+      try {{
+        const res = await fetch(path, {{ cache: "no-cache" }});
+        if (!res.ok) {{
+          tripletDetailStore[key] = null;
+          return null;
+        }}
+        const obj = await res.json();
+        tripletDetailStore[key] = obj;
+        return obj;
+      }} catch (_) {{
+        tripletDetailStore[key] = null;
+        return null;
+      }}
+    }}
+
+    async function resolveChatTimedText(eid) {{
+      const key = String(eid || "");
+      if (!key) return "";
+
+      const detail = await getTripletDetailForEpisode(key);
+      const refs = [];
+      if (detail && typeof detail === "object" && detail.text_refs && typeof detail.text_refs === "object") {{
+        const t = detail.text_refs;
+        refs.push(t.resolved_chat_path, t.chat_path, t.labels_path);
+      }}
+      refs.push(`chat_reviews/${{key}}/text_${{key}}_chat.txt`);
+      refs.push(`chat_reviews/${{key}}/labels_${{key}}.json`);
+
+      for (const ref of refs) {{
+        const txt = await loadTextFromRef(ref);
+        if (!txt) continue;
+        const segs = parseSegments(txt);
+        if (segs.length > 0) return txt;
+      }}
+      return "";
     }}
 
     function jumpToSegment(startSec, endSec) {{
