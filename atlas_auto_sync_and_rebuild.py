@@ -181,8 +181,11 @@ def _publish_artifacts_to_outputs(
     # Keep chat evaluation artifacts in the served outputs root so viewer/dashboard
     # can load them from /gemini_chat_evaluations.json.
     eval_json = effective_outputs / "gemini_chat_evaluations.json"
+    eval_dst = outputs_dir / "gemini_chat_evaluations.json"
     if eval_json.exists():
-        shutil.copy2(eval_json, outputs_dir / "gemini_chat_evaluations.json")
+        shutil.copy2(eval_json, eval_dst)
+    elif not eval_dst.exists():
+        eval_dst.write_text("[]\n", encoding="utf-8")
     triplet_jsonl = effective_outputs / "triplet_compare_results.jsonl"
     if triplet_jsonl.exists():
         shutil.copy2(triplet_jsonl, outputs_dir / "triplet_compare_results.jsonl")
