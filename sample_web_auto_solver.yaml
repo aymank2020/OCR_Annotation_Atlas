@@ -171,7 +171,16 @@ otp:
   lookback_sec: 300
 
 gemini:
+  # auth_mode:
+  # - "api_key"   -> use GEMINI_API_KEY / GOOGLE_API_KEY
+  # - "vertex_ai" -> use Google Cloud Service Account JSON credentials
+  auth_mode: "api_key"
   api_key: ""
+  # Vertex settings (used when auth_mode: "vertex_ai")
+  vertex_project: ""
+  vertex_location: "us-central1"
+  # Optional explicit path; otherwise use env GOOGLE_APPLICATION_CREDENTIALS
+  vertex_credentials_path: ""
   model: "gemini-2.5-flash"
   temperature: 0.0
   max_retries: 3

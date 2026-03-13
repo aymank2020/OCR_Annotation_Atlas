@@ -337,6 +337,20 @@ Environment keys:
 - `ANTHROPIC_API_KEY`
 - `OPENAI_API_KEY`
 - `GEMINI_API_KEY` or `GOOGLE_API_KEY`
+- `GOOGLE_APPLICATION_CREDENTIALS` (when using `gemini.auth_mode: vertex_ai`)
+- `GOOGLE_CLOUD_PROJECT` (optional if `gemini.vertex_project` is set)
+- `GOOGLE_CLOUD_LOCATION` (optional if `gemini.vertex_location` is set)
+
+Vertex AI mode for `atlas_web_auto_solver.py`:
+
+- In YAML:
+  - `gemini.auth_mode: vertex_ai`
+  - `gemini.vertex_project: <gcp-project-id>`
+  - `gemini.vertex_location: us-central1`
+- In env:
+  - `GOOGLE_APPLICATION_CREDENTIALS=/root/OCR_annotation_Atlas/secrets/vertex-sa.json`
+- Dependency:
+  - `pip install google-auth`
 
 Security:
 

@@ -3,7 +3,7 @@ Atlas browser auto-solver:
 1) Login to audit.atlascapture.io
 2) Auto-read OTP from Gmail (IMAP)
 3) Open task room and extract segments
-4) Send segments to Gemini API
+4) Send segments to Gemini (API key or Vertex AI)
 5) Optionally write labels back into Atlas
 """
 
@@ -386,10 +386,14 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "lookback_sec": 300,
     },
     "gemini": {
+        "auth_mode": "api_key",
         "api_key": "",
         "fallback_api_key": "",
         "api_keys": [],
         "rotation_api_keys": [],
+        "vertex_project": "",
+        "vertex_location": "us-central1",
+        "vertex_credentials_path": "",
         "key_rotation_enabled": True,
         "prefer_fallback_key_as_primary": False,
         "quota_fallback_enabled": True,
@@ -491,6 +495,11 @@ _GEMINI_QUOTA_COOLDOWN_UNTIL_TS = 0.0
 _GEMINI_FALLBACK_USES = 0
 _SCRIPT_BUILD = "2026-02-27.0905"
 _DOTENV_CACHE: Optional[Dict[str, str]] = None
+_VERTEX_TOKEN_CACHE: Dict[str, Any] = {
+    "token": "",
+    "expiry_ts": 0.0,
+    "credentials_path": "",
+}
 
 
 def _deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
@@ -621,6 +630,150 @@ def _resolve_gemini_fallback_key(explicit: str) -> str:
             "GOOGLE_API_KEY_SECONDARY",
         ],
     )
+
+
+def _normalize_gemini_auth_mode(raw: str) -> str:
+    mode = str(raw or "").strip().lower()
+    aliases = {
+        "": "api_key",
+        "api": "api_key",
+        "apikey": "api_key",
+        "api_key": "api_key",
+        "google_api_key": "api_key",
+        "vertex": "vertex_ai",
+        "vertexai": "vertex_ai",
+        "vertex_ai": "vertex_ai",
+        "service_account": "vertex_ai",
+    }
+    return aliases.get(mode, "api_key")
+
+
+def _gemini_auth_mode(cfg: Dict[str, Any]) -> str:
+    return _normalize_gemini_auth_mode(str(_cfg_get(cfg, "gemini.auth_mode", "api_key")))
+
+
+def _resolve_vertex_project(cfg: Dict[str, Any]) -> str:
+    explicit = str(_cfg_get(cfg, "gemini.vertex_project", "") or "").strip()
+    if explicit:
+        return explicit
+    for name in ("GOOGLE_CLOUD_PROJECT", "GCLOUD_PROJECT", "GCP_PROJECT", "VERTEX_PROJECT_ID"):
+        value = str(_read_secret_source(name) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _resolve_vertex_location(cfg: Dict[str, Any]) -> str:
+    explicit = str(_cfg_get(cfg, "gemini.vertex_location", "") or "").strip()
+    if explicit:
+        return explicit
+    for name in ("GOOGLE_CLOUD_LOCATION", "VERTEX_LOCATION"):
+        value = str(_read_secret_source(name) or "").strip()
+        if value:
+            return value
+    return "us-central1"
+
+
+def _resolve_vertex_credentials_path(cfg: Dict[str, Any]) -> str:
+    explicit = str(_cfg_get(cfg, "gemini.vertex_credentials_path", "") or "").strip()
+    if explicit:
+        return explicit
+    return str(_read_secret_source("GOOGLE_APPLICATION_CREDENTIALS") or "").strip()
+
+
+def _resolve_vertex_access_token(cfg: Dict[str, Any]) -> str:
+    global _VERTEX_TOKEN_CACHE
+
+    credentials_path_raw = _resolve_vertex_credentials_path(cfg)
+    if not credentials_path_raw:
+        raise RuntimeError(
+            "Missing Vertex credentials path. Set gemini.vertex_credentials_path "
+            "or env GOOGLE_APPLICATION_CREDENTIALS."
+        )
+    credentials_path = str(Path(credentials_path_raw).expanduser().resolve())
+    if not Path(credentials_path).exists():
+        raise RuntimeError(f"Vertex credentials file not found: {credentials_path}")
+
+    now = time.time()
+    cached_path = str(_VERTEX_TOKEN_CACHE.get("credentials_path", "") or "")
+    cached_token = str(_VERTEX_TOKEN_CACHE.get("token", "") or "")
+    cached_expiry = float(_VERTEX_TOKEN_CACHE.get("expiry_ts", 0.0) or 0.0)
+    if (
+        cached_token
+        and cached_path == credentials_path
+        and cached_expiry > now + 60.0
+    ):
+        return cached_token
+
+    try:
+        from google.auth.transport.requests import Request as GoogleAuthRequest
+        from google.oauth2 import service_account
+    except Exception as exc:
+        raise RuntimeError(
+            "Vertex AI auth requires google-auth package. Install it with: pip install google-auth"
+        ) from exc
+
+    creds = service_account.Credentials.from_service_account_file(
+        credentials_path,
+        scopes=["https://www.googleapis.com/auth/cloud-platform"],
+    )
+    req = GoogleAuthRequest()
+    creds.refresh(req)
+    token = str(getattr(creds, "token", "") or "").strip()
+    if not token:
+        raise RuntimeError("Failed to obtain Vertex access token from service account credentials.")
+
+    expiry_ts = now + 3000.0
+    expiry = getattr(creds, "expiry", None)
+    try:
+        if expiry is not None:
+            expiry_ts = float(expiry.timestamp())
+    except Exception:
+        pass
+
+    _VERTEX_TOKEN_CACHE = {
+        "token": token,
+        "expiry_ts": expiry_ts,
+        "credentials_path": credentials_path,
+    }
+    return token
+
+
+def _build_vertex_generate_content_url(cfg: Dict[str, Any], model: str) -> str:
+    project = _resolve_vertex_project(cfg)
+    if not project:
+        raise RuntimeError(
+            "Missing Vertex project. Set gemini.vertex_project or env GOOGLE_CLOUD_PROJECT."
+        )
+    location = _resolve_vertex_location(cfg)
+    model_name = str(model or "").strip()
+    if not model_name:
+        raise RuntimeError("Gemini model name is empty.")
+    model_path = model_name
+    if "/" not in model_name:
+        model_path = f"publishers/google/models/{model_name}"
+    return (
+        f"https://{location}-aiplatform.googleapis.com/v1/"
+        f"projects/{project}/locations/{location}/{model_path}:generateContent"
+    )
+
+
+def _translate_payload_for_vertex(value: Any) -> Any:
+    if isinstance(value, dict):
+        out: Dict[str, Any] = {}
+        for key, item in value.items():
+            mapped = key
+            if key == "inline_data":
+                mapped = "inlineData"
+            elif key == "file_data":
+                mapped = "fileData"
+            elif key == "mime_type":
+                mapped = "mimeType"
+            out[mapped] = _translate_payload_for_vertex(item)
+        return out
+    if isinstance(value, list):
+        return [_translate_payload_for_vertex(item) for item in value]
+    return value
 
 
 def _default_chrome_user_data_dir() -> str:
@@ -3387,6 +3540,9 @@ def _is_non_retriable_gemini_error(exc: Exception) -> bool:
         return False
     fatal_markers = [
         "missing gemini api key",
+        "missing vertex credentials",
+        "vertex credentials file not found",
+        "missing vertex project",
         "api key not valid",
         "permission denied",
         "unauthorized",
@@ -6835,30 +6991,43 @@ def call_gemini_labels(
     model_override: str = "",
 ) -> Dict[str, Any]:
     model = str(model_override or _cfg_get(cfg, "gemini.model", "gemini-2.5-pro")).strip()
-    key_entries = _resolve_gemini_api_key_entries(cfg)
-    if not key_entries:
-        raise RuntimeError(
-            "Missing Gemini API keys. Set GEMINI_API_KEY and additional keys via "
-            "GEMINI_API_KEY_FALLBACK / GEMINI_API_KEY_2..N / GEMINI_API_KEYS."
-        )
-    key_rotation_enabled = bool(_cfg_get(cfg, "gemini.key_rotation_enabled", True))
-    quota_fallback_enabled = bool(_cfg_get(cfg, "gemini.quota_fallback_enabled", False))
-    quota_fallback_max_uses_per_run = max(
-        0,
-        int(_cfg_get(cfg, "gemini.quota_fallback_max_uses_per_run", 1)),
-    )
-    if not (key_rotation_enabled and quota_fallback_enabled):
-        key_entries = key_entries[:1]
+    auth_mode = _gemini_auth_mode(cfg)
+    key_entries: List[Tuple[str, str]] = []
+    key_rotation_enabled = False
+    quota_fallback_enabled = False
+    quota_fallback_max_uses_per_run = 0
     active_key_index = 0
-    active_key_name, active_api_key = key_entries[active_key_index]
-    can_rotate_keys = len(key_entries) > 1 and quota_fallback_max_uses_per_run > 0
-    if len(key_entries) > 1:
-        print(
-            "[gemini] key rotation pool active: "
-            f"{len(key_entries)} keys (rotation={'on' if can_rotate_keys else 'off'})."
+    active_key_name = "vertex_service_account"
+    active_api_key = ""
+    can_rotate_keys = False
+    if auth_mode == "api_key":
+        key_entries = _resolve_gemini_api_key_entries(cfg)
+        if not key_entries:
+            raise RuntimeError(
+                "Missing Gemini API keys. Set GEMINI_API_KEY and additional keys via "
+                "GEMINI_API_KEY_FALLBACK / GEMINI_API_KEY_2..N / GEMINI_API_KEYS."
+            )
+        key_rotation_enabled = bool(_cfg_get(cfg, "gemini.key_rotation_enabled", True))
+        quota_fallback_enabled = bool(_cfg_get(cfg, "gemini.quota_fallback_enabled", False))
+        quota_fallback_max_uses_per_run = max(
+            0,
+            int(_cfg_get(cfg, "gemini.quota_fallback_max_uses_per_run", 1)),
         )
-    elif active_key_name == "fallback":
-        print("[gemini] primary key missing; using fallback key as only key source.")
+        if not (key_rotation_enabled and quota_fallback_enabled):
+            key_entries = key_entries[:1]
+        active_key_name, active_api_key = key_entries[active_key_index]
+        can_rotate_keys = len(key_entries) > 1 and quota_fallback_max_uses_per_run > 0
+        if len(key_entries) > 1:
+            print(
+                "[gemini] key rotation pool active: "
+                f"{len(key_entries)} keys (rotation={'on' if can_rotate_keys else 'off'})."
+            )
+        elif active_key_name == "fallback":
+            print("[gemini] primary key missing; using fallback key as only key source.")
+    else:
+        _ = _build_vertex_generate_content_url(cfg, model)
+        _ = _resolve_vertex_access_token(cfg)
+        print("[gemini] auth mode: vertex_ai (service account).")
 
     system_instruction = _resolve_system_instruction(cfg)
     max_retries = max(0, int(_cfg_get(cfg, "gemini.max_retries", 3)))
@@ -6873,6 +7042,9 @@ def call_gemini_labels(
         _cfg_get(cfg, "gemini.allow_text_only_fallback_on_network_error", True)
     )
     video_transport = str(_cfg_get(cfg, "gemini.video_transport", "auto")).strip().lower() or "auto"
+    if auth_mode == "vertex_ai" and video_transport in {"auto", "files", "files_api"}:
+        video_transport = "inline"
+        print("[gemini] vertex_ai mode: forcing video_transport=inline.")
     files_api_fallback_to_inline = bool(_cfg_get(cfg, "gemini.files_api_fallback_to_inline", True))
     max_inline_video_mb = float(_cfg_get(cfg, "gemini.max_inline_video_mb", 20.0))
     inline_retry_targets_mb = _parse_float_list(
@@ -6898,7 +7070,10 @@ def call_gemini_labels(
     elif not attach_video:
         video_attach_block_reason = "disabled_by_config"
 
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+    if auth_mode == "vertex_ai":
+        url = _build_vertex_generate_content_url(cfg, model)
+    else:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
     parts: List[Dict[str, Any]] = [{"text": prompt}]
     video_parts: List[Dict[str, Any]] = []
     frame_parts: List[Dict[str, Any]] = []
@@ -7045,7 +7220,7 @@ def call_gemini_labels(
             total_size_mb = sum(float(p.stat().st_size) for p in prepared_video_files) / (1024 * 1024)
         except Exception:
             total_size_mb = 0.0
-        wants_files_api = video_transport in {"auto", "files_api", "files"}
+        wants_files_api = auth_mode == "api_key" and video_transport in {"auto", "files_api", "files"}
         inline_allowed = video_transport in {"auto", "inline"} or (
             wants_files_api and files_api_fallback_to_inline
         )
@@ -7140,6 +7315,8 @@ def call_gemini_labels(
         nonlocal prepared_video_files, prepared_video_file
         nonlocal frame_parts, reference_frame_bytes, reference_frame_count_used
         global _GEMINI_FALLBACK_USES
+        if auth_mode != "api_key":
+            return False
         if not can_rotate_keys:
             return False
         if active_key_index >= len(key_entries) - 1:
@@ -7201,14 +7378,21 @@ def call_gemini_labels(
         }
         if system_instruction:
             payload["systemInstruction"] = {"parts": [{"text": system_instruction}]}
+        payload_to_send: Dict[str, Any] = payload
+        if auth_mode == "vertex_ai":
+            payload_to_send = _translate_payload_for_vertex(payload)
         try:
             _respect_gemini_quota_cooldown(cfg)
             _respect_gemini_rate_limit(cfg)
-            headers = {"Content-Type": "application/json", "X-goog-api-key": active_api_key}
+            if auth_mode == "vertex_ai":
+                token = _resolve_vertex_access_token(cfg)
+                headers = {"Content-Type": "application/json", "Authorization": f"Bearer {token}"}
+            else:
+                headers = {"Content-Type": "application/json", "X-goog-api-key": active_api_key}
             resp = requests.post(
                 url,
                 headers=headers,
-                json=payload,
+                json=payload_to_send,
                 timeout=(connect_timeout_sec, request_timeout_sec),
             )
         except requests.exceptions.RequestException as exc:
@@ -7255,6 +7439,7 @@ def call_gemini_labels(
                     "video_parts_count": int(len(video_parts)) if used_video_in_success else 0,
                     "reference_frames_attached": int(reference_frame_count_used),
                     "reference_frames_total_kb": round(reference_frame_bytes / 1024, 1),
+                    "auth_mode": auth_mode,
                     "api_key_source": active_key_name,
                     "model": model,
                     "usage": usage_meta if isinstance(usage_meta, dict) else {},
@@ -7279,7 +7464,14 @@ def call_gemini_labels(
                 f"(cooldown={cooldown_wait:.1f}s)."
             )
             break
-        if _is_gemini_api_key_invalid_response(resp):
+        if auth_mode == "vertex_ai" and resp.status_code in {401, 403} and attempt < max_retries:
+            _VERTEX_TOKEN_CACHE["token"] = ""
+            _VERTEX_TOKEN_CACHE["expiry_ts"] = 0.0
+            delay = _compute_backoff_delay(cfg, attempt)
+            print(f"[gemini] vertex auth error {resp.status_code}; refreshing token and retrying in {delay:.1f}s")
+            time.sleep(delay)
+            continue
+        if auth_mode == "api_key" and _is_gemini_api_key_invalid_response(resp):
             if _switch_to_next_key("API key was rejected"):
                 continue
             print("[gemini] API key rejected and no more keys are available in rotation pool.")
@@ -10084,30 +10276,45 @@ def _apply_global_gemini_video_policy(cfg: Dict[str, Any]) -> None:
 
     preferred_model = "gemini-2.5-pro"
     quota_fallback_model = "gemini-2.5-pro"
+    auth_mode = _normalize_gemini_auth_mode(str(gem.get("auth_mode", "api_key") or "api_key"))
+    gem["auth_mode"] = auth_mode
+
     configured_model = str(gem.get("model", "") or "").strip()
-    if configured_model != preferred_model:
+    if not configured_model:
         gem["model"] = preferred_model
-        print(f"[policy] gemini.model forced to {preferred_model}.")
+        print(f"[policy] gemini.model defaulted to {preferred_model}.")
 
-    configured_quota_fallback_model = str(gem.get("quota_fallback_model", "") or "").strip()
-    if configured_quota_fallback_model != quota_fallback_model:
-        gem["quota_fallback_model"] = quota_fallback_model
-        print(f"[policy] gemini.quota_fallback_model forced to {quota_fallback_model}.")
+    if auth_mode == "api_key":
+        configured_quota_fallback_model = str(gem.get("quota_fallback_model", "") or "").strip()
+        if configured_quota_fallback_model != quota_fallback_model:
+            gem["quota_fallback_model"] = quota_fallback_model
+            print(f"[policy] gemini.quota_fallback_model forced to {quota_fallback_model}.")
 
-    # policy_retry_model is intentionally not forced:
-    # operators can set a custom stronger model in YAML.
+        # policy_retry_model is intentionally not forced:
+        # operators can set a custom stronger model in YAML.
+        configured_quota_sources = gem.get("quota_fallback_from_models")
+        if (
+            not isinstance(configured_quota_sources, list)
+            or [str(x).strip().lower() for x in configured_quota_sources] != [preferred_model]
+        ):
+            gem["quota_fallback_from_models"] = [preferred_model]
 
-    configured_quota_sources = gem.get("quota_fallback_from_models")
-    if not isinstance(configured_quota_sources, list) or [str(x).strip().lower() for x in configured_quota_sources] != [preferred_model]:
-        gem["quota_fallback_from_models"] = [preferred_model]
+        if not bool(gem.get("retry_with_quota_fallback_model", True)):
+            gem["retry_with_quota_fallback_model"] = True
+            print("[policy] gemini.retry_with_quota_fallback_model forced ON.")
 
-    if not bool(gem.get("retry_with_quota_fallback_model", True)):
-        gem["retry_with_quota_fallback_model"] = True
-        print("[policy] gemini.retry_with_quota_fallback_model forced ON.")
+        if not bool(gem.get("quota_fallback_enabled", True)):
+            gem["quota_fallback_enabled"] = True
+            print("[policy] gemini.quota_fallback_enabled forced ON.")
+    else:
+        # Vertex mode does not use API-key rotation/fallback.
+        if bool(gem.get("retry_with_quota_fallback_model", False)):
+            gem["retry_with_quota_fallback_model"] = False
+            print("[policy] gemini.retry_with_quota_fallback_model disabled for vertex_ai mode.")
 
-    if not bool(gem.get("quota_fallback_enabled", True)):
-        gem["quota_fallback_enabled"] = True
-        print("[policy] gemini.quota_fallback_enabled forced ON.")
+        if bool(gem.get("quota_fallback_enabled", False)):
+            gem["quota_fallback_enabled"] = False
+            print("[policy] gemini.quota_fallback_enabled disabled for vertex_ai mode.")
 
     if not bool(gem.get("retry_with_stronger_model_on_policy_fail", True)):
         gem["retry_with_stronger_model_on_policy_fail"] = True
@@ -10123,9 +10330,14 @@ def _apply_global_gemini_video_policy(cfg: Dict[str, Any]) -> None:
             "(accept stronger-model retry only when policy errors decrease)."
         )
 
-    if not bool(gem.get("key_rotation_enabled", True)):
-        gem["key_rotation_enabled"] = True
-        print("[policy] gemini.key_rotation_enabled forced ON.")
+    if auth_mode == "api_key":
+        if not bool(gem.get("key_rotation_enabled", True)):
+            gem["key_rotation_enabled"] = True
+            print("[policy] gemini.key_rotation_enabled forced ON.")
+    else:
+        if bool(gem.get("key_rotation_enabled", False)):
+            gem["key_rotation_enabled"] = False
+            print("[policy] gemini.key_rotation_enabled disabled for vertex_ai mode.")
 
     if not isinstance(gem.get("api_keys"), list):
         gem["api_keys"] = []
@@ -10141,9 +10353,14 @@ def _apply_global_gemini_video_policy(cfg: Dict[str, Any]) -> None:
         quota_fallback_uses = int(gem.get("quota_fallback_max_uses_per_run", 0) or 0)
     except Exception:
         quota_fallback_uses = 0
-    if quota_fallback_uses < 1000:
-        gem["quota_fallback_max_uses_per_run"] = 1000
-        print("[policy] gemini.quota_fallback_max_uses_per_run raised to 1000.")
+    if auth_mode == "api_key":
+        if quota_fallback_uses < 1000:
+            gem["quota_fallback_max_uses_per_run"] = 1000
+            print("[policy] gemini.quota_fallback_max_uses_per_run raised to 1000.")
+    else:
+        if quota_fallback_uses != 0:
+            gem["quota_fallback_max_uses_per_run"] = 0
+            print("[policy] gemini.quota_fallback_max_uses_per_run forced to 0 in vertex_ai mode.")
 
     # Keep upload cost low while avoiding aggressive visual degradation.
     split_upload_enabled = bool(gem.get("split_upload_enabled", True))
@@ -11758,6 +11975,8 @@ def _apply_cli_overrides(cfg: Dict[str, Any], args: argparse.Namespace) -> None:
         print(f"[cli] override: gemini.model={model_override}")
 
     if bool(args.use_fallback_key):
+        if _normalize_gemini_auth_mode(str(gem_cfg.get("auth_mode", "api_key"))) != "api_key":
+            raise RuntimeError("--use-fallback-key works only with gemini.auth_mode=api_key.")
         fallback_key = _resolve_gemini_fallback_key(str(gem_cfg.get("fallback_api_key", "") or ""))
         if not fallback_key:
             raise RuntimeError(

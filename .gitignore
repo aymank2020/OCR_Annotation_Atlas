@@ -15,3 +15,8 @@ tier3_review_*.csv
 atlas_pipeline_*.json
 
 .idea/
+
+# Cloud credentials / secrets
+project-*.json
+*service-account*.json
+secrets/*.json
