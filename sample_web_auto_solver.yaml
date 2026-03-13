@@ -64,6 +64,39 @@ run:
   pre_submit_live_recheck_block_on_any_policy_error: false
   pre_submit_live_recheck_block_on_large_drift: false
   pre_submit_live_recheck_require_count_match: false
+  # Extra Gemini compare gate before clicking Submit in the Quality Review modal.
+  # Sends Tier2/Tier3 + live policy report (+ video when available) and blocks submit on reject.
+  pre_submit_gemini_compare_enabled: false
+  pre_submit_gemini_compare_model: "gemini-3.1-pro-preview"
+  pre_submit_gemini_compare_attach_video: true
+  pre_submit_gemini_compare_block_on_reject: true
+  pre_submit_gemini_compare_fail_open: true
+  pre_submit_gemini_compare_log_success: true
+  pre_submit_gemini_compare_save_output: true
+  pre_submit_gemini_compare_dump: "pre_submit_gemini_compare.json"
+  # Gemini Web Chat gate (NOT API) before Submit.
+  # Requires Google session already logged in and Gemini Workspace extension enabled.
+  pre_submit_gemini_chat_compare_enabled: false
+  pre_submit_gemini_chat_compare_url: "https://gemini.google.com/app/b3006ba9f325b55c"
+  # auto | drive_link | local_file | none
+  pre_submit_gemini_chat_compare_video_source: "auto"
+  # Optional static Drive link for all tasks.
+  pre_submit_gemini_chat_compare_drive_link: ""
+  # Optional template, e.g. "https://drive.google.com/file/d/{task_id}/view"
+  pre_submit_gemini_chat_compare_drive_link_template: ""
+  # Optional JSON map file: {"<task_id>": "<drive_link>"} or {"links": {...}}
+  pre_submit_gemini_chat_compare_drive_map_file: ""
+  pre_submit_gemini_chat_compare_require_drive_link: false
+  pre_submit_gemini_chat_compare_workspace_mention: true
+  pre_submit_gemini_chat_compare_block_on_fail: true
+  pre_submit_gemini_chat_compare_fail_open: true
+  pre_submit_gemini_chat_compare_log_success: true
+  pre_submit_gemini_chat_compare_timeout_sec: 120
+  pre_submit_gemini_chat_compare_max_segments_in_prompt: 120
+  pre_submit_gemini_chat_compare_max_upload_mb: 200.0
+  pre_submit_gemini_chat_compare_save_output: true
+  pre_submit_gemini_chat_compare_dump: "pre_submit_gemini_chat_compare.json"
+  pre_submit_gemini_chat_compare_extra_instructions: ""
   output_dir: "outputs"
   segments_dump: "atlas_segments_dump.json"
   labels_dump: "atlas_labels_from_gemini.json"

@@ -189,6 +189,28 @@ Rationale:
 - Prevents text-only fallback when video upload fails.
 - Avoids hallucinated action labels without visual evidence.
 
+Optional hard gate before final submit:
+
+- `run.pre_submit_gemini_compare_enabled: true`
+- `run.pre_submit_gemini_compare_model: gemini-3.1-pro-preview`
+- `run.pre_submit_gemini_compare_block_on_reject: true`
+
+This adds an extra Gemini review step right before `Submit` in Atlas Quality Review.
+It compares Tier2 vs current Tier3 (and can attach video) and blocks auto-submit when verdict is reject.
+
+Optional Gemini Web Chat gate (NOT API):
+
+- `run.pre_submit_gemini_chat_compare_enabled: true`
+- `run.pre_submit_gemini_chat_compare_url: https://gemini.google.com/app/<chat_id>`
+- `run.pre_submit_gemini_chat_compare_video_source: auto` (`drive_link` / `local_file` / `none`)
+- `run.pre_submit_gemini_chat_compare_block_on_fail: true`
+
+Notes:
+
+- This gate opens a new Playwright tab to Gemini Chat and asks for PASS/FAIL before final submit.
+- For Drive-link mode, make sure Google Workspace extension is enabled in the same Google account session.
+- For Linux VPS/headless, reuse an authenticated Chrome profile (`browser.use_chrome_profile: true`) so Gemini Chat opens already logged in.
+
 ## Model-ID sanity checks (important)
 
 Some sample YAMLs are templates and can contain placeholder model IDs.

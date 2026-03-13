@@ -275,6 +275,35 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "pre_submit_live_recheck_block_on_large_drift": False,
         "pre_submit_live_recheck_require_count_match": False,
         "pre_submit_live_recheck_log_success": True,
+        "pre_submit_gemini_compare_enabled": False,
+        "pre_submit_gemini_compare_model": "",
+        "pre_submit_gemini_compare_attach_video": True,
+        "pre_submit_gemini_compare_block_on_reject": True,
+        "pre_submit_gemini_compare_fail_open": True,
+        "pre_submit_gemini_compare_log_success": True,
+        "pre_submit_gemini_compare_save_output": True,
+        "pre_submit_gemini_compare_dump": "pre_submit_gemini_compare.json",
+        "pre_submit_gemini_chat_compare_enabled": False,
+        "pre_submit_gemini_chat_compare_url": "https://gemini.google.com/app",
+        "pre_submit_gemini_chat_compare_video_source": "auto",
+        "pre_submit_gemini_chat_compare_drive_link": "",
+        "pre_submit_gemini_chat_compare_drive_link_template": "",
+        "pre_submit_gemini_chat_compare_drive_map_file": "",
+        "pre_submit_gemini_chat_compare_require_drive_link": False,
+        "pre_submit_gemini_chat_compare_workspace_mention": True,
+        "pre_submit_gemini_chat_compare_block_on_fail": True,
+        "pre_submit_gemini_chat_compare_fail_open": True,
+        "pre_submit_gemini_chat_compare_log_success": True,
+        "pre_submit_gemini_chat_compare_timeout_sec": 120,
+        "pre_submit_gemini_chat_compare_max_segments_in_prompt": 120,
+        "pre_submit_gemini_chat_compare_max_upload_mb": 200.0,
+        "pre_submit_gemini_chat_compare_save_output": True,
+        "pre_submit_gemini_chat_compare_dump": "pre_submit_gemini_chat_compare.json",
+        "pre_submit_gemini_chat_compare_input_selector": 'div[contenteditable="true"] || textarea',
+        "pre_submit_gemini_chat_compare_send_selector": 'button[aria-label*="Send" i] || button:has-text("Send") || button:has-text("Run")',
+        "pre_submit_gemini_chat_compare_attach_button_selector": 'button[aria-label*="Add files" i] || button[aria-label*="Upload" i] || button:has-text("Add files") || button:has-text("Upload")',
+        "pre_submit_gemini_chat_compare_file_input_selector": 'input[type="file"]',
+        "pre_submit_gemini_chat_compare_extra_instructions": "",
         "play_full_video_before_labeling": False,
         "play_full_video_max_wait_sec": 900,
         "segment_resolve_attempts": 24,
@@ -5388,6 +5417,7 @@ def _pre_submit_live_policy_recheck(
         "errors": [],
         "warnings": [],
         "live_segment_count": 0,
+        "live_segments": [],
     }
     if not bool(_cfg_get(cfg, "run.pre_submit_live_recheck_enabled", True)):
         return report
@@ -5402,6 +5432,7 @@ def _pre_submit_live_policy_recheck(
         return report
 
     report["live_segment_count"] = len(live_segments)
+    report["live_segments"] = live_segments
     if not live_segments:
         report["ok"] = False
         report["reasons"].append("live recheck found zero segments on page")
@@ -5451,6 +5482,906 @@ def _pre_submit_live_policy_recheck(
                 report["reasons"].append(item)
 
     report["ok"] = len(report["reasons"]) == 0
+    return report
+
+
+def _compact_segments_for_gemini_compare(segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    for seg in segments or []:
+        if not isinstance(seg, dict):
+            continue
+        try:
+            idx = int(seg.get("segment_index", 0) or 0)
+        except Exception:
+            idx = 0
+        if idx <= 0:
+            continue
+        start_sec = _safe_float(seg.get("start_sec", seg.get("start", 0.0)), 0.0)
+        end_sec = _safe_float(seg.get("end_sec", seg.get("end", 0.0)), 0.0)
+        label = str(seg.get("current_label", seg.get("label", ""))).strip()
+        out.append(
+            {
+                "segment_index": idx,
+                "start_sec": round(start_sec, 3),
+                "end_sec": round(end_sec, 3),
+                "label": label,
+            }
+        )
+    return out
+
+
+def _build_pre_submit_gemini_compare_prompt(
+    task_id: str,
+    tier2_segments: List[Dict[str, Any]],
+    tier3_segments: List[Dict[str, Any]],
+    live_errors: List[str],
+    live_warnings: List[str],
+) -> str:
+    context = {
+        "task_id": task_id or "",
+        "tier2_before_update": tier2_segments,
+        "tier3_current_ui": tier3_segments,
+        "live_policy_errors": live_errors,
+        "live_policy_warnings": live_warnings,
+    }
+    return (
+        "You are a strict final Atlas QA gate before submit.\n"
+        "Compare Tier2 (before AI update) and Tier3 (current labels in UI).\n"
+        "Decide if Tier3 is submit-safe, and provide corrected final labels when needed.\n\n"
+        "Return JSON only (no markdown) using this exact shape:\n"
+        "{\n"
+        '  "review": {\n'
+        '    "decision": "approve" or "reject",\n'
+        '    "winner": "tier2" or "tier3" or "mixed",\n'
+        '    "submit_safe": true or false,\n'
+        '    "confidence": 0.0,\n'
+        '    "reasons": ["short reason 1", "short reason 2"]\n'
+        "  },\n"
+        '  "operations": [],\n'
+        '  "segments": [\n'
+        '    {"segment_index": 1, "start_sec": 0.0, "end_sec": 1.0, "label": "..."}\n'
+        "  ]\n"
+        "}\n\n"
+        "Rules:\n"
+        "- segments must represent the best final answer you recommend for submit.\n"
+        "- keep operations as an empty array.\n"
+        "- use concise Atlas-style imperative labels.\n\n"
+        f"Context JSON:\n{json.dumps(context, ensure_ascii=False, indent=2)}"
+    )
+
+
+def _save_pre_submit_gemini_compare_artifact(
+    cfg: Dict[str, Any],
+    task_id: str,
+    payload: Dict[str, Any],
+) -> Optional[Path]:
+    if not bool(_cfg_get(cfg, "run.pre_submit_gemini_compare_save_output", True)):
+        return None
+    out_dir = Path(str(_cfg_get(cfg, "run.output_dir", "outputs")))
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    base_name = str(
+        _cfg_get(cfg, "run.pre_submit_gemini_compare_dump", "pre_submit_gemini_compare.json")
+    ).strip() or "pre_submit_gemini_compare.json"
+    if not base_name.lower().endswith(".json"):
+        base_name = f"{base_name}.json"
+
+    use_task_scoped = bool(_cfg_get(cfg, "run.use_task_scoped_artifacts", True))
+    if task_id and use_task_scoped:
+        safe_task = re.sub(r"[^A-Za-z0-9_.-]+", "_", task_id).strip("_") or "unknown_task"
+        out_path = out_dir / f"pre_submit_gemini_compare_{safe_task}.json"
+    else:
+        stem = Path(base_name).stem
+        ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        out_path = out_dir / f"{stem}_{ts}.json"
+    try:
+        _ensure_parent(out_path)
+        out_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        return out_path
+    except Exception:
+        return None
+
+
+def _coerce_bool_flag(value: Any) -> Optional[bool]:
+    if isinstance(value, bool):
+        return value
+    text = str(value or "").strip().lower()
+    if text in {"1", "true", "yes", "y", "on"}:
+        return True
+    if text in {"0", "false", "no", "n", "off"}:
+        return False
+    return None
+
+
+def _pre_submit_gemini_compare_guard(
+    cfg: Dict[str, Any],
+    source_segments: List[Dict[str, Any]],
+    live_segments: List[Dict[str, Any]],
+    live_recheck_report: Dict[str, Any],
+    video_file: Optional[Path] = None,
+    task_id: str = "",
+) -> Dict[str, Any]:
+    enabled = bool(_cfg_get(cfg, "run.pre_submit_gemini_compare_enabled", False))
+    report: Dict[str, Any] = {
+        "enabled": enabled,
+        "executed": False,
+        "approved": True,
+        "block": False,
+        "decision": "",
+        "winner": "",
+        "submit_safe": None,
+        "reasons": [],
+        "error": "",
+        "suggested_change_count": 0,
+        "suggested_changes": [],
+        "artifact_path": "",
+    }
+    if not enabled:
+        return report
+
+    fail_open = bool(_cfg_get(cfg, "run.pre_submit_gemini_compare_fail_open", True))
+    block_on_reject = bool(_cfg_get(cfg, "run.pre_submit_gemini_compare_block_on_reject", True))
+    attach_video = bool(_cfg_get(cfg, "run.pre_submit_gemini_compare_attach_video", True))
+    model_override = str(_cfg_get(cfg, "run.pre_submit_gemini_compare_model", "")).strip()
+
+    tier2_segments = _compact_segments_for_gemini_compare(source_segments)
+    tier3_segments = _compact_segments_for_gemini_compare(live_segments)
+    live_errors = [str(e).strip() for e in list(live_recheck_report.get("errors", [])) if str(e).strip()]
+    live_warnings = [
+        str(w).strip() for w in list(live_recheck_report.get("warnings", [])) if str(w).strip()
+    ]
+
+    if not tier3_segments:
+        reason = "Gemini compare skipped: live segments are empty."
+        report["error"] = reason
+        if fail_open:
+            report["approved"] = True
+            report["reasons"] = [f"{reason} (fail-open)."]
+            return report
+        report["approved"] = False
+        report["block"] = True
+        report["reasons"] = [reason]
+        return report
+
+    prompt = _build_pre_submit_gemini_compare_prompt(
+        task_id=task_id,
+        tier2_segments=tier2_segments,
+        tier3_segments=tier3_segments,
+        live_errors=live_errors,
+        live_warnings=live_warnings,
+    )
+
+    compare_cfg = cfg
+    compare_video_file: Optional[Path] = None
+    if attach_video and video_file is not None and video_file.exists():
+        compare_video_file = video_file
+        compare_cfg = _deep_merge(cfg, {"gemini": {"attach_video": True}})
+    else:
+        compare_cfg = _deep_merge(cfg, {"gemini": {"attach_video": False, "require_video": False}})
+
+    raw_payload: Dict[str, Any] = {}
+    try:
+        raw_payload = call_gemini_labels(
+            compare_cfg,
+            prompt,
+            video_file=compare_video_file,
+            segment_count=len(tier3_segments),
+            model_override=model_override,
+        )
+        report["executed"] = True
+    except Exception as exc:
+        reason = f"Gemini compare request failed: {_short_error_text(exc)}"
+        report["error"] = reason
+        if fail_open:
+            report["approved"] = True
+            report["reasons"] = [f"{reason} (fail-open)."]
+        else:
+            report["approved"] = False
+            report["block"] = True
+            report["reasons"] = [reason]
+        return report
+
+    review = raw_payload.get("review", {})
+    if not isinstance(review, dict):
+        review = {}
+    decision = str(review.get("decision", "")).strip().lower()
+    winner = str(review.get("winner", "")).strip().lower()
+    submit_safe = _coerce_bool_flag(review.get("submit_safe"))
+    reasons = [
+        str(item).strip()
+        for item in (review.get("reasons", []) if isinstance(review.get("reasons", []), list) else [])
+        if str(item).strip()
+    ]
+    if not reasons:
+        summary = str(review.get("summary", "")).strip()
+        if summary:
+            reasons = [summary]
+
+    report["decision"] = decision
+    report["winner"] = winner
+    report["submit_safe"] = submit_safe
+
+    live_label_map: Dict[int, str] = {}
+    for item in tier3_segments:
+        try:
+            idx = int(item.get("segment_index", 0) or 0)
+        except Exception:
+            idx = 0
+        if idx <= 0:
+            continue
+        live_label_map[idx] = str(item.get("label", "")).strip()
+
+    suggested_changes: List[Dict[str, Any]] = []
+    try:
+        suggested_plan = _normalize_segment_plan(
+            raw_payload,
+            [
+                {
+                    "segment_index": int(seg.get("segment_index", 0) or 0),
+                    "start_sec": _safe_float(seg.get("start_sec", 0.0), 0.0),
+                    "end_sec": _safe_float(seg.get("end_sec", 0.0), 0.0),
+                    "current_label": str(seg.get("label", "")).strip(),
+                }
+                for seg in tier3_segments
+            ],
+            cfg=cfg,
+        )
+        suggested_map = _normalize_label_map_from_plan(suggested_plan)
+        for idx in sorted(suggested_map):
+            before = str(live_label_map.get(idx, "")).strip()
+            after = str(suggested_map.get(idx, "")).strip()
+            if not after:
+                continue
+            if before and _normalize_label_for_compare(before) == _normalize_label_for_compare(after):
+                continue
+            suggested_changes.append(
+                {
+                    "segment_index": idx,
+                    "before": before,
+                    "after": after,
+                }
+            )
+    except Exception:
+        suggested_changes = []
+
+    report["suggested_change_count"] = len(suggested_changes)
+    report["suggested_changes"] = suggested_changes[:20]
+    if suggested_changes and len(reasons) < 8:
+        reasons.append(f"suggested label changes: {len(suggested_changes)} segment(s).")
+
+    approve_tokens = {"approve", "approved", "pass", "passed", "safe", "allow"}
+    reject_tokens = {"reject", "rejected", "fail", "failed", "unsafe", "block", "deny"}
+    approved: Optional[bool] = None
+    if decision in approve_tokens:
+        approved = True
+    elif decision in reject_tokens:
+        approved = False
+    elif submit_safe is not None:
+        approved = submit_safe
+    elif winner in {"tier2", "mixed"}:
+        approved = False
+    elif winner == "tier3" and not live_errors:
+        approved = True
+
+    if approved is None:
+        unknown_reason = "Gemini compare returned no clear approve/reject decision."
+        report["error"] = unknown_reason
+        if fail_open:
+            report["approved"] = True
+            report["reasons"] = reasons or [f"{unknown_reason} (fail-open)."]
+        else:
+            report["approved"] = False
+            report["block"] = True
+            report["reasons"] = reasons or [unknown_reason]
+    else:
+        report["approved"] = bool(approved)
+        report["reasons"] = reasons
+        if not approved and block_on_reject:
+            report["block"] = True
+            if not report["reasons"]:
+                report["reasons"] = ["Gemini compare rejected current Tier3 output."]
+
+    artifact_payload = {
+        "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "task_id": task_id or "",
+        "decision": report["decision"],
+        "winner": report["winner"],
+        "submit_safe": report["submit_safe"],
+        "reasons": report["reasons"],
+        "suggested_change_count": report["suggested_change_count"],
+        "suggested_changes": report["suggested_changes"],
+        "input": {
+            "tier2_before_update": tier2_segments,
+            "tier3_current_ui": tier3_segments,
+            "live_policy_errors": live_errors,
+            "live_policy_warnings": live_warnings,
+        },
+        "response": raw_payload,
+    }
+    artifact_path = _save_pre_submit_gemini_compare_artifact(cfg, task_id, artifact_payload)
+    if artifact_path is not None:
+        report["artifact_path"] = str(artifact_path)
+        print(f"[out] pre-submit Gemini compare: {artifact_path}")
+
+    if report["block"]:
+        print("[run] pre-submit Gemini compare rejected auto-submit.")
+    elif bool(_cfg_get(cfg, "run.pre_submit_gemini_compare_log_success", True)):
+        print("[run] pre-submit Gemini compare passed.")
+    return report
+
+
+def _resolve_pre_submit_chat_drive_link(
+    cfg: Dict[str, Any],
+    task_id: str = "",
+    task_state: Optional[Dict[str, Any]] = None,
+) -> str:
+    explicit = str(_cfg_get(cfg, "run.pre_submit_gemini_chat_compare_drive_link", "")).strip()
+    if explicit:
+        return explicit
+
+    template = str(_cfg_get(cfg, "run.pre_submit_gemini_chat_compare_drive_link_template", "")).strip()
+    if template:
+        try:
+            rendered = template.format(task_id=task_id or "", task=task_id or "").strip()
+            if rendered:
+                return rendered
+        except Exception:
+            pass
+
+    map_file = str(_cfg_get(cfg, "run.pre_submit_gemini_chat_compare_drive_map_file", "")).strip()
+    if map_file:
+        try:
+            path = Path(map_file)
+            if not path.is_absolute():
+                path = (Path.cwd() / path).resolve()
+            if path.exists():
+                payload = json.loads(path.read_text(encoding="utf-8"))
+                links = payload.get("links", payload) if isinstance(payload, dict) else {}
+                if isinstance(links, dict):
+                    value = links.get(task_id) or links.get(str(task_id))
+                    if isinstance(value, str) and value.strip():
+                        return value.strip()
+        except Exception:
+            pass
+
+    state = task_state if isinstance(task_state, dict) else {}
+    for key in (
+        "drive_link",
+        "video_drive_link",
+        "drive_video_link",
+        "google_drive_link",
+        "gdrive_link",
+    ):
+        value = state.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _segments_to_compact_text_for_chat(
+    segments: List[Dict[str, Any]],
+    max_segments: int = 0,
+) -> str:
+    if not segments:
+        return "(missing)"
+    items: List[Dict[str, Any]] = []
+    for seg in segments:
+        if not isinstance(seg, dict):
+            continue
+        try:
+            idx = int(seg.get("segment_index", 0) or 0)
+        except Exception:
+            idx = 0
+        if idx <= 0:
+            continue
+        start_sec = _safe_float(seg.get("start_sec", seg.get("start", 0.0)), 0.0)
+        end_sec = _safe_float(seg.get("end_sec", seg.get("end", 0.0)), 0.0)
+        label = str(seg.get("label", seg.get("current_label", ""))).strip()
+        items.append(
+            {
+                "segment_index": idx,
+                "start_sec": round(start_sec, 3),
+                "end_sec": round(end_sec, 3),
+                "label": label,
+            }
+        )
+    if not items:
+        return "(missing)"
+
+    items.sort(key=lambda x: int(x.get("segment_index", 0) or 0))
+    limit = len(items) if max_segments <= 0 else min(len(items), max_segments)
+    lines: List[str] = []
+    for item in items[:limit]:
+        lines.append(
+            f"{item['segment_index']}\t{item['start_sec']}\t{item['end_sec']}\t{item['label']}"
+        )
+    if limit < len(items):
+        lines.append(f"... truncated {len(items) - limit} segment(s)")
+    return "\n".join(lines).strip()
+
+
+def _build_pre_submit_gemini_chat_prompt(
+    cfg: Dict[str, Any],
+    task_id: str,
+    tier2_segments: List[Dict[str, Any]],
+    tier3_segments: List[Dict[str, Any]],
+    live_errors: List[str],
+    live_warnings: List[str],
+    drive_video_link: str,
+    video_source_mode: str,
+) -> str:
+    max_segments = max(0, int(_cfg_get(cfg, "run.pre_submit_gemini_chat_compare_max_segments_in_prompt", 120)))
+    tier2_text = _segments_to_compact_text_for_chat(tier2_segments, max_segments=max_segments)
+    tier3_text = _segments_to_compact_text_for_chat(tier3_segments, max_segments=max_segments)
+    workspace_mention = bool(_cfg_get(cfg, "run.pre_submit_gemini_chat_compare_workspace_mention", True))
+    extra = str(_cfg_get(cfg, "run.pre_submit_gemini_chat_compare_extra_instructions", "")).strip()
+
+    link_block = ""
+    if drive_video_link:
+        link_block = f"Drive video link: {drive_video_link}\n"
+        if workspace_mention:
+            link_block = "@Google Drive\n" + link_block
+    elif video_source_mode == "local_file":
+        link_block = "Video will be attached from local file upload in this chat request.\n"
+
+    context = {
+        "task_id": task_id or "",
+        "video_source_mode": video_source_mode,
+        "live_policy_errors": live_errors,
+        "live_policy_warnings": live_warnings,
+    }
+    context_text = json.dumps(context, ensure_ascii=False, indent=2)
+    extra_text = f"\nExtra instructions:\n{extra}\n" if extra else ""
+    return (
+        f"{link_block}"
+        "You are a strict final Atlas QA gate before submit.\n"
+        "Compare Tier2 (before AI update) vs Tier3 (current UI labels).\n"
+        "If Tier3 is risky, return FAIL and explain very briefly.\n\n"
+        "Return JSON only (no markdown):\n"
+        '{\n'
+        '  "decision": "PASS" or "FAIL",\n'
+        '  "winner": "tier2" or "tier3" or "mixed",\n'
+        '  "reason": "short reason",\n'
+        '  "submit_safe": true or false\n'
+        '}\n\n'
+        "Tier2 segments (index\\tstart\\tend\\tlabel):\n"
+        f"{tier2_text}\n\n"
+        "Tier3 segments (index\\tstart\\tend\\tlabel):\n"
+        f"{tier3_text}\n\n"
+        "Run context:\n"
+        f"{context_text}\n"
+        f"{extra_text}"
+    )
+
+
+def _extract_latest_gemini_chat_response_text(chat_page: Page) -> str:
+    try:
+        text = chat_page.evaluate(
+            """() => {
+                const picks = [];
+                const selectors = [
+                  'message-content',
+                  '[data-message-author-role="model"]',
+                  '[data-author="model"]',
+                  'model-response',
+                  'div.response-content',
+                  'div[class*="model-response"]',
+                  'div[class*="response-content"]'
+                ];
+                const addText = (raw) => {
+                  const t = String(raw || '').replace(/\\s+/g, ' ').trim();
+                  if (t.length >= 4) picks.push(t);
+                };
+                for (const sel of selectors) {
+                  const nodes = document.querySelectorAll(sel);
+                  for (const n of nodes) addText(n.innerText || n.textContent || '');
+                }
+                if (!picks.length) {
+                  const articles = document.querySelectorAll('article, section');
+                  for (const n of articles) {
+                    const role = String(n.getAttribute('data-message-author-role') || '').toLowerCase();
+                    if (role && role !== 'model' && role !== 'assistant') continue;
+                    addText(n.innerText || n.textContent || '');
+                  }
+                }
+                return picks.length ? picks[picks.length - 1] : '';
+            }"""
+        )
+        return str(text or "").strip()
+    except Exception:
+        return ""
+
+
+def _wait_for_gemini_chat_response_text(
+    chat_page: Page,
+    cfg: Dict[str, Any],
+    baseline_text: str = "",
+) -> str:
+    timeout_sec = max(10.0, float(_cfg_get(cfg, "run.pre_submit_gemini_chat_compare_timeout_sec", 120)))
+    deadline = time.time() + timeout_sec
+    base_norm = re.sub(r"\s+", " ", (baseline_text or "")).strip().lower()
+    last_text = ""
+    stable_hits = 0
+    last_change_ts = time.time()
+
+    while time.time() < deadline:
+        current = _extract_latest_gemini_chat_response_text(chat_page)
+        current_norm = re.sub(r"\s+", " ", current).strip().lower()
+        if current and current_norm and current_norm != base_norm:
+            if current != last_text:
+                last_text = current
+                stable_hits = 0
+                last_change_ts = time.time()
+            else:
+                stable_hits += 1
+                if stable_hits >= 3 and (time.time() - last_change_ts) >= 2.0:
+                    return last_text
+        time.sleep(0.8)
+    return last_text.strip()
+
+
+def _parse_pre_submit_gemini_chat_verdict(answer_text: str) -> Dict[str, Any]:
+    out: Dict[str, Any] = {
+        "decision": "",
+        "winner": "",
+        "reason": "",
+        "submit_safe": None,
+        "pass": None,
+    }
+    text = str(answer_text or "").strip()
+    if not text:
+        return out
+
+    payload: Dict[str, Any] = {}
+    try:
+        parsed = json.loads(_clean_json_text(text))
+        if isinstance(parsed, dict):
+            payload = parsed
+    except Exception:
+        payload = {}
+
+    review = payload.get("review", payload) if isinstance(payload, dict) else {}
+    if isinstance(review, dict):
+        out["decision"] = str(review.get("decision", review.get("verdict", ""))).strip().upper()
+        out["winner"] = str(review.get("winner", "")).strip().lower()
+        out["submit_safe"] = _coerce_bool_flag(review.get("submit_safe"))
+        reason = str(review.get("reason", "")).strip()
+        if not reason:
+            reasons = review.get("reasons", [])
+            if isinstance(reasons, list):
+                reason = "; ".join([str(r).strip() for r in reasons if str(r).strip()][:3]).strip()
+        out["reason"] = reason
+
+    decision = str(out.get("decision", "")).strip().upper()
+    pass_flag: Optional[bool] = None
+    if decision == "PASS":
+        pass_flag = True
+    elif decision == "FAIL":
+        pass_flag = False
+    elif out.get("submit_safe") is not None:
+        pass_flag = bool(out.get("submit_safe"))
+    else:
+        upper = text.upper()
+        pass_idx = upper.find("PASS")
+        fail_idx = upper.find("FAIL")
+        if fail_idx >= 0 and (pass_idx < 0 or fail_idx < pass_idx):
+            pass_flag = False
+        elif pass_idx >= 0:
+            pass_flag = True
+    out["pass"] = pass_flag
+
+    if not out["reason"]:
+        lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+        if lines:
+            out["reason"] = lines[0][:240]
+    return out
+
+
+def _save_pre_submit_gemini_chat_compare_artifact(
+    cfg: Dict[str, Any],
+    task_id: str,
+    payload: Dict[str, Any],
+) -> Optional[Path]:
+    if not bool(_cfg_get(cfg, "run.pre_submit_gemini_chat_compare_save_output", True)):
+        return None
+    out_dir = Path(str(_cfg_get(cfg, "run.output_dir", "outputs")))
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    base_name = str(
+        _cfg_get(cfg, "run.pre_submit_gemini_chat_compare_dump", "pre_submit_gemini_chat_compare.json")
+    ).strip() or "pre_submit_gemini_chat_compare.json"
+    if not base_name.lower().endswith(".json"):
+        base_name = f"{base_name}.json"
+
+    use_task_scoped = bool(_cfg_get(cfg, "run.use_task_scoped_artifacts", True))
+    if task_id and use_task_scoped:
+        safe_task = re.sub(r"[^A-Za-z0-9_.-]+", "_", task_id).strip("_") or "unknown_task"
+        out_path = out_dir / f"pre_submit_gemini_chat_compare_{safe_task}.json"
+    else:
+        stem = Path(base_name).stem
+        ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        out_path = out_dir / f"{stem}_{ts}.json"
+    try:
+        _ensure_parent(out_path)
+        out_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        return out_path
+    except Exception:
+        return None
+
+
+def _attach_local_video_to_gemini_chat(
+    chat_page: Page,
+    cfg: Dict[str, Any],
+    video_file: Optional[Path],
+) -> bool:
+    if video_file is None or not video_file.exists():
+        return False
+    max_upload_mb = max(
+        5.0, float(_cfg_get(cfg, "run.pre_submit_gemini_chat_compare_max_upload_mb", 200.0))
+    )
+    try:
+        size_mb = float(video_file.stat().st_size) / (1024 * 1024)
+    except Exception:
+        size_mb = 0.0
+    if size_mb > max_upload_mb:
+        print(
+            f"[gemini-chat] local upload skipped: {size_mb:.1f} MB > "
+            f"max_upload_mb={max_upload_mb:.1f}."
+        )
+        return False
+
+    attach_sel = str(
+        _cfg_get(cfg, "run.pre_submit_gemini_chat_compare_attach_button_selector", "")
+    ).strip()
+    input_sel = str(_cfg_get(cfg, "run.pre_submit_gemini_chat_compare_file_input_selector", "")).strip()
+
+    if attach_sel:
+        _safe_locator_click(chat_page, attach_sel, timeout_ms=2200)
+        chat_page.wait_for_timeout(300)
+
+    file_input: Optional[Locator] = None
+    if input_sel:
+        file_input = _first_visible_locator(chat_page, input_sel, timeout_ms=1800)
+        if file_input is None:
+            for candidate in _selector_variants(input_sel):
+                try:
+                    loc = chat_page.locator(candidate)
+                    if loc.count() > 0:
+                        file_input = loc.nth(0)
+                        break
+                except Exception:
+                    continue
+    if file_input is None:
+        return False
+    try:
+        file_input.set_input_files(str(video_file))
+        chat_page.wait_for_timeout(1000)
+        print(f"[gemini-chat] attached local video file: {video_file.name} ({size_mb:.1f} MB)")
+        return True
+    except Exception:
+        return False
+
+
+def _pre_submit_gemini_chat_compare_guard(
+    page: Page,
+    cfg: Dict[str, Any],
+    source_segments: List[Dict[str, Any]],
+    live_segments: List[Dict[str, Any]],
+    live_recheck_report: Dict[str, Any],
+    video_file: Optional[Path] = None,
+    drive_video_link: str = "",
+    task_id: str = "",
+) -> Dict[str, Any]:
+    enabled = bool(_cfg_get(cfg, "run.pre_submit_gemini_chat_compare_enabled", False))
+    report: Dict[str, Any] = {
+        "enabled": enabled,
+        "executed": False,
+        "approved": True,
+        "block": False,
+        "decision": "",
+        "winner": "",
+        "submit_safe": None,
+        "reasons": [],
+        "error": "",
+        "raw_response": "",
+        "artifact_path": "",
+        "video_source_mode": "",
+        "drive_video_link": drive_video_link,
+    }
+    if not enabled:
+        return report
+
+    fail_open = bool(_cfg_get(cfg, "run.pre_submit_gemini_chat_compare_fail_open", True))
+    block_on_fail = bool(_cfg_get(cfg, "run.pre_submit_gemini_chat_compare_block_on_fail", True))
+    require_drive_link = bool(_cfg_get(cfg, "run.pre_submit_gemini_chat_compare_require_drive_link", False))
+    mode_cfg = str(_cfg_get(cfg, "run.pre_submit_gemini_chat_compare_video_source", "auto")).strip().lower()
+    chat_url = str(_cfg_get(cfg, "run.pre_submit_gemini_chat_compare_url", "https://gemini.google.com/app")).strip()
+    if not chat_url:
+        chat_url = "https://gemini.google.com/app"
+
+    selected_mode = mode_cfg if mode_cfg in {"auto", "drive_link", "local_file", "none"} else "auto"
+    if selected_mode == "auto":
+        if drive_video_link:
+            selected_mode = "drive_link"
+        elif video_file is not None and video_file.exists():
+            selected_mode = "local_file"
+        else:
+            selected_mode = "none"
+    report["video_source_mode"] = selected_mode
+
+    if require_drive_link and not drive_video_link:
+        reason = "Gemini chat compare requires drive link but none was resolved."
+        report["error"] = reason
+        if fail_open:
+            report["approved"] = True
+            report["reasons"] = [f"{reason} (fail-open)."]
+            return report
+        report["approved"] = False
+        report["block"] = True
+        report["reasons"] = [reason]
+        return report
+
+    tier2_segments = _compact_segments_for_gemini_compare(source_segments)
+    tier3_segments = _compact_segments_for_gemini_compare(live_segments)
+    if not tier3_segments:
+        reason = "Gemini chat compare skipped: live segments are empty."
+        report["error"] = reason
+        if fail_open:
+            report["approved"] = True
+            report["reasons"] = [f"{reason} (fail-open)."]
+            return report
+        report["approved"] = False
+        report["block"] = True
+        report["reasons"] = [reason]
+        return report
+
+    live_errors = [str(e).strip() for e in list(live_recheck_report.get("errors", [])) if str(e).strip()]
+    live_warnings = [
+        str(w).strip() for w in list(live_recheck_report.get("warnings", [])) if str(w).strip()
+    ]
+    prompt = _build_pre_submit_gemini_chat_prompt(
+        cfg=cfg,
+        task_id=task_id,
+        tier2_segments=tier2_segments,
+        tier3_segments=tier3_segments,
+        live_errors=live_errors,
+        live_warnings=live_warnings,
+        drive_video_link=drive_video_link,
+        video_source_mode=selected_mode,
+    )
+
+    chat_page: Optional[Page] = None
+    raw_response = ""
+    try:
+        chat_page = page.context.new_page()
+        _goto_with_retry(
+            chat_page,
+            chat_url,
+            wait_until="domcontentloaded",
+            timeout_ms=60000,
+            cfg=cfg,
+            reason="pre-submit-gemini-chat-compare",
+        )
+        input_sel = str(
+            _cfg_get(cfg, "run.pre_submit_gemini_chat_compare_input_selector", 'div[contenteditable="true"] || textarea')
+        ).strip()
+        send_sel = str(
+            _cfg_get(
+                cfg,
+                "run.pre_submit_gemini_chat_compare_send_selector",
+                'button[aria-label*="Send" i] || button:has-text("Send") || button:has-text("Run")',
+            )
+        ).strip()
+        chat_box = _first_visible_locator(chat_page, input_sel, timeout_ms=30000)
+        if chat_box is None:
+            raise RuntimeError("Gemini chat input is not visible. Verify Google login/session in browser profile.")
+
+        baseline_text = _extract_latest_gemini_chat_response_text(chat_page)
+        if selected_mode == "local_file":
+            attached = _attach_local_video_to_gemini_chat(chat_page, cfg, video_file)
+            if not attached:
+                raise RuntimeError("Gemini chat local file upload failed (video input not available).")
+
+        _fill_input(chat_box, prompt, chat_page)
+        sent = False
+        try:
+            chat_box.press("Enter", timeout=1200)
+            sent = True
+        except Exception:
+            sent = False
+        if not sent:
+            try:
+                chat_page.keyboard.press("Enter")
+                sent = True
+            except Exception:
+                sent = False
+        if not sent and send_sel:
+            sent = _safe_locator_click(chat_page, send_sel, timeout_ms=2500)
+        if not sent:
+            raise RuntimeError("Could not send prompt in Gemini chat (Enter/send button failed).")
+
+        raw_response = _wait_for_gemini_chat_response_text(chat_page, cfg, baseline_text=baseline_text)
+        if not raw_response:
+            raise RuntimeError("Timed out waiting for Gemini chat response.")
+        report["executed"] = True
+    except Exception as exc:
+        reason = f"Gemini chat compare failed: {_short_error_text(exc)}"
+        report["error"] = reason
+        if fail_open:
+            report["approved"] = True
+            report["reasons"] = [f"{reason} (fail-open)."]
+        else:
+            report["approved"] = False
+            report["block"] = True
+            report["reasons"] = [reason]
+        return report
+    finally:
+        try:
+            if chat_page is not None:
+                chat_page.close()
+        except Exception:
+            pass
+
+    report["raw_response"] = raw_response
+    verdict = _parse_pre_submit_gemini_chat_verdict(raw_response)
+    report["decision"] = str(verdict.get("decision", "")).strip()
+    report["winner"] = str(verdict.get("winner", "")).strip()
+    report["submit_safe"] = verdict.get("submit_safe")
+
+    reason = str(verdict.get("reason", "")).strip()
+    if reason:
+        report["reasons"] = [reason]
+
+    pass_flag = verdict.get("pass")
+    if pass_flag is None:
+        unknown_reason = "Gemini chat response did not contain clear PASS/FAIL."
+        report["error"] = unknown_reason
+        if fail_open:
+            report["approved"] = True
+            if not report["reasons"]:
+                report["reasons"] = [f"{unknown_reason} (fail-open)."]
+        else:
+            report["approved"] = False
+            report["block"] = True
+            if not report["reasons"]:
+                report["reasons"] = [unknown_reason]
+    else:
+        report["approved"] = bool(pass_flag)
+        if not pass_flag and block_on_fail:
+            report["block"] = True
+            if not report["reasons"]:
+                report["reasons"] = ["Gemini chat returned FAIL verdict."]
+
+    artifact_payload = {
+        "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "task_id": task_id or "",
+        "video_source_mode": selected_mode,
+        "drive_video_link": drive_video_link,
+        "decision": report["decision"],
+        "winner": report["winner"],
+        "submit_safe": report["submit_safe"],
+        "approved": report["approved"],
+        "block": report["block"],
+        "reasons": report["reasons"],
+        "error": report["error"],
+        "input": {
+            "tier2_before_update": tier2_segments,
+            "tier3_current_ui": tier3_segments,
+            "live_policy_errors": live_errors,
+            "live_policy_warnings": live_warnings,
+        },
+        "chat_prompt": prompt,
+        "chat_response": raw_response,
+    }
+    artifact_path = _save_pre_submit_gemini_chat_compare_artifact(cfg, task_id, artifact_payload)
+    if artifact_path is not None:
+        report["artifact_path"] = str(artifact_path)
+        print(f"[out] pre-submit Gemini chat compare: {artifact_path}")
+
+    if report["block"]:
+        print("[run] pre-submit Gemini chat compare rejected auto-submit.")
+    elif bool(_cfg_get(cfg, "run.pre_submit_gemini_chat_compare_log_success", True)):
+        print("[run] pre-submit Gemini chat compare passed.")
     return report
 
 
@@ -8632,6 +9563,9 @@ def apply_labels(
     cfg: Dict[str, Any],
     label_map: Dict[int, str],
     source_segments: Optional[List[Dict[str, Any]]] = None,
+    video_file: Optional[Path] = None,
+    drive_video_link: str = "",
+    task_id: str = "",
 ) -> Dict[str, Any]:
     _dismiss_blocking_modals(page)
     _dismiss_blocking_side_panel(page, cfg, aggressive=True)
@@ -8801,6 +9735,36 @@ def apply_labels(
         "errors": [],
         "warnings": [],
         "live_segment_count": 0,
+        "live_segments": [],
+    }
+    gemini_compare_report: Dict[str, Any] = {
+        "enabled": False,
+        "executed": False,
+        "approved": True,
+        "block": False,
+        "decision": "",
+        "winner": "",
+        "submit_safe": None,
+        "reasons": [],
+        "error": "",
+        "suggested_change_count": 0,
+        "suggested_changes": [],
+        "artifact_path": "",
+    }
+    gemini_chat_compare_report: Dict[str, Any] = {
+        "enabled": False,
+        "executed": False,
+        "approved": True,
+        "block": False,
+        "decision": "",
+        "winner": "",
+        "submit_safe": None,
+        "reasons": [],
+        "error": "",
+        "raw_response": "",
+        "artifact_path": "",
+        "video_source_mode": "",
+        "drive_video_link": drive_video_link,
     }
     if not submit_guard_reasons and total_targets > 0:
         expected_segment_count = len(source_segments or [])
@@ -8820,6 +9784,58 @@ def apply_labels(
         elif bool(_cfg_get(cfg, "run.pre_submit_live_recheck_log_success", True)):
             print("[run] pre-submit live recheck passed.")
 
+    if not submit_guard_reasons and total_targets > 0:
+        gemini_chat_compare_report = _pre_submit_gemini_chat_compare_guard(
+            page=page,
+            cfg=cfg,
+            source_segments=source_segments or [],
+            live_segments=list(live_recheck_report.get("live_segments", [])),
+            live_recheck_report=live_recheck_report,
+            video_file=video_file,
+            drive_video_link=drive_video_link,
+            task_id=task_id,
+        )
+        if bool(gemini_chat_compare_report.get("block")):
+            chat_reasons = [
+                str(item).strip()
+                for item in list(gemini_chat_compare_report.get("reasons", []))
+                if str(item).strip()
+            ]
+            chat_error = str(gemini_chat_compare_report.get("error", "")).strip()
+            if not chat_reasons and chat_error:
+                chat_reasons = [chat_error]
+            if not chat_reasons:
+                chat_reasons = ["Gemini chat compare returned FAIL verdict."]
+            print("[run] submit guard blocked auto-submit: pre-submit Gemini chat compare:")
+            for item in chat_reasons[:10]:
+                print(f"  - {item}")
+            submit_guard_reasons.extend([f"gemini chat compare: {item}" for item in chat_reasons[:10]])
+
+    if not submit_guard_reasons and total_targets > 0:
+        gemini_compare_report = _pre_submit_gemini_compare_guard(
+            cfg=cfg,
+            source_segments=source_segments or [],
+            live_segments=list(live_recheck_report.get("live_segments", [])),
+            live_recheck_report=live_recheck_report,
+            video_file=video_file,
+            task_id=task_id,
+        )
+        if bool(gemini_compare_report.get("block")):
+            compare_reasons = [
+                str(item).strip()
+                for item in list(gemini_compare_report.get("reasons", []))
+                if str(item).strip()
+            ]
+            compare_error = str(gemini_compare_report.get("error", "")).strip()
+            if not compare_reasons and compare_error:
+                compare_reasons = [compare_error]
+            if not compare_reasons:
+                compare_reasons = ["Gemini compare rejected current solution."]
+            print("[run] submit guard blocked auto-submit: pre-submit Gemini compare:")
+            for item in compare_reasons[:10]:
+                print(f"  - {item}")
+            submit_guard_reasons.extend([f"gemini compare: {item}" for item in compare_reasons[:10]])
+
     if submit_guard_reasons:
         print("[run] submit guard blocked auto-submit for this episode:")
         for reason in submit_guard_reasons:
@@ -8836,6 +9852,8 @@ def apply_labels(
         "submit_guard_blocked": bool(submit_guard_reasons),
         "submit_guard_reasons": submit_guard_reasons,
         "live_recheck": live_recheck_report,
+        "gemini_chat_compare": gemini_chat_compare_report,
+        "gemini_compare": gemini_compare_report,
     }
 
 
@@ -10586,7 +11604,20 @@ def run(cfg: Dict[str, Any], execute: bool) -> None:
                         "completed": completed_from_resume,
                     }
                 else:
-                    result = apply_labels(page, cfg, label_map, source_segments=segments)
+                    drive_video_link = _resolve_pre_submit_chat_drive_link(
+                        cfg,
+                        task_id=task_id,
+                        task_state=task_state,
+                    )
+                    result = apply_labels(
+                        page,
+                        cfg,
+                        label_map,
+                        source_segments=segments,
+                        video_file=video_file,
+                        drive_video_link=drive_video_link,
+                        task_id=task_id,
+                    )
                 print(f"[run] applied labels: {result['applied']}")
                 skipped_total = int(pre_skipped_unchanged) + int(result.get("skipped_unchanged", 0))
                 if skipped_total:
