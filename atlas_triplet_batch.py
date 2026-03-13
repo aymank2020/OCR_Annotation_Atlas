@@ -47,7 +47,10 @@ def _as_path(value: Any) -> Optional[Path]:
 
 def _episode_related_paths(ep: Dict[str, Any]) -> List[Path]:
     out: List[Path] = []
-    for item in ep.get("related_files", []) if isinstance(ep.get("related_files"), list) else []:
+    raw_related = ep.get("related_files")
+    if not isinstance(raw_related, list):
+        raw_related = ep.get("related_paths")
+    for item in raw_related if isinstance(raw_related, list) else []:
         p = _as_path(item)
         if p is not None:
             out.append(p)
@@ -130,7 +133,30 @@ def _pick_episode_inputs(
         )
 
     tier2_path = _as_path(ep.get("tier2_text_path"))
+    if tier2_path is None:
+        tier2_path = _pick_by_name(rel, f"text_{eid}_current.txt")
+    if tier2_path is None:
+        tier2_path = _pick_first_existing(
+            rel,
+            lambda p: p.name.lower().startswith(f"text_{eid}")
+            and p.suffix.lower() in {".txt", ".json"}
+            and ("current" in p.name.lower() or "tier2" in p.name.lower()),
+        )
+
     api_path = _as_path(ep.get("tier3_text_path"))
+    if api_path is None:
+        api_path = _pick_by_name(rel, f"text_{eid}_update.txt")
+    if api_path is None:
+        api_path = _pick_first_existing(
+            rel,
+            lambda p: p.name.lower().startswith(f"text_{eid}")
+            and p.suffix.lower() in {".txt", ".json"}
+            and (
+                "update" in p.name.lower()
+                or "tier3" in p.name.lower()
+                or "api" in p.name.lower()
+            ),
+        )
 
     task_state_path = _pick_by_name(rel, f"task_state_{eid}.json")
     if task_state_path is None:
