@@ -396,6 +396,22 @@ def _call_gemini_compare_chat_web(
     channel = str(gem.get("chat_web_channel", "") or "").strip()
     storage_state = str(gem.get("chat_web_storage_state", "") or "").strip()
     user_data_dir = str(gem.get("chat_web_user_data_dir", "") or "").strip()
+    raw_args = gem.get("chat_web_launch_args", [])
+    launch_args: List[str] = []
+    if isinstance(raw_args, list):
+        for item in raw_args:
+            val = str(item or "").strip()
+            if val:
+                launch_args.append(val)
+    # Running browser as root on Linux requires --no-sandbox.
+    try:
+        if hasattr(os, "geteuid") and int(os.geteuid()) == 0:
+            if "--no-sandbox" not in launch_args:
+                launch_args.append("--no-sandbox")
+            if "--disable-dev-shm-usage" not in launch_args:
+                launch_args.append("--disable-dev-shm-usage")
+    except Exception:
+        pass
 
     attach_candidates: List[Path] = []
     if video_a is not None and video_a.exists():
@@ -418,11 +434,15 @@ def _call_gemini_compare_chat_web(
                 }
                 if channel:
                     launch_kwargs["channel"] = channel
+                if launch_args:
+                    launch_kwargs["args"] = launch_args
                 context = pw.chromium.launch_persistent_context(**launch_kwargs)
             else:
                 launch_kwargs = {"headless": headless}
                 if channel:
                     launch_kwargs["channel"] = channel
+                if launch_args:
+                    launch_kwargs["args"] = launch_args
                 browser = pw.chromium.launch(**launch_kwargs)
                 context_kwargs: Dict[str, Any] = {}
                 if storage_state and Path(storage_state).exists():
