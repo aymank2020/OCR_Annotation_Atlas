@@ -22,6 +22,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
@@ -438,6 +439,9 @@ def run_triplet_compare(
     selected_model = str(model or "").strip() or str(
         ((cfg.get("gemini", {}) if isinstance(cfg.get("gemini"), dict) else {}).get("model", "gemini-3.1-pro-preview"))
     ).strip()
+    gem_cfg = cfg.get("gemini", {}) if isinstance(cfg.get("gemini"), dict) else {}
+    fallback_model = str(gem_cfg.get("triplet_fallback_model", "gemini-2.5-pro") or "").strip()
+    retry_attempts = max(1, int(gem_cfg.get("triplet_retry_attempts", 3) or 3))
 
     prompt = f"""
 You are a strict Atlas annotation QA judge.
@@ -479,21 +483,92 @@ Return ONLY valid JSON with this shape:
 {task_state_text}
 """.strip()
 
-    result = _call_gemini_compare(
-        cfg=cfg,
-        dotenv=dotenv,
-        model=selected_model,
-        prompt=prompt,
-        video_a=video_main,
-        video_b=video_limit,
-        cache_dir=cache_root / "video_inline",
-    )
+    # Robust execution strategy:
+    # 1) retry transient HTTP failures
+    # 2) retry without video when request is too large / malformed
+    # 3) fallback to a stable model if requested model is unavailable
+    model_candidates = [selected_model]
+    if fallback_model and fallback_model not in model_candidates:
+        model_candidates.append(fallback_model)
+
+    run_notes: list[str] = []
+    attempt_errors: list[str] = []
+    result: Optional[Dict[str, Any]] = None
+    used_model = selected_model
+
+    for model_name in model_candidates:
+        use_video = True
+        for attempt in range(1, retry_attempts + 1):
+            try:
+                current_video_a = video_main if use_video else None
+                current_video_b = video_limit if use_video else None
+                result = _call_gemini_compare(
+                    cfg=cfg,
+                    dotenv=dotenv,
+                    model=model_name,
+                    prompt=prompt,
+                    video_a=current_video_a,
+                    video_b=current_video_b,
+                    cache_dir=cache_root / "video_inline",
+                )
+                used_model = model_name
+                if not use_video:
+                    run_notes.append("retried_without_video")
+                break
+            except Exception as exc:
+                msg = str(exc)
+                low = msg.lower()
+                attempt_errors.append(f"{model_name}#{attempt}: {msg}")
+                is_transient = any(t in low for t in ("http 429", "http 500", "http 502", "http 503", "http 504", "timeout", "timed out"))
+                is_size_or_payload = any(
+                    t in low
+                    for t in (
+                        "http 400",
+                        "http 413",
+                        "payload",
+                        "request too large",
+                        "request entity too large",
+                        "inline_data",
+                        "inlinedata",
+                        "content size",
+                    )
+                )
+                is_model_issue = ("http 404" in low) or (
+                    "model" in low and any(t in low for t in ("not found", "unsupported", "unavailable"))
+                )
+
+                if use_video and is_size_or_payload:
+                    use_video = False
+                    run_notes.append(f"retry_no_video_after_error: {msg[:160]}")
+                    continue
+
+                if is_transient and attempt < retry_attempts:
+                    sleep_sec = min(20, 2 ** attempt)
+                    run_notes.append(f"transient_retry_{attempt}_sleep_{sleep_sec}s")
+                    time.sleep(sleep_sec)
+                    continue
+
+                if is_model_issue:
+                    run_notes.append(f"model_issue_on_{model_name}")
+                break
+        if result is not None:
+            break
+
+    if result is None:
+        tail = " | ".join(attempt_errors[-4:]) if attempt_errors else "unknown compare failure"
+        raise RuntimeError(tail)
+
+    if run_notes:
+        existing = result.get("attach_notes", [])
+        if not isinstance(existing, list):
+            existing = []
+        result["attach_notes"] = [*existing, *run_notes]
 
     out_path = Path(out).resolve()
     out_path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
-        "model": selected_model,
+        "model": used_model,
         "video_refs": {
             "video_path": video_path,
             "video_path_limit": video_path_limit,
