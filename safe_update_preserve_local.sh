@@ -23,6 +23,9 @@ fi
 TS="$(date +%Y%m%d_%H%M%S)"
 BACKUP_DIR="${APP_DIR}/.safe_update_backups/${TS}"
 mkdir -p "$BACKUP_DIR"
+DID_STASH=0
+STASH_NAME="safe-update-autostash-${TS}"
+AUTO_STASH="${SAFE_UPDATE_AUTOSTASH:-1}"
 
 preserve_files=(
   ".env"
@@ -41,8 +44,27 @@ for rel in "${preserve_files[@]}"; do
   fi
 done
 
+if [ "$AUTO_STASH" = "1" ]; then
+  if ! git diff --quiet || ! git diff --cached --quiet || [ -n "$(git ls-files --others --exclude-standard)" ]; then
+    if git stash push --include-untracked -m "$STASH_NAME" >/dev/null; then
+      DID_STASH=1
+      echo "[safe-update] autostash created: $STASH_NAME"
+    fi
+  fi
+fi
+
 git fetch origin
 git pull --ff-only origin "$BRANCH"
+
+if [ "$DID_STASH" -eq 1 ]; then
+  if git stash list | grep -q "$STASH_NAME"; then
+    if git stash pop --index >/dev/null; then
+      echo "[safe-update] autostash restored."
+    else
+      echo "[safe-update] warning: autostash restore had conflicts. Resolve manually with: git stash list / git stash show -p"
+    fi
+  fi
+fi
 
 # Restore preserved local runtime files (if they existed before update)
 for rel in "${preserve_files[@]}"; do
