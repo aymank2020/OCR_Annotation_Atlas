@@ -40,6 +40,37 @@ def _try_read_file(path: Path) -> str:
         return ""
 
 
+def _approx_token_count(text: str) -> int:
+    # Rough estimate suitable for threshold checks.
+    words = len(str(text or "").split())
+    return int(words * 1.35)
+
+
+def _expand_context_with_repo_docs(base_context: str, repo_dir: Path) -> str:
+    text = str(base_context or "").strip()
+    candidates = [
+        "prompts/system_prompt.txt",
+        "prompts/atlas_vertex_context_pack.txt",
+        "ENTERPRISE_PIPELINE_BRIEF_AR.md",
+        "PROJECT_PLAN_EN.md",
+        "README.md",
+        "validator.py",
+        "repair_payload_builder.py",
+    ]
+    parts = [text] if text else []
+    for rel in candidates:
+        p = (repo_dir / rel).resolve()
+        chunk = _try_read_file(p)
+        if not chunk:
+            continue
+        marker = f"\n\n[Source: {rel}]\n"
+        parts.append(marker + chunk)
+        merged = "\n".join(parts)
+        if _approx_token_count(merged) >= 1100:
+            return merged
+    return "\n".join(parts).strip()
+
+
 def _post_cached_content(
     *,
     project: str,
@@ -170,6 +201,24 @@ def main() -> None:
             context_text=context_text,
         )
         used_location = "global"
+
+    if status == 400 and "minimum token count" in text.lower():
+        print("[warn] cached content too small; auto-expanding context from repo docs and retrying...")
+        expanded_context = _expand_context_with_repo_docs(context_text, cfg_path.parent.resolve())
+        print(
+            f"[info] context tokens approx: before={_approx_token_count(context_text)} "
+            f"after={_approx_token_count(expanded_context)}"
+        )
+        status, text = _post_cached_content(
+            project=project,
+            location=used_location,
+            token=token,
+            model=args.model,
+            display_name=args.display_name,
+            ttl_seconds=args.ttl_seconds,
+            system_text=system_text,
+            context_text=expanded_context,
+        )
 
     print("HTTP", status)
     if status != 200:
