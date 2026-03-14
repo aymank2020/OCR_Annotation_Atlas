@@ -1,5 +1,5 @@
 """
-Compare 3 candidate solutions (Tier2 / Gemini API / Gemini Chat) against up to 2 videos.
+Compare 4 candidate solutions (Tier2 / Gemini API / Gemini Chat / Vertex Chat) against up to 2 videos.
 
 Supports:
 - Local file paths
@@ -525,16 +525,17 @@ def _timed_labels_response_schema() -> Dict[str, Any]:
 
 def _triplet_compare_response_schema(include_thought_process: bool) -> Dict[str, Any]:
     props: Dict[str, Any] = {
-        "winner": {"type": "STRING", "enum": ["tier2", "api", "chat", "none"]},
-        "submit_safe_solution": {"type": "STRING", "enum": ["tier2", "api", "chat", "none"]},
+        "winner": {"type": "STRING", "enum": ["tier2", "api", "chat", "vertex_chat", "none"]},
+        "submit_safe_solution": {"type": "STRING", "enum": ["tier2", "api", "chat", "vertex_chat", "none"]},
         "scores": {
             "type": "OBJECT",
             "properties": {
                 "tier2": {"type": "INTEGER"},
                 "api": {"type": "INTEGER"},
                 "chat": {"type": "INTEGER"},
+                "vertex_chat": {"type": "INTEGER"},
             },
-            "required": ["tier2", "api", "chat"],
+            "required": ["tier2", "api", "chat", "vertex_chat"],
         },
         "hallucination": {
             "type": "OBJECT",
@@ -542,8 +543,9 @@ def _triplet_compare_response_schema(include_thought_process: bool) -> Dict[str,
                 "tier2": {"type": "BOOLEAN"},
                 "api": {"type": "BOOLEAN"},
                 "chat": {"type": "BOOLEAN"},
+                "vertex_chat": {"type": "BOOLEAN"},
             },
-            "required": ["tier2", "api", "chat"],
+            "required": ["tier2", "api", "chat", "vertex_chat"],
         },
         "major_issues": {
             "type": "OBJECT",
@@ -551,8 +553,9 @@ def _triplet_compare_response_schema(include_thought_process: bool) -> Dict[str,
                 "tier2": {"type": "ARRAY", "items": {"type": "STRING"}},
                 "api": {"type": "ARRAY", "items": {"type": "STRING"}},
                 "chat": {"type": "ARRAY", "items": {"type": "STRING"}},
+                "vertex_chat": {"type": "ARRAY", "items": {"type": "STRING"}},
             },
-            "required": ["tier2", "api", "chat"],
+            "required": ["tier2", "api", "chat", "vertex_chat"],
         },
         "best_reason_short": {"type": "STRING"},
         "final_recommendation": {"type": "STRING"},
@@ -575,7 +578,7 @@ def _triplet_compare_response_schema(include_thought_process: bool) -> Dict[str,
 def _validate_triplet_judge_result(parsed: Any, *, require_thought_process: bool) -> Dict[str, Any]:
     if not isinstance(parsed, dict):
         raise RuntimeError("judge_result is not a JSON object.")
-    allowed = {"tier2", "api", "chat", "none"}
+    allowed = {"tier2", "api", "chat", "vertex_chat", "none"}
     out: Dict[str, Any] = {}
 
     thought_process = str(parsed.get("thought_process") or "").strip()
@@ -597,7 +600,7 @@ def _validate_triplet_judge_result(parsed: Any, *, require_thought_process: bool
     if not isinstance(scores, dict):
         raise RuntimeError("scores must be object.")
     score_out: Dict[str, int] = {}
-    for key in ("tier2", "api", "chat"):
+    for key in ("tier2", "api", "chat", "vertex_chat"):
         raw = scores.get(key)
         if raw is None:
             raise RuntimeError(f"scores.{key} missing.")
@@ -610,13 +613,16 @@ def _validate_triplet_judge_result(parsed: Any, *, require_thought_process: bool
     hallucination = parsed.get("hallucination")
     if not isinstance(hallucination, dict):
         raise RuntimeError("hallucination must be object.")
-    out["hallucination"] = {k: bool(hallucination.get(k, False)) for k in ("tier2", "api", "chat")}
+    out["hallucination"] = {
+        k: bool(hallucination.get(k, False))
+        for k in ("tier2", "api", "chat", "vertex_chat")
+    }
 
     major_issues = parsed.get("major_issues")
     if not isinstance(major_issues, dict):
         raise RuntimeError("major_issues must be object.")
     issues_out: Dict[str, List[str]] = {}
-    for key in ("tier2", "api", "chat"):
+    for key in ("tier2", "api", "chat", "vertex_chat"):
         raw_list = major_issues.get(key, [])
         if raw_list is None:
             raw_list = []
@@ -1090,6 +1096,7 @@ def _build_triplet_compare_prompt(
     tier2_text: str,
     api_text: str,
     chat_text: str,
+    vertex_chat_text: str,
     task_state_text: str,
     context_text: str = "",
     include_thought_process: bool = True,
@@ -1107,10 +1114,11 @@ You are a strict Atlas annotation QA judge.
 Use attached videos as source of truth.
 If OCR text has minor typo but refers to same physical object, prioritize physical consistency and note typo in major_issues.
 
-Compare exactly 3 candidate solutions:
+Compare exactly 4 candidate solutions:
 1) Tier2 (employee draft)
 2) Gemini API (3.1 pro style)
 3) Gemini Chat (3.1 pro style)
+4) Vertex Chat (3.1 pro style via Vertex AI)
 
 Decide which solution is best and safest (least hallucination).
 If all are bad, choose "none".
@@ -1118,14 +1126,15 @@ If all are bad, choose "none".
 Return ONLY valid JSON with this shape:
 {{
 {thought_line}
-  "winner": "tier2|api|chat|none",
-  "submit_safe_solution": "tier2|api|chat|none",
-  "scores": {{"tier2": 0, "api": 0, "chat": 0}},
-  "hallucination": {{"tier2": false, "api": false, "chat": false}},
+  "winner": "tier2|api|chat|vertex_chat|none",
+  "submit_safe_solution": "tier2|api|chat|vertex_chat|none",
+  "scores": {{"tier2": 0, "api": 0, "chat": 0, "vertex_chat": 0}},
+  "hallucination": {{"tier2": false, "api": false, "chat": false, "vertex_chat": false}},
   "major_issues": {{
     "tier2": [],
     "api": [],
-    "chat": []
+    "chat": [],
+    "vertex_chat": []
   }},
   "best_reason_short": "",
   "final_recommendation": ""
@@ -1141,6 +1150,9 @@ Return ONLY valid JSON with this shape:
 
 [Gemini Chat]
 {chat_text}
+
+[Vertex Chat]
+{vertex_chat_text}
 
 [Task State Optional]
 {task_state_text}
@@ -1359,6 +1371,7 @@ def run_triplet_compare(
     api_path: str,
     video_path_limit: str = "",
     chat_path: str = "",
+    vertex_chat_path: str = "",
     task_state_path: str = "",
     labels_path: str = "",
     remote: str = "",
@@ -1395,6 +1408,10 @@ def run_triplet_compare(
     elif str(labels_path or "").strip():
         chat_file = _resolve_input_path(labels_path, cache_root / "inputs", resolved_remote)
 
+    vertex_chat_file: Optional[Path] = None
+    if str(vertex_chat_path or "").strip():
+        vertex_chat_file = _resolve_input_path(vertex_chat_path, cache_root / "inputs", resolved_remote)
+
     task_state_file: Optional[Path] = None
     if str(task_state_path or "").strip():
         task_state_file = _resolve_input_path(task_state_path, cache_root / "inputs", resolved_remote)
@@ -1402,6 +1419,7 @@ def run_triplet_compare(
     tier2_text = _load_text_or_json(tier2_file)
     api_text = _load_text_or_json(api_file)
     chat_text = _load_text_or_json(chat_file) if chat_file else ""
+    vertex_chat_text = _load_text_or_json(vertex_chat_file) if vertex_chat_file else ""
     task_state_text = _load_text_or_json(task_state_file) if task_state_file else ""
 
     gem_cfg = cfg.get("gemini", {}) if isinstance(cfg.get("gemini"), dict) else {}
@@ -1425,6 +1443,7 @@ def run_triplet_compare(
         tier2_text=tier2_text,
         api_text=api_text,
         chat_text=chat_text,
+        vertex_chat_text=vertex_chat_text,
         task_state_text=task_state_text,
         context_text=prompt_context,
         include_thought_process=include_thought_process,
@@ -1557,11 +1576,13 @@ def run_triplet_compare(
             "tier2_path": tier2_path,
             "api_path": api_path,
             "chat_path": chat_path,
+            "vertex_chat_path": vertex_chat_path,
             "labels_path": labels_path,
             "task_state_path": task_state_path,
             "resolved_tier2_path": str(tier2_file),
             "resolved_api_path": str(api_file),
             "resolved_chat_path": str(chat_file) if chat_file else "",
+            "resolved_vertex_chat_path": str(vertex_chat_file) if vertex_chat_file else "",
             "resolved_task_state_path": str(task_state_file) if task_state_file else "",
         },
         "attach_notes": result.get("attach_notes", []),
@@ -1575,13 +1596,14 @@ def run_triplet_compare(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Triplet compare: Tier2 vs Gemini API vs Gemini Chat")
+    parser = argparse.ArgumentParser(description="4-way compare: Tier2 vs Gemini API vs Gemini Chat vs Vertex Chat")
     parser.add_argument("--config", default="sample_web_auto_solver.yaml")
     parser.add_argument("--video-path", required=True, help="Local path or Drive folder-link+filename reference")
     parser.add_argument("--video-path-limit", default="", help="Second video path (optimized)")
     parser.add_argument("--tier2-path", required=True, help="Tier2 text/json path reference")
     parser.add_argument("--api-path", required=True, help="Gemini API output text/json path reference")
     parser.add_argument("--chat-path", default="", help="Gemini Chat output text/json path reference")
+    parser.add_argument("--vertex-chat-path", default="", help="Vertex Chat output text/json path reference")
     parser.add_argument("--task-state-path", default="", help="Optional task_state JSON reference")
     parser.add_argument("--labels-path", default="", help="Optional labels JSON reference (used as chat fallback)")
     parser.add_argument("--remote", default=os.environ.get("RCLONE_REMOTE", "gdrive"))
@@ -1597,6 +1619,7 @@ def main() -> None:
         tier2_path=args.tier2_path,
         api_path=args.api_path,
         chat_path=args.chat_path,
+        vertex_chat_path=args.vertex_chat_path,
         task_state_path=args.task_state_path,
         labels_path=args.labels_path,
         remote=args.remote,

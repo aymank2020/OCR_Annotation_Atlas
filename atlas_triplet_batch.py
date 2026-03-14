@@ -1,8 +1,8 @@
 """
-Batch runner for triplet compare across episodes from episodes_review_index.json.
+Batch runner for multi-way compare across episodes from episodes_review_index.json.
 
 For each episode:
-- resolve Tier2/API/Chat/video inputs
+- resolve Tier2/API/Chat/Vertex-Chat/video inputs
 - run atlas_triplet_compare
 - persist per-episode result JSON
 - optionally upsert summary into outputs/gemini_chat_evaluations.json
@@ -309,6 +309,17 @@ def _pick_episode_inputs(
         if generated is not None:
             chat_path = generated
 
+    vertex_chat_path = outputs_dir / "vertex_chat_reviews" / eid / f"text_{eid}_vertex_chat.txt"
+    if not vertex_chat_path.exists():
+        vertex_chat_path = _pick_by_name(rel, f"text_{eid}_vertex_chat.txt") or vertex_chat_path
+    if not vertex_chat_path.exists():
+        vertex_chat_path = _pick_first_existing(
+            rel,
+            lambda p: p.name.lower().startswith(f"text_{eid}")
+            and p.suffix.lower() in {".txt", ".json"}
+            and ("vertex_chat" in p.name.lower() or "vertex" in p.name.lower()),
+        ) or vertex_chat_path
+
     return {
         "episode_id": eid,
         "video_path": _path_str_if_file(video_main),
@@ -316,6 +327,7 @@ def _pick_episode_inputs(
         "tier2_path": _path_str_if_file(tier2_path),
         "api_path": _path_str_if_file(api_path),
         "chat_path": str(chat_path) if chat_path.exists() and chat_path.is_file() else "",
+        "vertex_chat_path": str(vertex_chat_path) if vertex_chat_path.exists() and vertex_chat_path.is_file() else "",
         "task_state_path": _path_str_if_file(task_state_path),
         "labels_path": _path_str_if_file(labels_path),
     }
@@ -370,6 +382,58 @@ def _ensure_chat_timed_from_video(
         return out_txt
     if chat_txt.exists():
         return str(chat_txt)
+    return None
+
+
+def _ensure_vertex_chat_from_video(
+    *,
+    config: str,
+    outputs_dir: Path,
+    cache_dir: Path,
+    remote: str,
+    vertex_chat_model: str,
+    episode_id: str,
+    video_path: str,
+    video_path_limit: str,
+) -> Optional[str]:
+    eid = str(episode_id or "").strip().lower()
+    main_video_raw = str(video_path or "").strip()
+    if not eid or not main_video_raw:
+        return None
+    main_video = Path(main_video_raw)
+    if not main_video.exists() or not main_video.is_file():
+        return None
+    limit_video_raw = str(video_path_limit or "").strip()
+    limit_video = Path(limit_video_raw) if limit_video_raw else None
+    if limit_video is not None and (not limit_video.exists() or not limit_video.is_file()):
+        limit_video = None
+    if limit_video is None:
+        generated_limit = _ensure_upload_opt_video(outputs_dir, eid, main_video)
+        if generated_limit is not None:
+            limit_video = generated_limit
+
+    vertex_dir = outputs_dir / "vertex_chat_reviews" / eid
+    vertex_dir.mkdir(parents=True, exist_ok=True)
+    vertex_txt = vertex_dir / f"text_{eid}_vertex_chat.txt"
+    vertex_json = vertex_dir / f"labels_{eid}_vertex_chat.json"
+
+    result = generate_gemini_chat_timed_labels(
+        config_path=config,
+        video_path=str(main_video),
+        video_path_limit=str(limit_video) if limit_video is not None else "",
+        remote=remote,
+        cache_dir=str(cache_dir / eid / "vertex_chat_timed"),
+        model=vertex_chat_model,
+        out_txt=str(vertex_txt),
+        out_json=str(vertex_json),
+        episode_id=eid,
+        prompt_scope="vertex_chat",
+    )
+    out_txt = str(result.get("out_txt") or "").strip()
+    if out_txt and Path(out_txt).exists():
+        return out_txt
+    if vertex_txt.exists():
+        return str(vertex_txt)
     return None
 
 
@@ -484,6 +548,8 @@ def _derive_eval_score(payload: Dict[str, Any]) -> Optional[int]:
             score = 100.0
         elif winner == "chat":
             score = 95.0
+        elif winner == "vertex_chat":
+            score = 97.0
         elif winner == "tier2":
             score = 80.0
         elif winner == "none":
@@ -545,12 +611,14 @@ def run_batch(
     model: str,
     compare_model: str,
     chat_timed_model: str,
+    vertex_chat_model: str,
     api_update_model: str,
     only_status: str,
     limit: int,
     require_chat_path: bool,
     write_chat_from_evals: bool,
     generate_chat_timed_missing: bool,
+    generate_vertex_chat_missing: bool,
     regenerate_api_missing: bool,
     regenerate_api_from_video: bool,
     allow_missing_tier2: bool,
@@ -582,6 +650,7 @@ def run_batch(
     eval_skipped = 0
     effective_compare_model = str(compare_model or model or "").strip()
     effective_chat_timed_model = str(chat_timed_model or model or "").strip()
+    effective_vertex_chat_model = str(vertex_chat_model or model or "").strip()
     effective_api_update_model = str(api_update_model or model or "").strip()
 
     def _append_result_row(row: Dict[str, Any]) -> None:
@@ -646,6 +715,13 @@ def run_batch(
             if (not cp.exists()) or (not cp.is_file()) or (not _path_has_timed_segments(cp)):
                 inputs["chat_path"] = ""
 
+        # Reject non-timed vertex chat placeholders.
+        vertex_chat_candidate = str(inputs.get("vertex_chat_path") or "").strip()
+        if vertex_chat_candidate:
+            vp = Path(vertex_chat_candidate)
+            if (not vp.exists()) or (not vp.is_file()) or (not _path_has_timed_segments(vp)):
+                inputs["vertex_chat_path"] = ""
+
         # Ensure Gemini Chat timed labels exist by calling Gemini with video.
         if generate_chat_timed_missing and not _is_existing_file_path(inputs.get("chat_path")):
             try:
@@ -664,6 +740,25 @@ def run_batch(
                     print(f"[triplet-batch] info episode={eid} generated_chat_timed={generated_chat}")
             except Exception as exc:
                 print(f"[triplet-batch] warn episode={eid} chat_timed_generation_failed={exc}")
+
+        # Ensure Vertex Chat timed labels exist by calling Vertex with video.
+        if generate_vertex_chat_missing and not _is_existing_file_path(inputs.get("vertex_chat_path")):
+            try:
+                generated_vertex_chat = _ensure_vertex_chat_from_video(
+                    config=config,
+                    outputs_dir=outputs_dir,
+                    cache_dir=cache_dir,
+                    remote=remote,
+                    vertex_chat_model=effective_vertex_chat_model,
+                    episode_id=eid,
+                    video_path=str(inputs.get("video_path") or ""),
+                    video_path_limit=str(inputs.get("video_path_limit") or ""),
+                )
+                if generated_vertex_chat:
+                    inputs["vertex_chat_path"] = generated_vertex_chat
+                    print(f"[triplet-batch] info episode={eid} generated_vertex_chat={generated_vertex_chat}")
+            except Exception as exc:
+                print(f"[triplet-batch] warn episode={eid} vertex_chat_generation_failed={exc}")
 
         # Rebuild missing API update text when absent.
         if regenerate_api_missing and not _is_existing_file_path(inputs.get("api_path")):
@@ -711,6 +806,7 @@ def run_batch(
 
         missing: List[str] = []
         required_keys = ["video_path", "api_path"]
+        required_keys.append("vertex_chat_path")
         if not allow_missing_tier2:
             required_keys.append("tier2_path")
         for key in required_keys:
@@ -747,6 +843,7 @@ def run_batch(
                     tier2_path=inputs["tier2_path"],
                     api_path=inputs["api_path"],
                     chat_path=inputs.get("chat_path", ""),
+                    vertex_chat_path=inputs.get("vertex_chat_path", ""),
                     task_state_path=inputs.get("task_state_path", ""),
                     labels_path=inputs.get("labels_path", ""),
                     remote=remote,
@@ -815,7 +912,7 @@ def run_batch(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Batch triplet compare across episodes_review_index.json")
+    parser = argparse.ArgumentParser(description="Batch 4-way compare across episodes_review_index.json")
     parser.add_argument("--config", default="sample_web_auto_solver_vps.yaml")
     parser.add_argument("--outputs-dir", default="outputs")
     parser.add_argument("--index", default="outputs/episodes_review_index.json")
@@ -826,6 +923,7 @@ def main() -> None:
     parser.add_argument("--model", default="gemini-3.1-pro-preview")
     parser.add_argument("--compare-model", default="", help="Model for triplet compare judge (defaults to --model)")
     parser.add_argument("--chat-timed-model", default="", help="Model for generating chat timed labels (defaults to --model)")
+    parser.add_argument("--vertex-chat-model", default="", help="Model for generating vertex chat timed labels (defaults to --model)")
     parser.add_argument(
         "--api-update-model",
         default="",
@@ -838,6 +936,8 @@ def main() -> None:
     parser.add_argument("--no-write-chat-from-evals", dest="write_chat_from_evals", action="store_false")
     parser.add_argument("--generate-chat-timed-missing", dest="generate_chat_timed_missing", action="store_true", default=True)
     parser.add_argument("--no-generate-chat-timed-missing", dest="generate_chat_timed_missing", action="store_false")
+    parser.add_argument("--generate-vertex-chat-missing", dest="generate_vertex_chat_missing", action="store_true", default=True)
+    parser.add_argument("--no-generate-vertex-chat-missing", dest="generate_vertex_chat_missing", action="store_false")
     parser.add_argument("--regenerate-api-missing", dest="regenerate_api_missing", action="store_true", default=True)
     parser.add_argument("--no-regenerate-api-missing", dest="regenerate_api_missing", action="store_false")
     parser.add_argument("--regenerate-api-from-video", dest="regenerate_api_from_video", action="store_true", default=True)
@@ -863,12 +963,14 @@ def main() -> None:
         model=str(args.model),
         compare_model=str(args.compare_model),
         chat_timed_model=str(args.chat_timed_model),
+        vertex_chat_model=str(args.vertex_chat_model),
         api_update_model=str(args.api_update_model),
         only_status=str(args.only_status),
         limit=max(0, int(args.limit)),
         require_chat_path=bool(args.require_chat_path),
         write_chat_from_evals=bool(args.write_chat_from_evals),
         generate_chat_timed_missing=bool(args.generate_chat_timed_missing),
+        generate_vertex_chat_missing=bool(args.generate_vertex_chat_missing),
         regenerate_api_missing=bool(args.regenerate_api_missing),
         regenerate_api_from_video=bool(args.regenerate_api_from_video),
         allow_missing_tier2=bool(args.allow_missing_tier2),

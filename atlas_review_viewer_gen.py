@@ -154,6 +154,11 @@ def _build_html(data: Dict[str, Any], title: str) -> str:
       grid-template-columns: repeat(3, minmax(0, 1fr));
       gap: 10px;
     }}
+    .grid4 {{
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+    }}
     .labelbox {{
       border: 1px solid var(--border);
       border-radius: 10px;
@@ -314,6 +319,7 @@ def _build_html(data: Dict[str, Any], title: str) -> str:
       .layout {{ grid-template-columns: 1fr; }}
       .grid2 {{ grid-template-columns: 1fr; }}
       .grid3 {{ grid-template-columns: 1fr; }}
+      .grid4 {{ grid-template-columns: 1fr; }}
     }}
   </style>
 </head>
@@ -347,11 +353,16 @@ def _build_html(data: Dict[str, Any], title: str) -> str:
         <div id="videoNote" class="warn"></div>
       </div>
 
-      <div class="section grid3 labels-row">
+      <div class="section grid4 labels-row">
         <div class="labelbox">
           <div class="tt">Gemini Chat (Timed) | إجابة جيمناي شات بالتوقيت</div>
           <div id="chatTimeline" class="timeline"></div>
           <pre id="chatBox">-</pre>
+        </div>
+        <div class="labelbox">
+          <div class="tt">Vertex Chat | إجابة شات Vertex</div>
+          <div id="vertexChatTimeline" class="timeline"></div>
+          <pre id="vertexChatBox">-</pre>
         </div>
         <div class="labelbox">
           <div class="tt">Tier2 (Before) | قبل التعديل</div>
@@ -435,6 +446,8 @@ def _build_html(data: Dict[str, Any], title: str) -> str:
     const tier3Timeline = document.getElementById("tier3Timeline");
     const chatBox = document.getElementById("chatBox");
     const chatTimeline = document.getElementById("chatTimeline");
+    const vertexChatBox = document.getElementById("vertexChatBox");
+    const vertexChatTimeline = document.getElementById("vertexChatTimeline");
     const validationBox = document.getElementById("validationBox");
     const disputesBox = document.getElementById("disputesBox");
     const tripletCompareSummary = document.getElementById("tripletCompareSummary");
@@ -552,6 +565,7 @@ def _build_html(data: Dict[str, Any], title: str) -> str:
         if (currentEpisodeId) {{
           renderTripletCompareForEpisode(currentEpisodeId);
           renderChatForEpisode(currentEpisodeId);
+          renderVertexChatForEpisode(currentEpisodeId);
         }}
       }} catch (_) {{
         // optional file
@@ -595,6 +609,7 @@ def _build_html(data: Dict[str, Any], title: str) -> str:
       applyScoreBadge(rec.score_pct);
       geminiEvalSavedAt.textContent = rec.updated_at_utc ? `saved: ${{rec.updated_at_utc}}` : "";
       renderChatForEpisode(eid);
+      renderVertexChatForEpisode(eid);
     }}
 
     async function renderChatForEpisode(eid) {{
@@ -622,6 +637,33 @@ def _build_html(data: Dict[str, Any], title: str) -> str:
       }}
       chatBox.textContent = chatRaw;
       renderTimeline(chatTimeline, segs);
+    }}
+
+    async function renderVertexChatForEpisode(eid) {{
+      const safeEid = String(eid || "");
+      if (!safeEid || safeEid === "__none__") {{
+        vertexChatBox.textContent = "-";
+        renderTimeline(vertexChatTimeline, []);
+        return;
+      }}
+      vertexChatBox.textContent = "Loading vertex chat labels...";
+      renderTimeline(vertexChatTimeline, []);
+
+      const vertexRaw = await resolveVertexChatText(safeEid);
+      if (safeEid !== currentEpisodeId) return;
+      if (!vertexRaw) {{
+        vertexChatBox.textContent = "(missing vertex chat labels)";
+        renderTimeline(vertexChatTimeline, []);
+        return;
+      }}
+      const segs = parseSegments(vertexRaw);
+      if (!segs.length) {{
+        vertexChatBox.textContent = "(missing vertex chat labels)";
+        renderTimeline(vertexChatTimeline, []);
+        return;
+      }}
+      vertexChatBox.textContent = vertexRaw;
+      renderTimeline(vertexChatTimeline, segs);
     }}
 
     async function renderTripletCompareForEpisode(eid) {{
@@ -847,10 +889,10 @@ def _build_html(data: Dict[str, Any], title: str) -> str:
         JSON.stringify(bundle, null, 2),
         "",
         "Required output:",
-        "1) Compare Tier2 vs Tier3",
-        "2) submit-safe or not",
+        "1) Compare Tier2 vs Tier3 vs Gemini Chat (Timed) vs Vertex Chat",
+        "2) choose the safest winner",
         "3) exact segment-level issues with rule names",
-        "4) corrected labels",
+        "4) corrected labels for failing segments",
         "5) final PASS/FAIL + confidence",
         "",
         "اكتب الإجابة النهائية بالعربية وبشكل مباشر.",
@@ -1012,6 +1054,28 @@ def _build_html(data: Dict[str, Any], title: str) -> str:
       return "";
     }}
 
+    async function resolveVertexChatText(eid) {{
+      const key = String(eid || "");
+      if (!key) return "";
+
+      const detail = await getTripletDetailForEpisode(key);
+      const refs = [];
+      if (detail && typeof detail === "object" && detail.text_refs && typeof detail.text_refs === "object") {{
+        const t = detail.text_refs;
+        refs.push(t.resolved_vertex_chat_path, t.vertex_chat_path);
+      }}
+      refs.push(`vertex_chat_reviews/${{key}}/text_${{key}}_vertex_chat.txt`);
+      refs.push(`vertex_chat_reviews/${{key}}/labels_${{key}}_vertex_chat.json`);
+
+      for (const ref of refs) {{
+        const txt = await loadTextFromRef(ref);
+        if (!txt) continue;
+        const segs = parseSegments(txt);
+        if (segs.length > 0) return txt;
+      }}
+      return "";
+    }}
+
     function jumpToSegment(startSec, endSec) {{
       if (!Number.isFinite(startSec)) return;
       try {{
@@ -1053,6 +1117,7 @@ def _build_html(data: Dict[str, Any], title: str) -> str:
       tier2Box.textContent = "-";
       tier3Box.textContent = "-";
       chatBox.textContent = "-";
+      vertexChatBox.textContent = "-";
       validationBox.textContent = "-";
       disputesBox.textContent = "-";
       tripletCompareSummary.innerHTML = `<span>-</span>`;
@@ -1060,6 +1125,7 @@ def _build_html(data: Dict[str, Any], title: str) -> str:
       renderTimeline(tier2Timeline, []);
       renderTimeline(tier3Timeline, []);
       renderTimeline(chatTimeline, []);
+      renderTimeline(vertexChatTimeline, []);
       renderEvalForEpisode("__none__");
     }}
 
@@ -1200,6 +1266,7 @@ def _build_html(data: Dict[str, Any], title: str) -> str:
       disputesBox.textContent = disputes.length ? JSON.stringify(disputes, null, 2) : "(none)";
       renderTripletCompareForEpisode(currentEpisodeId);
       renderEvalForEpisode(currentEpisodeId);
+      renderVertexChatForEpisode(currentEpisodeId);
     }}
 
     function initFilter() {{

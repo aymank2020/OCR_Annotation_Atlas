@@ -195,14 +195,18 @@ gemini:
   # Optional split-model setup for cost/perf tuning:
   # - compare_model: text-based triplet judge
   # - chat_timed_model: timed labels generation from video
+  # - vertex_chat_model: timed labels generation from video using Vertex auth
   compare_model: "gemini-2.5-flash"
   chat_timed_model: "gemini-3.1-pro-preview"
+  vertex_chat_model: "gemini-3.1-pro-preview"
   # Optional per-stage auth override (for hybrid mode in one run):
   # - compare_auth_mode: e.g. "vertex_ai"
   # - timed_labels_auth_mode: e.g. "chat_web"
+  # - vertex_chat_auth_mode: e.g. "vertex_ai"
   # - api_update_auth_mode: e.g. "vertex_ai"
   compare_auth_mode: ""
   timed_labels_auth_mode: ""
+  vertex_chat_auth_mode: "vertex_ai"
   api_update_auth_mode: ""
   compare_fallback_model: "gemini-2.5-pro"
   chat_timed_fallback_model: "gemini-2.5-pro"
@@ -212,6 +216,7 @@ gemini:
   compare_include_thought_process: true
   compare_response_schema_enabled: true
   timed_labels_response_schema_enabled: true
+  vertex_chat_response_schema_enabled: true
   api_update_response_schema_enabled: true
   compare_fail_on_none: false
   # Optional system instructions overrides.
@@ -227,6 +232,8 @@ gemini:
   compare_context_text: ""
   timed_labels_context_file: ""
   timed_labels_context_text: ""
+  vertex_chat_context_file: ""
+  vertex_chat_context_text: ""
   max_retries: 3
   retry_base_delay_sec: 2.0
   connect_timeout_sec: 30
