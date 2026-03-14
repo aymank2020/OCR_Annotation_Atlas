@@ -1006,10 +1006,8 @@ def _call_gemini_compare(
             raise RuntimeError(f"Vertex credentials file not found: {cred_path}")
         token = _vertex_access_token(cred_path)
         model_path = model if "/" in model else f"publishers/google/models/{model}"
-        url = (
-            f"https://{location}-aiplatform.googleapis.com/v1/projects/{project}/locations/{location}/"
-            f"{model_path}:generateContent"
-        )
+        host = "aiplatform.googleapis.com" if location == "global" else f"{location}-aiplatform.googleapis.com"
+        url = f"https://{host}/v1/projects/{project}/locations/{location}/{model_path}:generateContent"
         headers = {"Content-Type": "application/json", "Authorization": f"Bearer {token}"}
         payload_to_send = _translate_payload_for_vertex(payload)
         if vertex_cached_content_name:

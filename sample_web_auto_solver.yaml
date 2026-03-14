@@ -179,6 +179,7 @@ gemini:
   api_key: ""
   # Vertex settings (used when auth_mode: "vertex_ai")
   vertex_project: ""
+  # For preview models, try "global" if regional endpoint returns model-not-found.
   vertex_location: "us-central1"
   # Optional explicit path; otherwise use env GOOGLE_APPLICATION_CREDENTIALS
   vertex_credentials_path: ""

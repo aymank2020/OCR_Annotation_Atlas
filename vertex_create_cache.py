@@ -13,14 +13,30 @@ from pathlib import Path
 
 import requests
 import yaml
-from google.auth.transport.requests import Request
-from google.oauth2 import service_account
+
+
+DEFAULT_SYSTEM_PROMPT = """You are a strict Atlas annotation QA judge.
+Follow these core rules:
+1) Timeline must be chronological, non-overlapping, and gapless.
+2) Max 2 atomic actions per segment.
+3) Use concise neutral imperative verbs.
+4) Use "No Action" only for true inactivity.
+5) Avoid temporal hallucination and invented actions/objects.
+6) Output strict JSON when requested by the calling prompt.
+""".strip()
 
 
 def _read_text(path: Path) -> str:
-    if not path.exists() or not path.is_file():
-        raise FileNotFoundError(f"Missing file: {path}")
     return path.read_text(encoding="utf-8")
+
+
+def _try_read_file(path: Path) -> str:
+    if not path.exists() or not path.is_file():
+        return ""
+    try:
+        return _read_text(path).strip()
+    except Exception:
+        return ""
 
 
 def main() -> None:
@@ -32,6 +48,14 @@ def main() -> None:
     ap.add_argument("--display-name", default="atlas-qa-cache")
     ap.add_argument("--ttl-seconds", type=int, default=86400)
     args = ap.parse_args()
+
+    try:
+        from google.auth.transport.requests import Request
+        from google.oauth2 import service_account
+    except Exception as exc:
+        raise RuntimeError(
+            "Missing dependency google-auth. Install with: pip install google-auth requests pyyaml"
+        ) from exc
 
     cfg_path = Path(args.config).resolve()
     if not cfg_path.exists():
@@ -54,8 +78,31 @@ def main() -> None:
     if not cred_path.exists():
         raise FileNotFoundError(f"Credentials file not found: {cred_path}")
 
-    system_text = _read_text(Path(args.system).resolve())
-    context_text = _read_text(Path(args.context).resolve())
+    cfg_dir = cfg_path.parent
+
+    # Resolve system text (file -> config text -> default).
+    system_text = _try_read_file(Path(args.system).resolve())
+    if not system_text:
+        system_text = str(gem.get("system_instruction_text", "") or "").strip()
+    if not system_text:
+        system_text = DEFAULT_SYSTEM_PROMPT
+        print("[warn] system prompt file not found; using built-in default system prompt.")
+
+    # Resolve context text (arg file -> gem.context_file -> gem.context_text).
+    context_text = _try_read_file(Path(args.context).resolve())
+    if not context_text:
+        context_file_cfg = str(gem.get("context_file", "") or "").strip()
+        if context_file_cfg:
+            context_file_path = Path(context_file_cfg)
+            if not context_file_path.is_absolute():
+                context_file_path = (cfg_dir / context_file_path).resolve()
+            context_text = _try_read_file(context_file_path)
+    if not context_text:
+        context_text = str(gem.get("context_text", "") or "").strip()
+    if not context_text:
+        raise FileNotFoundError(
+            "No context content found. Provide --context file or set gemini.context_file/context_text in config."
+        )
 
     creds = service_account.Credentials.from_service_account_file(
         str(cred_path),
@@ -66,12 +113,10 @@ def main() -> None:
     if not token:
         raise RuntimeError("Could not get access token.")
 
-    url = (
-        f"https://{location}-aiplatform.googleapis.com/v1/projects/{project}/"
-        f"locations/{location}/cachedContents"
-    )
+    host = "aiplatform.googleapis.com" if location == "global" else f"{location}-aiplatform.googleapis.com"
+    url = f"https://{host}/v1/projects/{project}/locations/{location}/cachedContents"
     payload = {
-        "model": f"publishers/google/models/{args.model}",
+        "model": f"projects/{project}/locations/{location}/publishers/google/models/{args.model}",
         "displayName": args.display_name,
         "ttl": f"{max(60, int(args.ttl_seconds))}s",
         "systemInstruction": {"parts": [{"text": system_text}]},
