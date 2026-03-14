@@ -127,6 +127,15 @@ def _normalize_auth_mode(raw: str) -> str:
     return aliases.get(mode, "api_key")
 
 
+def _normalize_vertex_model_id(model: str) -> str:
+    m = str(model or "").strip()
+    aliases = {
+        "gemini-3.1-pro-preview": "gemini-3-pro-preview",
+        "gemini-3.1-flash-preview": "gemini-3-flash-preview",
+    }
+    return aliases.get(m, m)
+
+
 def _extract_folder_id(link: str) -> Optional[str]:
     src = str(link or "")
     m = re.search(r"/folders/([a-zA-Z0-9_-]+)", src)
@@ -1005,7 +1014,8 @@ def _call_gemini_compare(
         if not cred_path.exists():
             raise RuntimeError(f"Vertex credentials file not found: {cred_path}")
         token = _vertex_access_token(cred_path)
-        model_path = model if "/" in model else f"publishers/google/models/{model}"
+        model_id = _normalize_vertex_model_id(model)
+        model_path = model_id if "/" in model_id else f"publishers/google/models/{model_id}"
         host = "aiplatform.googleapis.com" if location == "global" else f"{location}-aiplatform.googleapis.com"
         url = f"https://{host}/v1/projects/{project}/locations/{location}/{model_path}:generateContent"
         headers = {"Content-Type": "application/json", "Authorization": f"Bearer {token}"}
