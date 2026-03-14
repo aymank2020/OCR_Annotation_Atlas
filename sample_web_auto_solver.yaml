@@ -182,6 +182,13 @@ gemini:
   vertex_location: "us-central1"
   # Optional explicit path; otherwise use env GOOGLE_APPLICATION_CREDENTIALS
   vertex_credentials_path: ""
+  # Optional Vertex Context Cache resource name:
+  # projects/<project>/locations/<location>/cachedContents/<id>
+  vertex_cached_content_name: ""
+  # When true and cached content is used, omit request-level systemInstruction.
+  vertex_cached_content_strip_system_instruction: true
+  # If true, do not append context_file/context_text in prompts (rely on cached content only).
+  use_vertex_cached_context_only: false
   # Default fallback model used when a mode-specific model is not provided.
   model: "gemini-2.5-flash"
   # Optional split-model setup for cost/perf tuning:
