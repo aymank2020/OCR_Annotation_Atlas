@@ -95,6 +95,8 @@ def _read_optional_text_file(path_value: Any, *, base_dir: Path) -> str:
 
 
 def _build_prompt_context(gem_cfg: Dict[str, Any], *, cfg_dir: Path, scope: str) -> str:
+    if bool(gem_cfg.get("use_vertex_cached_context_only", False)):
+        return ""
     scope_norm = str(scope or "").strip().lower()
     return _join_text_blocks(
         gem_cfg.get("context_text", ""),
@@ -937,6 +939,10 @@ def _call_gemini_compare(
 ) -> Dict[str, Any]:
     gem = cfg.get("gemini", {}) if isinstance(cfg.get("gemini"), dict) else {}
     auth_mode = _normalize_auth_mode(gem.get("auth_mode", "api_key"))
+    vertex_cached_content_name = str(
+        gem.get("vertex_cached_content_name", "")
+        or _read_secret("VERTEX_CACHED_CONTENT_NAME", dotenv)
+    ).strip()
     if auth_mode == "chat_web":
         return _call_gemini_compare_chat_web(
             cfg=cfg,
@@ -1006,6 +1012,10 @@ def _call_gemini_compare(
         )
         headers = {"Content-Type": "application/json", "Authorization": f"Bearer {token}"}
         payload_to_send = _translate_payload_for_vertex(payload)
+        if vertex_cached_content_name:
+            payload_to_send["cachedContent"] = vertex_cached_content_name
+            if bool(gem.get("vertex_cached_content_strip_system_instruction", True)):
+                payload_to_send.pop("systemInstruction", None)
     else:
         api_key = str(gem.get("api_key", "") or "").strip()
         if not api_key:
