@@ -1228,7 +1228,8 @@ def generate_gemini_chat_timed_labels(
     fallback_model = _first_non_empty(
         gem_cfg.get("chat_timed_fallback_model", ""),
         gem_cfg.get("timed_labels_fallback_model", ""),
-        gem_cfg.get("triplet_fallback_model", "gemini-2.5-pro"),
+        gem_cfg.get("triplet_fallback_model", ""),
+        selected_model,
     )
 
     cfg_for_call = dict(cfg)
@@ -1491,7 +1492,8 @@ def run_triplet_compare(
     fallback_model = _first_non_empty(
         gem_cfg.get("compare_fallback_model", ""),
         gem_cfg.get("triplet_compare_fallback_model", ""),
-        gem_cfg.get("triplet_fallback_model", "gemini-2.5-pro"),
+        gem_cfg.get("triplet_fallback_model", ""),
+        selected_model,
     )
     retry_attempts = max(1, int(gem_cfg.get("triplet_retry_attempts", 3) or 3))
     include_thought_process = bool(gem_cfg.get("compare_include_thought_process", True))
