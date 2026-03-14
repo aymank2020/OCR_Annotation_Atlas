@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+from typing import Dict, Tuple
 
 import requests
 import yaml
@@ -37,6 +38,38 @@ def _try_read_file(path: Path) -> str:
         return _read_text(path).strip()
     except Exception:
         return ""
+
+
+def _post_cached_content(
+    *,
+    project: str,
+    location: str,
+    token: str,
+    model: str,
+    display_name: str,
+    ttl_seconds: int,
+    system_text: str,
+    context_text: str,
+) -> Tuple[int, str]:
+    host = "aiplatform.googleapis.com" if location == "global" else f"{location}-aiplatform.googleapis.com"
+    url = f"https://{host}/v1/projects/{project}/locations/{location}/cachedContents"
+    payload: Dict[str, object] = {
+        "model": f"projects/{project}/locations/{location}/publishers/google/models/{model}",
+        "displayName": display_name,
+        "ttl": f"{max(60, int(ttl_seconds))}s",
+        "systemInstruction": {"parts": [{"text": system_text}]},
+        "contents": [{"role": "user", "parts": [{"text": context_text}]}],
+    }
+    resp = requests.post(
+        url,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        },
+        json=payload,
+        timeout=180,
+    )
+    return resp.status_code, resp.text
 
 
 def main() -> None:
@@ -113,33 +146,39 @@ def main() -> None:
     if not token:
         raise RuntimeError("Could not get access token.")
 
-    host = "aiplatform.googleapis.com" if location == "global" else f"{location}-aiplatform.googleapis.com"
-    url = f"https://{host}/v1/projects/{project}/locations/{location}/cachedContents"
-    payload = {
-        "model": f"projects/{project}/locations/{location}/publishers/google/models/{args.model}",
-        "displayName": args.display_name,
-        "ttl": f"{max(60, int(args.ttl_seconds))}s",
-        "systemInstruction": {"parts": [{"text": system_text}]},
-        "contents": [{"role": "user", "parts": [{"text": context_text}]}],
-    }
-
-    resp = requests.post(
-        url,
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-        },
-        json=payload,
-        timeout=180,
+    status, text = _post_cached_content(
+        project=project,
+        location=location,
+        token=token,
+        model=args.model,
+        display_name=args.display_name,
+        ttl_seconds=args.ttl_seconds,
+        system_text=system_text,
+        context_text=context_text,
     )
+    used_location = location
+    if status != 200 and location != "global":
+        print(f"[warn] create cache failed on location={location} (HTTP {status}), retrying on global...")
+        status, text = _post_cached_content(
+            project=project,
+            location="global",
+            token=token,
+            model=args.model,
+            display_name=args.display_name,
+            ttl_seconds=args.ttl_seconds,
+            system_text=system_text,
+            context_text=context_text,
+        )
+        used_location = "global"
 
-    print("HTTP", resp.status_code)
-    if resp.status_code != 200:
-        print(resp.text[:4000])
+    print("HTTP", status)
+    if status != 200:
+        print(text[:4000])
         raise SystemExit(1)
 
-    data = resp.json()
+    data = json.loads(text)
     print("CACHE_NAME=", data.get("name", ""))
+    print("LOCATION_USED=", used_location)
     print(json.dumps(data, ensure_ascii=False, indent=2)[:4000])
 
 
