@@ -194,6 +194,10 @@ gemini:
   temperature: 0.0
   compare_temperature: 0.0
   timed_labels_temperature: 0.1
+  compare_include_thought_process: true
+  compare_response_schema_enabled: true
+  timed_labels_response_schema_enabled: true
+  compare_fail_on_none: false
   # Optional system instructions overrides.
   # compare_system_instruction_text is used in triplet compare stage.
   # timed_labels_system_instruction_text is used in chat timed generation stage.

@@ -7,6 +7,7 @@ Core rules:
 4) Use "No Action" only when there is clearly no meaningful hand/object interaction.
 5) Avoid temporal hallucination and avoid inventing objects/actions not visible in video.
 6) Output must be strict JSON when requested by the prompt.
+7) If OCR text has minor typos but still maps to the same physical object/action, keep logic consistent and record typo in major_issues.
 
 Ranking policy (triplet compare):
 - Prefer lowest hallucination risk.
@@ -15,5 +16,6 @@ Ranking policy (triplet compare):
 
 Formatting policy (timed labels):
 - Seconds in float format.
+- Prefer one decimal place for timestamps when possible.
 - start_sec < end_sec for each segment.
 - Non-overlapping ordered segments.

@@ -491,6 +491,134 @@ def segments_to_timed_text(segments: List[Dict[str, Any]]) -> str:
     return "\n".join(lines).strip()
 
 
+def _timed_labels_response_schema() -> Dict[str, Any]:
+    return {
+        "type": "OBJECT",
+        "properties": {
+            "segments": {
+                "type": "ARRAY",
+                "items": {
+                    "type": "OBJECT",
+                    "properties": {
+                        "start_sec": {"type": "NUMBER"},
+                        "end_sec": {"type": "NUMBER"},
+                        "label": {"type": "STRING"},
+                    },
+                    "required": ["start_sec", "end_sec", "label"],
+                },
+            }
+        },
+        "required": ["segments"],
+    }
+
+
+def _triplet_compare_response_schema(include_thought_process: bool) -> Dict[str, Any]:
+    props: Dict[str, Any] = {
+        "winner": {"type": "STRING", "enum": ["tier2", "api", "chat", "none"]},
+        "submit_safe_solution": {"type": "STRING", "enum": ["tier2", "api", "chat", "none"]},
+        "scores": {
+            "type": "OBJECT",
+            "properties": {
+                "tier2": {"type": "INTEGER"},
+                "api": {"type": "INTEGER"},
+                "chat": {"type": "INTEGER"},
+            },
+            "required": ["tier2", "api", "chat"],
+        },
+        "hallucination": {
+            "type": "OBJECT",
+            "properties": {
+                "tier2": {"type": "BOOLEAN"},
+                "api": {"type": "BOOLEAN"},
+                "chat": {"type": "BOOLEAN"},
+            },
+            "required": ["tier2", "api", "chat"],
+        },
+        "major_issues": {
+            "type": "OBJECT",
+            "properties": {
+                "tier2": {"type": "ARRAY", "items": {"type": "STRING"}},
+                "api": {"type": "ARRAY", "items": {"type": "STRING"}},
+                "chat": {"type": "ARRAY", "items": {"type": "STRING"}},
+            },
+            "required": ["tier2", "api", "chat"],
+        },
+        "best_reason_short": {"type": "STRING"},
+        "final_recommendation": {"type": "STRING"},
+    }
+    required = [
+        "winner",
+        "submit_safe_solution",
+        "scores",
+        "hallucination",
+        "major_issues",
+        "best_reason_short",
+        "final_recommendation",
+    ]
+    if include_thought_process:
+        props["thought_process"] = {"type": "STRING"}
+        required.insert(0, "thought_process")
+    return {"type": "OBJECT", "properties": props, "required": required}
+
+
+def _validate_triplet_judge_result(parsed: Any, *, require_thought_process: bool) -> Dict[str, Any]:
+    if not isinstance(parsed, dict):
+        raise RuntimeError("judge_result is not a JSON object.")
+    allowed = {"tier2", "api", "chat", "none"}
+    out: Dict[str, Any] = {}
+
+    thought_process = str(parsed.get("thought_process") or "").strip()
+    if require_thought_process and not thought_process:
+        raise RuntimeError("Missing thought_process.")
+    if thought_process:
+        out["thought_process"] = thought_process
+
+    winner = str(parsed.get("winner") or "").strip().lower()
+    submit_safe = str(parsed.get("submit_safe_solution") or "").strip().lower()
+    if winner not in allowed:
+        raise RuntimeError(f"Invalid winner={winner!r}")
+    if submit_safe not in allowed:
+        raise RuntimeError(f"Invalid submit_safe_solution={submit_safe!r}")
+    out["winner"] = winner
+    out["submit_safe_solution"] = submit_safe
+
+    scores = parsed.get("scores")
+    if not isinstance(scores, dict):
+        raise RuntimeError("scores must be object.")
+    score_out: Dict[str, int] = {}
+    for key in ("tier2", "api", "chat"):
+        raw = scores.get(key)
+        if raw is None:
+            raise RuntimeError(f"scores.{key} missing.")
+        try:
+            score_out[key] = max(0, min(100, int(float(raw))))
+        except Exception as exc:
+            raise RuntimeError(f"scores.{key} invalid numeric value.") from exc
+    out["scores"] = score_out
+
+    hallucination = parsed.get("hallucination")
+    if not isinstance(hallucination, dict):
+        raise RuntimeError("hallucination must be object.")
+    out["hallucination"] = {k: bool(hallucination.get(k, False)) for k in ("tier2", "api", "chat")}
+
+    major_issues = parsed.get("major_issues")
+    if not isinstance(major_issues, dict):
+        raise RuntimeError("major_issues must be object.")
+    issues_out: Dict[str, List[str]] = {}
+    for key in ("tier2", "api", "chat"):
+        raw_list = major_issues.get(key, [])
+        if raw_list is None:
+            raw_list = []
+        if not isinstance(raw_list, list):
+            raise RuntimeError(f"major_issues.{key} must be array.")
+        issues_out[key] = [str(v).strip() for v in raw_list if str(v).strip()]
+    out["major_issues"] = issues_out
+
+    out["best_reason_short"] = str(parsed.get("best_reason_short") or "").strip()
+    out["final_recommendation"] = str(parsed.get("final_recommendation") or "").strip()
+    return out
+
+
 def _translate_payload_for_vertex(value: Any) -> Any:
     if isinstance(value, dict):
         out: Dict[str, Any] = {}
@@ -805,6 +933,7 @@ def _call_gemini_compare(
     video_a: Optional[Path],
     video_b: Optional[Path],
     cache_dir: Path,
+    response_schema: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     gem = cfg.get("gemini", {}) if isinstance(cfg.get("gemini"), dict) else {}
     auth_mode = _normalize_auth_mode(gem.get("auth_mode", "api_key"))
@@ -835,6 +964,8 @@ def _call_gemini_compare(
         "responseMimeType": "application/json",
         "candidateCount": 1,
     }
+    if isinstance(response_schema, dict) and response_schema:
+        generation_cfg["responseSchema"] = response_schema
     payload: Dict[str, Any] = {
         "contents": [{"role": "user", "parts": parts}],
         "generationConfig": generation_cfg,
@@ -943,6 +1074,7 @@ def _build_triplet_compare_prompt(
     chat_text: str,
     task_state_text: str,
     context_text: str = "",
+    include_thought_process: bool = True,
 ) -> str:
     context_block = ""
     context_clean = str(context_text or "").strip()
@@ -951,9 +1083,11 @@ def _build_triplet_compare_prompt(
 [Project Context]
 {context_clean}
 """.strip()
+    thought_line = '  "thought_process": "short internal analysis before final verdict",' if include_thought_process else ""
     return f"""
 You are a strict Atlas annotation QA judge.
 Use attached videos as source of truth.
+If OCR text has minor typo but refers to same physical object, prioritize physical consistency and note typo in major_issues.
 
 Compare exactly 3 candidate solutions:
 1) Tier2 (employee draft)
@@ -965,6 +1099,7 @@ If all are bad, choose "none".
 
 Return ONLY valid JSON with this shape:
 {{
+{thought_line}
   "winner": "tier2|api|chat|none",
   "submit_safe_solution": "tier2|api|chat|none",
   "scores": {{"tier2": 0, "api": 0, "chat": 0}},
@@ -1054,6 +1189,8 @@ def generate_gemini_chat_timed_labels(
     # For chat_web mode: allow secondary attach so upload_opt can be used automatically.
     cfg_gem["chat_web_attach_secondary_video"] = True
     cfg_for_call["gemini"] = cfg_gem
+    timed_schema_enabled = bool(gem_cfg.get("timed_labels_response_schema_enabled", True))
+    timed_response_schema = _timed_labels_response_schema() if timed_schema_enabled else None
 
     model_candidates = [selected_model] if selected_model else []
     if fallback_model and fallback_model not in model_candidates:
@@ -1076,6 +1213,7 @@ def generate_gemini_chat_timed_labels(
                 video_a=video_main,
                 video_b=video_limit,
                 cache_dir=cache_root / "video_inline",
+                response_schema=timed_response_schema,
             )
             used_model = model_name
             notes = result.get("attach_notes", [])
@@ -1092,6 +1230,7 @@ def generate_gemini_chat_timed_labels(
                     video_a=video_limit,
                     video_b=None,
                     cache_dir=cache_root / "video_inline",
+                    response_schema=timed_response_schema,
                 )
                 retry_notes = retry.get("attach_notes", [])
                 if isinstance(retry_notes, list):
@@ -1113,6 +1252,7 @@ def generate_gemini_chat_timed_labels(
                         video_a=video_limit,
                         video_b=None,
                         cache_dir=cache_root / "video_inline",
+                        response_schema=timed_response_schema,
                     )
                     retry_notes = retry.get("attach_notes", [])
                     if isinstance(retry_notes, list):
@@ -1244,6 +1384,9 @@ def run_triplet_compare(
         gem_cfg.get("triplet_fallback_model", "gemini-2.5-pro"),
     )
     retry_attempts = max(1, int(gem_cfg.get("triplet_retry_attempts", 3) or 3))
+    include_thought_process = bool(gem_cfg.get("compare_include_thought_process", True))
+    compare_schema_enabled = bool(gem_cfg.get("compare_response_schema_enabled", True))
+    compare_fail_on_none = bool(gem_cfg.get("compare_fail_on_none", False))
     prompt_context = _build_prompt_context(gem_cfg, cfg_dir=cfg_dir, scope="compare")
     prompt = _build_triplet_compare_prompt(
         tier2_text=tier2_text,
@@ -1251,6 +1394,7 @@ def run_triplet_compare(
         chat_text=chat_text,
         task_state_text=task_state_text,
         context_text=prompt_context,
+        include_thought_process=include_thought_process,
     )
 
     cfg_for_call = dict(cfg)
@@ -1265,6 +1409,11 @@ def run_triplet_compare(
     if compare_system_instruction:
         cfg_gem["system_instruction_text"] = compare_system_instruction
     cfg_for_call["gemini"] = cfg_gem
+    compare_response_schema = (
+        _triplet_compare_response_schema(include_thought_process=include_thought_process)
+        if compare_schema_enabled
+        else None
+    )
 
     # Robust execution strategy:
     # 1) retry transient HTTP failures
@@ -1293,6 +1442,7 @@ def run_triplet_compare(
                     video_a=current_video_a,
                     video_b=current_video_b,
                     cache_dir=cache_root / "video_inline",
+                    response_schema=compare_response_schema,
                 )
                 used_model = model_name
                 if not use_video:
@@ -1346,6 +1496,12 @@ def run_triplet_compare(
         if not isinstance(existing, list):
             existing = []
         result["attach_notes"] = [*existing, *run_notes]
+    judge_valid = _validate_triplet_judge_result(
+        result.get("parsed", {}),
+        require_thought_process=include_thought_process,
+    )
+    if compare_fail_on_none and str(judge_valid.get("winner") or "") == "none":
+        raise RuntimeError("judge_result winner=none and compare_fail_on_none=true")
 
     out_path = Path(out).resolve()
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1370,7 +1526,7 @@ def run_triplet_compare(
             "resolved_task_state_path": str(task_state_file) if task_state_file else "",
         },
         "attach_notes": result.get("attach_notes", []),
-        "judge_result": result.get("parsed", {}),
+        "judge_result": judge_valid,
         "judge_raw_text": result.get("raw_text", ""),
         "usage": result.get("usage", {}),
     }
