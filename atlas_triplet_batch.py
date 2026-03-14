@@ -372,6 +372,88 @@ def _ensure_chat_timed_from_video(
     return None
 
 
+def _ensure_api_update_from_video(
+    *,
+    config: str,
+    outputs_dir: Path,
+    cache_dir: Path,
+    remote: str,
+    api_model: str,
+    episode_id: str,
+    video_path: str,
+    video_path_limit: str,
+) -> Optional[Path]:
+    eid = str(episode_id or "").strip().lower()
+    main_video_raw = str(video_path or "").strip()
+    if not eid or not main_video_raw:
+        return None
+    main_video = Path(main_video_raw)
+    if not main_video.exists() or not main_video.is_file():
+        return None
+
+    limit_video_raw = str(video_path_limit or "").strip()
+    limit_video = Path(limit_video_raw) if limit_video_raw else None
+    if limit_video is not None and (not limit_video.exists() or not limit_video.is_file()):
+        limit_video = None
+    if limit_video is None:
+        generated_limit = _ensure_upload_opt_video(outputs_dir, eid, main_video)
+        if generated_limit is not None:
+            limit_video = generated_limit
+
+    api_dir = outputs_dir / "api_reviews" / eid
+    api_dir.mkdir(parents=True, exist_ok=True)
+    api_txt = api_dir / f"text_{eid}_api.txt"
+    api_json = api_dir / f"labels_{eid}_api.json"
+
+    result = generate_gemini_chat_timed_labels(
+        config_path=config,
+        video_path=str(main_video),
+        video_path_limit=str(limit_video) if limit_video is not None else "",
+        remote=remote,
+        cache_dir=str(cache_dir / eid / "api_timed"),
+        model=api_model,
+        out_txt=str(api_txt),
+        out_json=str(api_json),
+        episode_id=eid,
+    )
+    out_txt_raw = str(result.get("out_txt") or "").strip()
+    out_txt_path = Path(out_txt_raw) if out_txt_raw else api_txt
+    if not out_txt_path.exists() or not out_txt_path.is_file():
+        return None
+
+    rebuilt = _ensure_api_text_from_chat(outputs_dir, eid, str(out_txt_path))
+    if rebuilt is not None:
+        return rebuilt
+
+    # Fallback: accept already-timed plain text as API update.
+    raw = out_txt_path.read_text(encoding="utf-8", errors="replace")
+    segments = parse_timed_segments_text(raw)
+    if not segments:
+        return None
+    text = segments_to_timed_text(segments)
+    if not text:
+        return None
+    out_path = outputs_dir / f"text_{eid}_update.txt"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(text + "\n", encoding="utf-8")
+    return out_path
+
+
+def _ensure_tier2_placeholder(outputs_dir: Path, episode_id: str) -> Optional[Path]:
+    eid = str(episode_id or "").strip().lower()
+    if not eid:
+        return None
+    out_dir = outputs_dir / "triplet_fallback"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / f"text_{eid}_tier2_missing.txt"
+    text = (
+        "Tier2 source is unavailable for this episode.\n"
+        "Treat tier2 as unavailable: score tier2=0, never choose tier2 as winner.\n"
+    )
+    out_path.write_text(text, encoding="utf-8")
+    return out_path
+
+
 def _safe_score(value: Any) -> Optional[float]:
     try:
         if value is None:
@@ -461,12 +543,15 @@ def run_batch(
     model: str,
     compare_model: str,
     chat_timed_model: str,
+    api_update_model: str,
     only_status: str,
     limit: int,
     require_chat_path: bool,
     write_chat_from_evals: bool,
     generate_chat_timed_missing: bool,
     regenerate_api_missing: bool,
+    regenerate_api_from_video: bool,
+    allow_missing_tier2: bool,
     update_evals: bool,
     overwrite_evals: bool,
     source: str,
@@ -495,6 +580,7 @@ def run_batch(
     eval_skipped = 0
     effective_compare_model = str(compare_model or model or "").strip()
     effective_chat_timed_model = str(chat_timed_model or model or "").strip()
+    effective_api_update_model = str(api_update_model or model or "").strip()
 
     def _append_result_row(row: Dict[str, Any]) -> None:
         with results_jsonl.open("a", encoding="utf-8") as f:
@@ -528,11 +614,20 @@ def run_batch(
 
         inputs = _pick_episode_inputs(ep, outputs_dir, eval_map, write_chat_from_evals)
 
+        # Optional fallback mode: continue even when tier2 source is missing.
+        if allow_missing_tier2 and not _is_existing_file_path(inputs.get("tier2_path")):
+            tier2_placeholder = _ensure_tier2_placeholder(outputs_dir, eid)
+            if tier2_placeholder is not None:
+                inputs["tier2_path"] = str(tier2_placeholder)
+                print(f"[triplet-batch] info episode={eid} using_tier2_placeholder={tier2_placeholder}")
+
         # Fast fail on non-recoverable prerequisites to avoid expensive video processing.
         hard_missing: List[str] = []
-        for key in ("video_path", "tier2_path"):
+        for key in ("video_path",):
             if not _is_existing_file_path(inputs.get(key)):
                 hard_missing.append(key)
+        if not allow_missing_tier2 and not _is_existing_file_path(inputs.get("tier2_path")):
+            hard_missing.append("tier2_path")
         if hard_missing:
             row["skipped"] = True
             row["reason"] = f"missing_inputs: {', '.join(sorted(set(hard_missing)))}"
@@ -570,7 +665,24 @@ def run_batch(
 
         # Rebuild missing API update text when absent.
         if regenerate_api_missing and not _is_existing_file_path(inputs.get("api_path")):
-            rebuilt_api = _ensure_api_text_from_labels(outputs_dir, eid, str(inputs.get("labels_path") or ""))
+            rebuilt_api: Optional[Path] = None
+            if regenerate_api_from_video:
+                try:
+                    rebuilt_api = _ensure_api_update_from_video(
+                        config=config,
+                        outputs_dir=outputs_dir,
+                        cache_dir=cache_dir,
+                        remote=remote,
+                        api_model=effective_api_update_model or effective_chat_timed_model,
+                        episode_id=eid,
+                        video_path=str(inputs.get("video_path") or ""),
+                        video_path_limit=str(inputs.get("video_path_limit") or ""),
+                    )
+                except Exception as exc:
+                    print(f"[triplet-batch] warn episode={eid} api_regen_from_video_failed={exc}")
+
+            if rebuilt_api is None:
+                rebuilt_api = _ensure_api_text_from_labels(outputs_dir, eid, str(inputs.get("labels_path") or ""))
             if rebuilt_api is None:
                 rebuilt_api = _ensure_api_text_from_chat(outputs_dir, eid, str(inputs.get("chat_path") or ""))
             if rebuilt_api is None and generate_chat_timed_missing:
@@ -596,7 +708,10 @@ def run_batch(
                 print(f"[triplet-batch] info episode={eid} regenerated_api_update={rebuilt_api}")
 
         missing: List[str] = []
-        for key in ("video_path", "tier2_path", "api_path"):
+        required_keys = ["video_path", "api_path"]
+        if not allow_missing_tier2:
+            required_keys.append("tier2_path")
+        for key in required_keys:
             if not _is_existing_file_path(inputs.get(key)):
                 missing.append(key)
         if require_chat_path and not _is_existing_file_path(inputs.get("chat_path")):
@@ -709,6 +824,11 @@ def main() -> None:
     parser.add_argument("--model", default="gemini-3.1-pro-preview")
     parser.add_argument("--compare-model", default="", help="Model for triplet compare judge (defaults to --model)")
     parser.add_argument("--chat-timed-model", default="", help="Model for generating chat timed labels (defaults to --model)")
+    parser.add_argument(
+        "--api-update-model",
+        default="",
+        help="Model for regenerating missing API update from video (defaults to --model)",
+    )
     parser.add_argument("--only-status", default="", help="Comma-separated review_status filter (empty = all)")
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--require-chat-path", action="store_true")
@@ -718,6 +838,10 @@ def main() -> None:
     parser.add_argument("--no-generate-chat-timed-missing", dest="generate_chat_timed_missing", action="store_false")
     parser.add_argument("--regenerate-api-missing", dest="regenerate_api_missing", action="store_true", default=True)
     parser.add_argument("--no-regenerate-api-missing", dest="regenerate_api_missing", action="store_false")
+    parser.add_argument("--regenerate-api-from-video", dest="regenerate_api_from_video", action="store_true", default=True)
+    parser.add_argument("--no-regenerate-api-from-video", dest="regenerate_api_from_video", action="store_false")
+    parser.add_argument("--allow-missing-tier2", dest="allow_missing_tier2", action="store_true", default=False)
+    parser.add_argument("--no-allow-missing-tier2", dest="allow_missing_tier2", action="store_false")
     parser.add_argument("--update-evals", dest="update_evals", action="store_true", default=True)
     parser.add_argument("--no-update-evals", dest="update_evals", action="store_false")
     parser.add_argument("--overwrite-evals", action="store_true", default=False)
@@ -737,12 +861,15 @@ def main() -> None:
         model=str(args.model),
         compare_model=str(args.compare_model),
         chat_timed_model=str(args.chat_timed_model),
+        api_update_model=str(args.api_update_model),
         only_status=str(args.only_status),
         limit=max(0, int(args.limit)),
         require_chat_path=bool(args.require_chat_path),
         write_chat_from_evals=bool(args.write_chat_from_evals),
         generate_chat_timed_missing=bool(args.generate_chat_timed_missing),
         regenerate_api_missing=bool(args.regenerate_api_missing),
+        regenerate_api_from_video=bool(args.regenerate_api_from_video),
+        allow_missing_tier2=bool(args.allow_missing_tier2),
         update_evals=bool(args.update_evals),
         overwrite_evals=bool(args.overwrite_evals),
         source=str(args.source or "triplet_compare_batch"),
