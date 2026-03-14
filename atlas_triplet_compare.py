@@ -1150,6 +1150,8 @@ def generate_gemini_chat_timed_labels(
     out_txt: str = "",
     out_json: str = "",
     episode_id: str = "",
+    auth_mode_override: str = "",
+    prompt_scope: str = "timed_labels",
 ) -> Dict[str, Any]:
     cfg_path = Path(config_path)
     if not cfg_path.exists():
@@ -1170,7 +1172,8 @@ def generate_gemini_chat_timed_labels(
         video_limit = _resolve_input_path(video_path_limit, cache_root / "inputs", resolved_remote)
 
     gem_cfg = cfg.get("gemini", {}) if isinstance(cfg.get("gemini"), dict) else {}
-    prompt_context = _build_prompt_context(gem_cfg, cfg_dir=cfg_dir, scope="timed_labels")
+    scope = str(prompt_scope or "timed_labels").strip().lower() or "timed_labels"
+    prompt_context = _build_prompt_context(gem_cfg, cfg_dir=cfg_dir, scope=scope)
     prompt = _build_timed_labels_prompt(episode_id=episode_id, context_text=prompt_context)
 
     selected_model = _first_non_empty(
@@ -1187,10 +1190,20 @@ def generate_gemini_chat_timed_labels(
 
     cfg_for_call = dict(cfg)
     cfg_gem = dict(gem_cfg) if isinstance(gem_cfg, dict) else {}
-    timed_temp = gem_cfg.get("timed_labels_temperature", gem_cfg.get("chat_timed_temperature", None))
+    timed_temp = gem_cfg.get(f"{scope}_temperature", None)
+    if timed_temp is None:
+        timed_temp = gem_cfg.get("timed_labels_temperature", gem_cfg.get("chat_timed_temperature", None))
     if timed_temp is not None:
         cfg_gem["temperature"] = timed_temp
+    scope_auth_mode = _first_non_empty(
+        auth_mode_override,
+        gem_cfg.get(f"{scope}_auth_mode", ""),
+        gem_cfg.get("auth_mode", ""),
+    )
+    if scope_auth_mode:
+        cfg_gem["auth_mode"] = scope_auth_mode
     timed_system_instruction = _first_non_empty(
+        gem_cfg.get(f"{scope}_system_instruction_text", ""),
         gem_cfg.get("timed_labels_system_instruction_text", ""),
         gem_cfg.get("chat_timed_system_instruction_text", ""),
     )
@@ -1199,7 +1212,9 @@ def generate_gemini_chat_timed_labels(
     # For chat_web mode: allow secondary attach so upload_opt can be used automatically.
     cfg_gem["chat_web_attach_secondary_video"] = True
     cfg_for_call["gemini"] = cfg_gem
-    timed_schema_enabled = bool(gem_cfg.get("timed_labels_response_schema_enabled", True))
+    timed_schema_enabled = bool(
+        gem_cfg.get(f"{scope}_response_schema_enabled", gem_cfg.get("timed_labels_response_schema_enabled", True))
+    )
     timed_response_schema = _timed_labels_response_schema() if timed_schema_enabled else None
 
     model_candidates = [selected_model] if selected_model else []
@@ -1412,6 +1427,12 @@ def run_triplet_compare(
     compare_temp = gem_cfg.get("compare_temperature", gem_cfg.get("triplet_compare_temperature", None))
     if compare_temp is not None:
         cfg_gem["temperature"] = compare_temp
+    compare_auth_mode = _first_non_empty(
+        gem_cfg.get("compare_auth_mode", ""),
+        gem_cfg.get("auth_mode", ""),
+    )
+    if compare_auth_mode:
+        cfg_gem["auth_mode"] = compare_auth_mode
     compare_system_instruction = _first_non_empty(
         gem_cfg.get("compare_system_instruction_text", ""),
         gem_cfg.get("triplet_compare_system_instruction_text", ""),

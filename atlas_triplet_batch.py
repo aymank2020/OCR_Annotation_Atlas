@@ -363,6 +363,7 @@ def _ensure_chat_timed_from_video(
         out_txt=str(chat_txt),
         out_json=str(chat_json),
         episode_id=eid,
+        prompt_scope="timed_labels",
     )
     out_txt = str(result.get("out_txt") or "").strip()
     if out_txt and Path(out_txt).exists():
@@ -415,6 +416,7 @@ def _ensure_api_update_from_video(
         out_txt=str(api_txt),
         out_json=str(api_json),
         episode_id=eid,
+        prompt_scope="api_update",
     )
     out_txt_raw = str(result.get("out_txt") or "").strip()
     out_txt_path = Path(out_txt_raw) if out_txt_raw else api_txt

@@ -196,6 +196,13 @@ gemini:
   # - chat_timed_model: timed labels generation from video
   compare_model: "gemini-2.5-flash"
   chat_timed_model: "gemini-3.1-pro-preview"
+  # Optional per-stage auth override (for hybrid mode in one run):
+  # - compare_auth_mode: e.g. "vertex_ai"
+  # - timed_labels_auth_mode: e.g. "chat_web"
+  # - api_update_auth_mode: e.g. "vertex_ai"
+  compare_auth_mode: ""
+  timed_labels_auth_mode: ""
+  api_update_auth_mode: ""
   compare_fallback_model: "gemini-2.5-pro"
   chat_timed_fallback_model: "gemini-2.5-pro"
   temperature: 0.0
@@ -204,6 +211,7 @@ gemini:
   compare_include_thought_process: true
   compare_response_schema_enabled: true
   timed_labels_response_schema_enabled: true
+  api_update_response_schema_enabled: true
   compare_fail_on_none: false
   # Optional system instructions overrides.
   # compare_system_instruction_text is used in triplet compare stage.
