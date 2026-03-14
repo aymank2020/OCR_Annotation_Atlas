@@ -1045,6 +1045,29 @@ def _call_gemini_compare(
         json=payload_to_send,
         timeout=(connect_timeout_sec, request_timeout_sec),
     )
+    if (
+        resp.status_code == 400
+        and auth_mode == "vertex_ai"
+        and bool(vertex_cached_content_name)
+        and "does not match the model in the cached content" in str(resp.text or "").lower()
+    ):
+        # Fallback: when model != cache model, retry once without cached content.
+        retry_payload = dict(payload_to_send)
+        retry_payload.pop("cachedContent", None)
+        retry_resp = requests.post(
+            url,
+            headers=headers,
+            json=retry_payload,
+            timeout=(connect_timeout_sec, request_timeout_sec),
+        )
+        if retry_resp.status_code == 200:
+            resp = retry_resp
+            attach_notes.append("retried_without_cached_content_due_model_mismatch")
+        else:
+            raise RuntimeError(
+                "Gemini compare request failed with cached-content model mismatch; "
+                f"retry without cache also failed HTTP {retry_resp.status_code}: {retry_resp.text[:800]}"
+            )
     if resp.status_code != 200:
         raise RuntimeError(f"Gemini compare request failed HTTP {resp.status_code}: {resp.text[:800]}")
     data = resp.json()
@@ -1247,48 +1270,38 @@ def generate_gemini_chat_timed_labels(
     used_model = model_candidates[0]
     attempt_errors: List[str] = []
     run_notes: List[str] = []
+    retry_attempts = max(
+        1,
+        int(
+            gem_cfg.get(
+                f"{scope}_retry_attempts",
+                gem_cfg.get("timed_labels_retry_attempts", gem_cfg.get("max_retries", 3)),
+            )
+            or 3
+        ),
+    )
+    retry_base_delay = max(0.5, float(gem_cfg.get("retry_base_delay_sec", 2.0) or 2.0))
 
     for model_name in model_candidates:
-        try:
-            result = _call_gemini_compare(
-                cfg=cfg_for_call,
-                dotenv=dotenv,
-                model=model_name,
-                prompt=prompt,
-                video_a=video_main,
-                video_b=video_limit,
-                cache_dir=cache_root / "video_inline",
-                response_schema=timed_response_schema,
-            )
-            used_model = model_name
-            notes = result.get("attach_notes", [])
-            attached_any = False
-            if isinstance(notes, list):
-                attached_any = any("attached" in str(n or "").lower() for n in notes)
-            # If no video was attached, retry once using upload_opt only (if available).
-            if not attached_any and video_limit is not None:
-                retry = _call_gemini_compare(
+        for attempt in range(1, retry_attempts + 1):
+            try:
+                result = _call_gemini_compare(
                     cfg=cfg_for_call,
                     dotenv=dotenv,
                     model=model_name,
                     prompt=prompt,
-                    video_a=video_limit,
-                    video_b=None,
+                    video_a=video_main,
+                    video_b=video_limit,
                     cache_dir=cache_root / "video_inline",
                     response_schema=timed_response_schema,
                 )
-                retry_notes = retry.get("attach_notes", [])
-                if isinstance(retry_notes, list):
-                    retry_notes = [*retry_notes, "retry_with_upload_opt_video"]
-                else:
-                    retry_notes = ["retry_with_upload_opt_video"]
-                retry["attach_notes"] = retry_notes
-                result = retry
-            break
-        except Exception as exc:
-            attempt_errors.append(f"{model_name}: {exc}")
-            if video_limit is not None:
-                try:
+                used_model = model_name
+                notes = result.get("attach_notes", [])
+                attached_any = False
+                if isinstance(notes, list):
+                    attached_any = any("attached" in str(n or "").lower() for n in notes)
+                # If no video was attached, retry once using upload_opt only (if available).
+                if not attached_any and video_limit is not None:
                     retry = _call_gemini_compare(
                         cfg=cfg_for_call,
                         dotenv=dotenv,
@@ -1301,18 +1314,64 @@ def generate_gemini_chat_timed_labels(
                     )
                     retry_notes = retry.get("attach_notes", [])
                     if isinstance(retry_notes, list):
-                        retry_notes = [*retry_notes, "retry_after_error_with_upload_opt_video"]
+                        retry_notes = [*retry_notes, "retry_with_upload_opt_video"]
                     else:
-                        retry_notes = ["retry_after_error_with_upload_opt_video"]
+                        retry_notes = ["retry_with_upload_opt_video"]
                     retry["attach_notes"] = retry_notes
                     result = retry
-                    used_model = model_name
-                    run_notes.append("fallback_to_upload_opt_after_error")
-                    break
-                except Exception as retry_exc:
-                    attempt_errors.append(f"{model_name}/upload_opt: {retry_exc}")
+                break
+            except Exception as exc:
+                msg = str(exc)
+                low = msg.lower()
+                attempt_errors.append(f"{model_name}#{attempt}: {msg}")
+                is_transient = any(
+                    t in low
+                    for t in (
+                        "http 429",
+                        "resource exhausted",
+                        "http 500",
+                        "http 502",
+                        "http 503",
+                        "http 504",
+                        "timeout",
+                        "timed out",
+                    )
+                )
+
+                if is_transient and attempt < retry_attempts:
+                    sleep_sec = min(30.0, retry_base_delay * (2 ** (attempt - 1)))
+                    run_notes.append(f"timed_transient_retry_{attempt}_sleep_{sleep_sec:.1f}s")
+                    time.sleep(sleep_sec)
                     continue
-            continue
+
+                if video_limit is not None:
+                    try:
+                        retry = _call_gemini_compare(
+                            cfg=cfg_for_call,
+                            dotenv=dotenv,
+                            model=model_name,
+                            prompt=prompt,
+                            video_a=video_limit,
+                            video_b=None,
+                            cache_dir=cache_root / "video_inline",
+                            response_schema=timed_response_schema,
+                        )
+                        retry_notes = retry.get("attach_notes", [])
+                        if isinstance(retry_notes, list):
+                            retry_notes = [*retry_notes, "retry_after_error_with_upload_opt_video"]
+                        else:
+                            retry_notes = ["retry_after_error_with_upload_opt_video"]
+                        retry["attach_notes"] = retry_notes
+                        result = retry
+                        used_model = model_name
+                        run_notes.append("fallback_to_upload_opt_after_error")
+                        break
+                    except Exception as retry_exc:
+                        attempt_errors.append(f"{model_name}/upload_opt#{attempt}: {retry_exc}")
+                # Move to next model after final attempt for this model.
+                break
+        if result is not None:
+            break
 
     if result is None:
         tail = " | ".join(attempt_errors[-4:]) if attempt_errors else "unknown timed labels failure"
