@@ -53,6 +53,28 @@ def _as_path(value: Any) -> Optional[Path]:
     return None
 
 
+def _is_existing_file_path(value: Any) -> bool:
+    raw = str(value or "").strip()
+    if not raw:
+        return False
+    p = Path(raw)
+    try:
+        return p.exists() and p.is_file()
+    except Exception:
+        return False
+
+
+def _path_str_if_file(path: Optional[Path]) -> str:
+    if path is None:
+        return ""
+    try:
+        if path.exists() and path.is_file():
+            return str(path)
+    except Exception:
+        return ""
+    return ""
+
+
 def _episode_related_paths(ep: Dict[str, Any]) -> List[Path]:
     out: List[Path] = []
     raw_related = ep.get("related_files")
@@ -141,7 +163,7 @@ def _ensure_upload_opt_video(outputs_dir: Path, episode_id: str, video_main: Pat
     eid = str(episode_id or "").strip().lower()
     if not eid:
         return None
-    if not video_main.exists():
+    if not video_main.exists() or not video_main.is_file():
         return None
     target = outputs_dir / f"video_{eid}_upload_opt.mp4"
     if target.exists() and target.stat().st_size > 0:
@@ -178,8 +200,11 @@ def _ensure_upload_opt_video(outputs_dir: Path, episode_id: str, video_main: Pat
 
 def _ensure_api_text_from_labels(outputs_dir: Path, episode_id: str, labels_path: str) -> Optional[Path]:
     eid = str(episode_id or "").strip().lower()
-    src = Path(str(labels_path or "").strip())
-    if not eid or not src.exists():
+    src_raw = str(labels_path or "").strip()
+    if not eid or not src_raw:
+        return None
+    src = Path(src_raw)
+    if not src.exists() or not src.is_file():
         return None
     payload = _load_json(src, default=None)
     segments = parse_timed_segments_payload(payload)
@@ -196,8 +221,11 @@ def _ensure_api_text_from_labels(outputs_dir: Path, episode_id: str, labels_path
 
 def _ensure_api_text_from_chat(outputs_dir: Path, episode_id: str, chat_path: str) -> Optional[Path]:
     eid = str(episode_id or "").strip().lower()
-    src = Path(str(chat_path or "").strip())
-    if not eid or not src.exists():
+    src_raw = str(chat_path or "").strip()
+    if not eid or not src_raw:
+        return None
+    src = Path(src_raw)
+    if not src.exists() or not src.is_file():
         return None
     raw = src.read_text(encoding="utf-8", errors="replace")
     segments = parse_timed_segments_text(raw)
@@ -283,13 +311,13 @@ def _pick_episode_inputs(
 
     return {
         "episode_id": eid,
-        "video_path": str(video_main) if video_main is not None else "",
-        "video_path_limit": str(video_limit) if video_limit is not None else "",
-        "tier2_path": str(tier2_path) if tier2_path is not None else "",
-        "api_path": str(api_path) if api_path is not None else "",
-        "chat_path": str(chat_path) if chat_path.exists() else "",
-        "task_state_path": str(task_state_path) if task_state_path is not None else "",
-        "labels_path": str(labels_path) if labels_path is not None else "",
+        "video_path": _path_str_if_file(video_main),
+        "video_path_limit": _path_str_if_file(video_limit),
+        "tier2_path": _path_str_if_file(tier2_path),
+        "api_path": _path_str_if_file(api_path),
+        "chat_path": str(chat_path) if chat_path.exists() and chat_path.is_file() else "",
+        "task_state_path": _path_str_if_file(task_state_path),
+        "labels_path": _path_str_if_file(labels_path),
     }
 
 
@@ -305,12 +333,17 @@ def _ensure_chat_timed_from_video(
     video_path_limit: str,
 ) -> Optional[str]:
     eid = str(episode_id or "").strip().lower()
-    main_video = Path(str(video_path or "").strip())
-    if not eid or not main_video.exists():
+    main_video_raw = str(video_path or "").strip()
+    if not eid or not main_video_raw:
+        return None
+    main_video = Path(main_video_raw)
+    if not main_video.exists() or not main_video.is_file():
         return None
     limit_video_raw = str(video_path_limit or "").strip()
     limit_video = Path(limit_video_raw) if limit_video_raw else None
-    if limit_video is None or not limit_video.exists():
+    if limit_video is not None and (not limit_video.exists() or not limit_video.is_file()):
+        limit_video = None
+    if limit_video is None:
         generated_limit = _ensure_upload_opt_video(outputs_dir, eid, main_video)
         if generated_limit is not None:
             limit_video = generated_limit
@@ -495,15 +528,29 @@ def run_batch(
 
         inputs = _pick_episode_inputs(ep, outputs_dir, eval_map, write_chat_from_evals)
 
+        # Fast fail on non-recoverable prerequisites to avoid expensive video processing.
+        hard_missing: List[str] = []
+        for key in ("video_path", "tier2_path"):
+            if not _is_existing_file_path(inputs.get(key)):
+                hard_missing.append(key)
+        if hard_missing:
+            row["skipped"] = True
+            row["reason"] = f"missing_inputs: {', '.join(sorted(set(hard_missing)))}"
+            summaries.append(row)
+            _append_result_row(row)
+            skipped += 1
+            print(f"[triplet-batch] skip episode={eid} reason={row['reason']}")
+            continue
+
         # Reject non-timed chat placeholders (legacy compare summaries).
         chat_candidate = str(inputs.get("chat_path") or "").strip()
         if chat_candidate:
             cp = Path(chat_candidate)
-            if (not cp.exists()) or (not _path_has_timed_segments(cp)):
+            if (not cp.exists()) or (not cp.is_file()) or (not _path_has_timed_segments(cp)):
                 inputs["chat_path"] = ""
 
         # Ensure Gemini Chat timed labels exist by calling Gemini with video.
-        if generate_chat_timed_missing and not str(inputs.get("chat_path") or "").strip():
+        if generate_chat_timed_missing and not _is_existing_file_path(inputs.get("chat_path")):
             try:
                 generated_chat = _ensure_chat_timed_from_video(
                     config=config,
@@ -522,7 +569,7 @@ def run_batch(
                 print(f"[triplet-batch] warn episode={eid} chat_timed_generation_failed={exc}")
 
         # Rebuild missing API update text when absent.
-        if regenerate_api_missing and not str(inputs.get("api_path") or "").strip():
+        if regenerate_api_missing and not _is_existing_file_path(inputs.get("api_path")):
             rebuilt_api = _ensure_api_text_from_labels(outputs_dir, eid, str(inputs.get("labels_path") or ""))
             if rebuilt_api is None:
                 rebuilt_api = _ensure_api_text_from_chat(outputs_dir, eid, str(inputs.get("chat_path") or ""))
@@ -550,9 +597,9 @@ def run_batch(
 
         missing: List[str] = []
         for key in ("video_path", "tier2_path", "api_path"):
-            if not str(inputs.get(key) or "").strip():
+            if not _is_existing_file_path(inputs.get(key)):
                 missing.append(key)
-        if require_chat_path and not str(inputs.get("chat_path") or "").strip():
+        if require_chat_path and not _is_existing_file_path(inputs.get("chat_path")):
             missing.append("chat_path")
         if missing:
             row["skipped"] = True
