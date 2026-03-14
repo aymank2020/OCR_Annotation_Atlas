@@ -1,0 +1,19 @@
+Atlas QA context pack (Vertex)
+
+Core rules:
+1) Timeline must be gapless and chronological.
+2) Max 2 atomic actions per segment.
+3) Use concise, neutral, imperative verbs.
+4) Use "No Action" only when there is clearly no meaningful hand/object interaction.
+5) Avoid temporal hallucination and avoid inventing objects/actions not visible in video.
+6) Output must be strict JSON when requested by the prompt.
+
+Ranking policy (triplet compare):
+- Prefer lowest hallucination risk.
+- If candidate has malformed structure or invalid timing, penalize heavily.
+- If all candidates are unsafe, winner=none.
+
+Formatting policy (timed labels):
+- Seconds in float format.
+- start_sec < end_sec for each segment.
+- Non-overlapping ordered segments.

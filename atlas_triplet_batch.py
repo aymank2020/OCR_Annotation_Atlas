@@ -299,7 +299,7 @@ def _ensure_chat_timed_from_video(
     outputs_dir: Path,
     cache_dir: Path,
     remote: str,
-    model: str,
+    chat_timed_model: str,
     episode_id: str,
     video_path: str,
     video_path_limit: str,
@@ -326,7 +326,7 @@ def _ensure_chat_timed_from_video(
         video_path_limit=str(limit_video) if limit_video is not None else "",
         remote=remote,
         cache_dir=str(cache_dir / eid / "chat_timed"),
-        model=model,
+        model=chat_timed_model,
         out_txt=str(chat_txt),
         out_json=str(chat_json),
         episode_id=eid,
@@ -426,6 +426,8 @@ def run_batch(
     results_dir: Path,
     results_jsonl: Path,
     model: str,
+    compare_model: str,
+    chat_timed_model: str,
     only_status: str,
     limit: int,
     require_chat_path: bool,
@@ -458,6 +460,8 @@ def run_batch(
     errors = 0
     eval_updated = 0
     eval_skipped = 0
+    effective_compare_model = str(compare_model or model or "").strip()
+    effective_chat_timed_model = str(chat_timed_model or model or "").strip()
 
     def _append_result_row(row: Dict[str, Any]) -> None:
         with results_jsonl.open("a", encoding="utf-8") as f:
@@ -506,7 +510,7 @@ def run_batch(
                     outputs_dir=outputs_dir,
                     cache_dir=cache_dir,
                     remote=remote,
-                    model=model,
+                    chat_timed_model=effective_chat_timed_model,
                     episode_id=eid,
                     video_path=str(inputs.get("video_path") or ""),
                     video_path_limit=str(inputs.get("video_path_limit") or ""),
@@ -531,7 +535,7 @@ def run_batch(
                             outputs_dir=outputs_dir,
                             cache_dir=cache_dir,
                             remote=remote,
-                            model=model,
+                            chat_timed_model=effective_chat_timed_model,
                             episode_id=eid,
                             video_path=str(inputs.get("video_path") or ""),
                             video_path_limit=str(inputs.get("video_path_limit") or ""),
@@ -583,7 +587,7 @@ def run_batch(
                     labels_path=inputs.get("labels_path", ""),
                     remote=remote,
                     cache_dir=str(cache_dir / eid),
-                    model=model,
+                    model=effective_compare_model,
                     out=str(out_path),
                 )
             except Exception as exc:
@@ -656,6 +660,8 @@ def main() -> None:
     parser.add_argument("--results-dir", default="outputs/triplet_compare")
     parser.add_argument("--results-jsonl", default="outputs/triplet_compare_results.jsonl")
     parser.add_argument("--model", default="gemini-3.1-pro-preview")
+    parser.add_argument("--compare-model", default="", help="Model for triplet compare judge (defaults to --model)")
+    parser.add_argument("--chat-timed-model", default="", help="Model for generating chat timed labels (defaults to --model)")
     parser.add_argument("--only-status", default="", help="Comma-separated review_status filter (empty = all)")
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--require-chat-path", action="store_true")
@@ -682,6 +688,8 @@ def main() -> None:
         results_dir=Path(args.results_dir).resolve(),
         results_jsonl=Path(args.results_jsonl).resolve(),
         model=str(args.model),
+        compare_model=str(args.compare_model),
+        chat_timed_model=str(args.chat_timed_model),
         only_status=str(args.only_status),
         limit=max(0, int(args.limit)),
         require_chat_path=bool(args.require_chat_path),

@@ -233,6 +233,8 @@ def main() -> None:
     parser.add_argument("--run-triplet-batch", action="store_true", help="Run triplet compare for episodes and update chat evaluations")
     parser.add_argument("--triplet-config", default="sample_web_auto_solver_vps.yaml", help="Config path used by atlas_triplet_batch.py")
     parser.add_argument("--triplet-model", default="gemini-3.1-pro-preview", help="Model used in triplet compare")
+    parser.add_argument("--triplet-compare-model", default="", help="Override model used by compare judge only")
+    parser.add_argument("--triplet-chat-timed-model", default="", help="Override model used by chat timed generation only")
     parser.add_argument("--triplet-only-status", default="", help="Optional review_status filter for triplet compare (comma-separated)")
     parser.add_argument("--triplet-limit", type=int, default=0, help="Max episodes for triplet compare (0 = all)")
     parser.add_argument("--triplet-require-chat-path", action="store_true", help="Skip episode if chat text path is missing")
@@ -349,6 +351,12 @@ def main() -> None:
             cmd.append("--require-chat-path")
         if args.triplet_overwrite_evals:
             cmd.append("--overwrite-evals")
+        triplet_compare_model = str(args.triplet_compare_model or "").strip()
+        if triplet_compare_model:
+            cmd.extend(["--compare-model", triplet_compare_model])
+        triplet_chat_timed_model = str(args.triplet_chat_timed_model or "").strip()
+        if triplet_chat_timed_model:
+            cmd.extend(["--chat-timed-model", triplet_chat_timed_model])
         _run(cmd)
 
     _run([py, str(app_dir / "atlas_dashboard_gen.py"), "--outputs-dir", str(effective_outputs)])

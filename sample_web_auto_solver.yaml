@@ -174,6 +174,7 @@ gemini:
   # auth_mode:
   # - "api_key"   -> use GEMINI_API_KEY / GOOGLE_API_KEY
   # - "vertex_ai" -> use Google Cloud Service Account JSON credentials
+  # - "chat_web"  -> use Gemini web chat session via Playwright
   auth_mode: "api_key"
   api_key: ""
   # Vertex settings (used when auth_mode: "vertex_ai")
@@ -181,8 +182,31 @@ gemini:
   vertex_location: "us-central1"
   # Optional explicit path; otherwise use env GOOGLE_APPLICATION_CREDENTIALS
   vertex_credentials_path: ""
+  # Default fallback model used when a mode-specific model is not provided.
   model: "gemini-2.5-flash"
+  # Optional split-model setup for cost/perf tuning:
+  # - compare_model: text-based triplet judge
+  # - chat_timed_model: timed labels generation from video
+  compare_model: "gemini-2.5-flash"
+  chat_timed_model: "gemini-3.1-pro-preview"
+  compare_fallback_model: "gemini-2.5-pro"
+  chat_timed_fallback_model: "gemini-2.5-pro"
   temperature: 0.0
+  compare_temperature: 0.0
+  timed_labels_temperature: 0.1
+  # Optional system instructions overrides.
+  # compare_system_instruction_text is used in triplet compare stage.
+  # timed_labels_system_instruction_text is used in chat timed generation stage.
+  compare_system_instruction_text: ""
+  timed_labels_system_instruction_text: ""
+  # Context pack (manual transfer from Gemini chat history).
+  # `context_file` is shared by both stages, while *_context_file is stage-specific.
+  context_file: "prompts/atlas_vertex_context_pack.txt"
+  context_text: ""
+  compare_context_file: ""
+  compare_context_text: ""
+  timed_labels_context_file: ""
+  timed_labels_context_text: ""
   max_retries: 3
   retry_base_delay_sec: 2.0
   connect_timeout_sec: 30

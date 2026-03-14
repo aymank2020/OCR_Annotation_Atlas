@@ -62,6 +62,48 @@ def _read_secret(name: str, dotenv: Dict[str, str]) -> str:
     return str(dotenv.get(name, "") or "").strip()
 
 
+def _first_non_empty(*values: Any) -> str:
+    for value in values:
+        text = str(value or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def _join_text_blocks(*values: Any) -> str:
+    out: List[str] = []
+    for value in values:
+        text = str(value or "").strip()
+        if text:
+            out.append(text)
+    return "\n\n".join(out).strip()
+
+
+def _read_optional_text_file(path_value: Any, *, base_dir: Path) -> str:
+    raw = str(path_value or "").strip()
+    if not raw:
+        return ""
+    path = Path(raw)
+    if not path.is_absolute():
+        path = (base_dir / path).resolve()
+    if not path.exists() or not path.is_file():
+        return ""
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except Exception:
+        return ""
+
+
+def _build_prompt_context(gem_cfg: Dict[str, Any], *, cfg_dir: Path, scope: str) -> str:
+    scope_norm = str(scope or "").strip().lower()
+    return _join_text_blocks(
+        gem_cfg.get("context_text", ""),
+        _read_optional_text_file(gem_cfg.get("context_file", ""), base_dir=cfg_dir),
+        gem_cfg.get(f"{scope_norm}_context_text", ""),
+        _read_optional_text_file(gem_cfg.get(f"{scope_norm}_context_file", ""), base_dir=cfg_dir),
+    )
+
+
 def _normalize_auth_mode(raw: str) -> str:
     mode = str(raw or "").strip().lower()
     aliases = {
@@ -866,9 +908,17 @@ def _call_gemini_compare(
     }
 
 
-def _build_timed_labels_prompt(episode_id: str = "") -> str:
+def _build_timed_labels_prompt(episode_id: str = "", context_text: str = "") -> str:
     eid = str(episode_id or "").strip()
     eid_line = f"Episode ID: {eid}\n" if eid else ""
+    context_block = ""
+    context_clean = str(context_text or "").strip()
+    if context_clean:
+        context_block = f"""
+6) Apply project-specific context below exactly:
+[Project Context]
+{context_clean}
+""".strip()
     return f"""
 You are generating Atlas timed action labels from the attached video.
 {eid_line}Rules:
@@ -882,6 +932,65 @@ You are generating Atlas timed action labels from the attached video.
 3) Keep timestamps in seconds.
 4) Ensure segments are chronological and non-overlapping.
 5) Use "No Action" only when there is clearly no relevant action.
+{context_block}
+""".strip()
+
+
+def _build_triplet_compare_prompt(
+    *,
+    tier2_text: str,
+    api_text: str,
+    chat_text: str,
+    task_state_text: str,
+    context_text: str = "",
+) -> str:
+    context_block = ""
+    context_clean = str(context_text or "").strip()
+    if context_clean:
+        context_block = f"""
+[Project Context]
+{context_clean}
+""".strip()
+    return f"""
+You are a strict Atlas annotation QA judge.
+Use attached videos as source of truth.
+
+Compare exactly 3 candidate solutions:
+1) Tier2 (employee draft)
+2) Gemini API (3.1 pro style)
+3) Gemini Chat (3.1 pro style)
+
+Decide which solution is best and safest (least hallucination).
+If all are bad, choose "none".
+
+Return ONLY valid JSON with this shape:
+{{
+  "winner": "tier2|api|chat|none",
+  "submit_safe_solution": "tier2|api|chat|none",
+  "scores": {{"tier2": 0, "api": 0, "chat": 0}},
+  "hallucination": {{"tier2": false, "api": false, "chat": false}},
+  "major_issues": {{
+    "tier2": [],
+    "api": [],
+    "chat": []
+  }},
+  "best_reason_short": "",
+  "final_recommendation": ""
+}}
+
+{context_block}
+
+[Tier2]
+{tier2_text}
+
+[Gemini API]
+{api_text}
+
+[Gemini Chat]
+{chat_text}
+
+[Task State Optional]
+{task_state_text}
 """.strip()
 
 
@@ -903,6 +1012,7 @@ def generate_gemini_chat_timed_labels(
     cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
     if not isinstance(cfg, dict):
         raise RuntimeError("Config root must be a YAML object.")
+    cfg_dir = cfg_path.parent.resolve()
 
     dotenv = _load_dotenv(Path(".env"))
     resolved_remote = str(remote or os.environ.get("RCLONE_REMOTE", "gdrive")).strip() or "gdrive"
@@ -914,13 +1024,33 @@ def generate_gemini_chat_timed_labels(
     if str(video_path_limit or "").strip():
         video_limit = _resolve_input_path(video_path_limit, cache_root / "inputs", resolved_remote)
 
-    prompt = _build_timed_labels_prompt(episode_id=episode_id)
     gem_cfg = cfg.get("gemini", {}) if isinstance(cfg.get("gemini"), dict) else {}
-    selected_model = str(model or "").strip() or str(gem_cfg.get("model", "gemini-3.1-pro-preview") or "").strip()
-    fallback_model = str(gem_cfg.get("triplet_fallback_model", "gemini-2.5-pro") or "").strip()
+    prompt_context = _build_prompt_context(gem_cfg, cfg_dir=cfg_dir, scope="timed_labels")
+    prompt = _build_timed_labels_prompt(episode_id=episode_id, context_text=prompt_context)
+
+    selected_model = _first_non_empty(
+        model,
+        gem_cfg.get("chat_timed_model", ""),
+        gem_cfg.get("timed_labels_model", ""),
+        gem_cfg.get("model", "gemini-3.1-pro-preview"),
+    )
+    fallback_model = _first_non_empty(
+        gem_cfg.get("chat_timed_fallback_model", ""),
+        gem_cfg.get("timed_labels_fallback_model", ""),
+        gem_cfg.get("triplet_fallback_model", "gemini-2.5-pro"),
+    )
 
     cfg_for_call = dict(cfg)
     cfg_gem = dict(gem_cfg) if isinstance(gem_cfg, dict) else {}
+    timed_temp = gem_cfg.get("timed_labels_temperature", gem_cfg.get("chat_timed_temperature", None))
+    if timed_temp is not None:
+        cfg_gem["temperature"] = timed_temp
+    timed_system_instruction = _first_non_empty(
+        gem_cfg.get("timed_labels_system_instruction_text", ""),
+        gem_cfg.get("chat_timed_system_instruction_text", ""),
+    )
+    if timed_system_instruction:
+        cfg_gem["system_instruction_text"] = timed_system_instruction
     # For chat_web mode: allow secondary attach so upload_opt can be used automatically.
     cfg_gem["chat_web_attach_secondary_video"] = True
     cfg_for_call["gemini"] = cfg_gem
@@ -1069,6 +1199,7 @@ def run_triplet_compare(
     cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
     if not isinstance(cfg, dict):
         raise RuntimeError("Config root must be a YAML object.")
+    cfg_dir = cfg_path.parent.resolve()
 
     dotenv = _load_dotenv(Path(".env"))
     resolved_remote = str(remote or os.environ.get("RCLONE_REMOTE", "gdrive")).strip() or "gdrive"
@@ -1100,52 +1231,40 @@ def run_triplet_compare(
     chat_text = _load_text_or_json(chat_file) if chat_file else ""
     task_state_text = _load_text_or_json(task_state_file) if task_state_file else ""
 
-    selected_model = str(model or "").strip() or str(
-        ((cfg.get("gemini", {}) if isinstance(cfg.get("gemini"), dict) else {}).get("model", "gemini-3.1-pro-preview"))
-    ).strip()
     gem_cfg = cfg.get("gemini", {}) if isinstance(cfg.get("gemini"), dict) else {}
-    fallback_model = str(gem_cfg.get("triplet_fallback_model", "gemini-2.5-pro") or "").strip()
+    selected_model = _first_non_empty(
+        model,
+        gem_cfg.get("compare_model", ""),
+        gem_cfg.get("triplet_compare_model", ""),
+        gem_cfg.get("model", "gemini-3.1-pro-preview"),
+    )
+    fallback_model = _first_non_empty(
+        gem_cfg.get("compare_fallback_model", ""),
+        gem_cfg.get("triplet_compare_fallback_model", ""),
+        gem_cfg.get("triplet_fallback_model", "gemini-2.5-pro"),
+    )
     retry_attempts = max(1, int(gem_cfg.get("triplet_retry_attempts", 3) or 3))
+    prompt_context = _build_prompt_context(gem_cfg, cfg_dir=cfg_dir, scope="compare")
+    prompt = _build_triplet_compare_prompt(
+        tier2_text=tier2_text,
+        api_text=api_text,
+        chat_text=chat_text,
+        task_state_text=task_state_text,
+        context_text=prompt_context,
+    )
 
-    prompt = f"""
-You are a strict Atlas annotation QA judge.
-Use attached videos as source of truth.
-
-Compare exactly 3 candidate solutions:
-1) Tier2 (employee draft)
-2) Gemini API (3.1 pro style)
-3) Gemini Chat (3.1 pro style)
-
-Decide which solution is best and safest (least hallucination).
-If all are bad, choose "none".
-
-Return ONLY valid JSON with this shape:
-{{
-  "winner": "tier2|api|chat|none",
-  "submit_safe_solution": "tier2|api|chat|none",
-  "scores": {{"tier2": 0, "api": 0, "chat": 0}},
-  "hallucination": {{"tier2": false, "api": false, "chat": false}},
-  "major_issues": {{
-    "tier2": [],
-    "api": [],
-    "chat": []
-  }},
-  "best_reason_short": "",
-  "final_recommendation": ""
-}}
-
-[Tier2]
-{tier2_text}
-
-[Gemini API]
-{api_text}
-
-[Gemini Chat]
-{chat_text}
-
-[Task State Optional]
-{task_state_text}
-""".strip()
+    cfg_for_call = dict(cfg)
+    cfg_gem = dict(gem_cfg) if isinstance(gem_cfg, dict) else {}
+    compare_temp = gem_cfg.get("compare_temperature", gem_cfg.get("triplet_compare_temperature", None))
+    if compare_temp is not None:
+        cfg_gem["temperature"] = compare_temp
+    compare_system_instruction = _first_non_empty(
+        gem_cfg.get("compare_system_instruction_text", ""),
+        gem_cfg.get("triplet_compare_system_instruction_text", ""),
+    )
+    if compare_system_instruction:
+        cfg_gem["system_instruction_text"] = compare_system_instruction
+    cfg_for_call["gemini"] = cfg_gem
 
     # Robust execution strategy:
     # 1) retry transient HTTP failures
@@ -1167,7 +1286,7 @@ Return ONLY valid JSON with this shape:
                 current_video_a = video_main if use_video else None
                 current_video_b = video_limit if use_video else None
                 result = _call_gemini_compare(
-                    cfg=cfg,
+                    cfg=cfg_for_call,
                     dotenv=dotenv,
                     model=model_name,
                     prompt=prompt,
