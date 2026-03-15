@@ -1551,8 +1551,25 @@ function asWidth(v) {
   return Math.max(0, Math.min(100, Number(v)));
 }
 
+function costSourceLabel(src) {
+  const key = String(src || "none").trim();
+  if (key === "gemini_usage_jsonl") {
+    return "gemini_usage.jsonl (primary)";
+  }
+  if (key === "payload_usage_fallback") {
+    return "payload usage fallback (triplet/chat json)";
+  }
+  if (key === "episode_total_fallback") {
+    return "episode total fallback (review index / episode_meta)";
+  }
+  return "none";
+}
+
 // Data coverage notice
 const coverageMsgs = [];
+const usageSource = (DATA.coverage && DATA.coverage.usage_source) ? DATA.coverage.usage_source : "none";
+const usageSourceHuman = costSourceLabel(usageSource);
+coverageMsgs.push(`Cost source: ${usageSourceHuman} | مصدر بيانات التكلفة: ${usageSourceHuman}`);
 if (!DATA.coverage.has_task_state) {
   coverageMsgs.push("Episode status source not found (.task_state, runs/*/matched_outputs/task_state_*.json, or episodes_review_index.json) | مصدر حالة الحلقات غير موجود");
 }
@@ -1594,6 +1611,12 @@ const sources = [
 ];
 cPanel.innerHTML = `
   <div class="completeness-title">Data Completeness | اكتمال البيانات (${asPercentOrNA(c.completeness_pct)})</div>
+  <div class="completeness-row">
+    <div class="completeness-label">
+      <span>Cost Source | مصدر التكلفة</span>
+      <span>${usageSourceHuman}</span>
+    </div>
+  </div>
   ${sources.map(src => {
     const ok = !!sAvail[src.key];
     const pct = ok ? 100 : 0;
@@ -1617,7 +1640,7 @@ const kpis = [
   {
     label: "Total Cost (USD) | إجمالي التكلفة",
     value: "$" + DATA.cost.total_cost_usd.toFixed(4),
-    sub: DATA.cost.total_requests + " requests | طلب",
+    sub: DATA.cost.total_requests + " requests | طلب" + " | source: " + usageSourceHuman,
     color: "#00e5c8"
   },
   {
