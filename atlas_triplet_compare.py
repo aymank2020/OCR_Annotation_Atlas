@@ -70,6 +70,85 @@ def _first_non_empty(*values: Any) -> str:
     return ""
 
 
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return default
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return default
+
+
+def _resolve_usage_log_path(cfg: Dict[str, Any]) -> Path:
+    run_cfg = cfg.get("run", {}) if isinstance(cfg.get("run"), dict) else {}
+    gem_cfg = cfg.get("gemini", {}) if isinstance(cfg.get("gemini"), dict) else {}
+    out_dir_raw = str(run_cfg.get("output_dir", "outputs") or "outputs").strip() or "outputs"
+    usage_name = str(gem_cfg.get("usage_log_file", "gemini_usage.jsonl") or "gemini_usage.jsonl").strip() or "gemini_usage.jsonl"
+    out_dir = Path(out_dir_raw)
+    if not out_dir.is_absolute():
+        out_dir = (Path.cwd() / out_dir).resolve()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    return out_dir / usage_name
+
+
+def _log_gemini_usage(
+    cfg: Dict[str, Any],
+    *,
+    model: str,
+    mode: str,
+    usage_meta: Dict[str, Any],
+    key_source: str,
+) -> None:
+    if not isinstance(usage_meta, dict):
+        return
+
+    prompt_tokens = _safe_int(
+        usage_meta.get("promptTokenCount", usage_meta.get("prompt_tokens", 0)),
+        0,
+    )
+    output_tokens = _safe_int(
+        usage_meta.get("candidatesTokenCount", usage_meta.get("output_tokens", 0)),
+        0,
+    )
+    total_tokens = _safe_int(
+        usage_meta.get("totalTokenCount", usage_meta.get("total_tokens", 0)),
+        0,
+    )
+    if total_tokens <= 0:
+        total_tokens = max(0, prompt_tokens + output_tokens)
+    if prompt_tokens <= 0 and output_tokens <= 0 and total_tokens <= 0:
+        return
+
+    gem_cfg = cfg.get("gemini", {}) if isinstance(cfg.get("gemini"), dict) else {}
+    in_price = _safe_float(gem_cfg.get("price_input_per_million", 0.30), 0.30)
+    out_price = _safe_float(gem_cfg.get("price_output_per_million", 2.50), 2.50)
+    est_cost = (prompt_tokens / 1_000_000.0) * in_price + (output_tokens / 1_000_000.0) * out_price
+
+    row = {
+        "ts_utc": datetime.now(timezone.utc).isoformat(),
+        "model": str(model or "").strip(),
+        "mode": str(mode or "").strip() or "triplet_compare",
+        "key_source": str(key_source or "").strip() or "unknown",
+        "prompt_tokens": prompt_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": total_tokens,
+        "estimated_cost_usd": round(est_cost, 8),
+    }
+
+    usage_log_path = _resolve_usage_log_path(cfg)
+    try:
+        with usage_log_path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    except Exception:
+        # Cost logging should not break the main workflow.
+        return
+
+
 def _join_text_blocks(*values: Any) -> str:
     out: List[str] = []
     for value in values:
@@ -951,6 +1030,7 @@ def _call_gemini_compare(
     video_b: Optional[Path],
     cache_dir: Path,
     response_schema: Optional[Dict[str, Any]] = None,
+    usage_mode: str = "triplet_compare",
 ) -> Dict[str, Any]:
     gem = cfg.get("gemini", {}) if isinstance(cfg.get("gemini"), dict) else {}
     auth_mode = _normalize_auth_mode(gem.get("auth_mode", "api_key"))
@@ -1071,6 +1151,14 @@ def _call_gemini_compare(
     if resp.status_code != 200:
         raise RuntimeError(f"Gemini compare request failed HTTP {resp.status_code}: {resp.text[:800]}")
     data = resp.json()
+    usage_meta = data.get("usageMetadata", {}) if isinstance(data, dict) else {}
+    _log_gemini_usage(
+        cfg,
+        model=model,
+        mode=usage_mode,
+        usage_meta=usage_meta,
+        key_source=auth_mode,
+    )
     text = _extract_text_from_response_json(data)
     if not text:
         raise RuntimeError("Gemini compare returned empty text response.")
@@ -1082,7 +1170,7 @@ def _call_gemini_compare(
         "parsed": parsed,
         "raw_text": text,
         "attach_notes": attach_notes,
-        "usage": data.get("usageMetadata", {}) if isinstance(data, dict) else {},
+        "usage": usage_meta,
     }
 
 
@@ -1295,6 +1383,7 @@ def generate_gemini_chat_timed_labels(
                     video_b=video_limit,
                     cache_dir=cache_root / "video_inline",
                     response_schema=timed_response_schema,
+                    usage_mode=f"timed_labels:{scope}",
                 )
                 used_model = model_name
                 notes = result.get("attach_notes", [])
@@ -1312,6 +1401,7 @@ def generate_gemini_chat_timed_labels(
                         video_b=None,
                         cache_dir=cache_root / "video_inline",
                         response_schema=timed_response_schema,
+                        usage_mode=f"timed_labels:{scope}",
                     )
                     retry_notes = retry.get("attach_notes", [])
                     if isinstance(retry_notes, list):
@@ -1356,6 +1446,7 @@ def generate_gemini_chat_timed_labels(
                             video_b=None,
                             cache_dir=cache_root / "video_inline",
                             response_schema=timed_response_schema,
+                            usage_mode=f"timed_labels:{scope}",
                         )
                         retry_notes = retry.get("attach_notes", [])
                         if isinstance(retry_notes, list):
@@ -1405,6 +1496,7 @@ def generate_gemini_chat_timed_labels(
                     "model": used_model,
                     "segments": segments,
                     "attach_notes": [*(result.get("attach_notes", []) if isinstance(result.get("attach_notes"), list) else []), *run_notes],
+                    "usage": result.get("usage", {}) if isinstance(result.get("usage"), dict) else {},
                     "raw_text": raw_text,
                 },
                 ensure_ascii=False,
@@ -1420,6 +1512,7 @@ def generate_gemini_chat_timed_labels(
         "out_txt": str(out_txt_path),
         "out_json": str(out_json_path) if out_json_path else "",
         "attach_notes": [*(result.get("attach_notes", []) if isinstance(result.get("attach_notes"), list) else []), *run_notes],
+        "usage": result.get("usage", {}) if isinstance(result.get("usage"), dict) else {},
     }
 
 
@@ -1562,6 +1655,7 @@ def run_triplet_compare(
                     video_b=current_video_b,
                     cache_dir=cache_root / "video_inline",
                     response_schema=compare_response_schema,
+                    usage_mode="triplet_compare",
                 )
                 used_model = model_name
                 if not use_video:

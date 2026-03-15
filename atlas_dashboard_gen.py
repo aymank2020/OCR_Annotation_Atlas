@@ -1910,7 +1910,8 @@ def generate_dashboard(outputs_dir: Path, open_browser: bool = False) -> Path:
     print(f"[dashboard] saved: {out_path}")
 
     if open_browser:
-        webbrowser.open(out_path.as_uri())
+        # as_uri() requires an absolute path on Windows.
+        webbrowser.open(out_path.resolve().as_uri())
 
     return out_path
 
