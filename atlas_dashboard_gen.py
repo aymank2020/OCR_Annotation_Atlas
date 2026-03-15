@@ -29,7 +29,7 @@ import webbrowser
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -61,6 +61,67 @@ def _load_json(path: Path, default: Any = None) -> Any:
         return default
 
 
+def _to_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return default
+
+
+def _to_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return default
+
+
+def _estimate_cost_usd(prompt_tokens: int, output_tokens: int) -> float:
+    # Keep same defaults used by runtime logging to keep dashboard consistent.
+    in_price = 0.30
+    out_price = 2.50
+    return (prompt_tokens / 1_000_000.0) * in_price + (output_tokens / 1_000_000.0) * out_price
+
+
+def _usage_row_from_payload(
+    payload: Dict[str, Any],
+    *,
+    default_mode: str,
+    default_ts: str,
+    default_model: str = "unknown",
+) -> Optional[Dict[str, Any]]:
+    if not isinstance(payload, dict):
+        return None
+    usage = payload.get("usage")
+    if not isinstance(usage, dict):
+        return None
+
+    prompt = _to_int(usage.get("promptTokenCount", usage.get("prompt_tokens", 0)), 0)
+    output = _to_int(usage.get("candidatesTokenCount", usage.get("output_tokens", 0)), 0)
+    total = _to_int(usage.get("totalTokenCount", usage.get("total_tokens", 0)), 0)
+    if total <= 0:
+        total = max(0, prompt + output)
+
+    est = _to_float(usage.get("estimated_cost_usd", 0.0), 0.0)
+    if est <= 0 and (prompt > 0 or output > 0):
+        est = _estimate_cost_usd(prompt, output)
+
+    if est <= 0 and prompt <= 0 and output <= 0 and total <= 0:
+        return None
+
+    ts = str(payload.get("generated_at_utc", "") or "").strip() or default_ts
+    model = str(payload.get("model", "") or "").strip() or default_model
+    return {
+        "ts_utc": ts,
+        "model": model,
+        "mode": default_mode,
+        "key_source": "fallback",
+        "prompt_tokens": prompt,
+        "output_tokens": output,
+        "total_tokens": total,
+        "estimated_cost_usd": round(est, 8),
+    }
+
+
 EPISODE_ID_PATTERN = re.compile(r"([0-9a-f]{24})", re.IGNORECASE)
 
 
@@ -89,8 +150,113 @@ def _merge_state_dicts(items: List[Dict[str, Any]]) -> Dict[str, Any]:
     return merged
 
 
-def load_usage(outputs_dir: Path) -> List[Dict[str, Any]]:
-    return _load_jsonl(outputs_dir / "gemini_usage.jsonl")
+def _load_usage_from_payload_files(outputs_dir: Path) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    # Triplet compare payloads
+    for f in sorted((outputs_dir / "triplet_compare").glob("*.json")):
+        payload = _load_json(f, default={})
+        default_ts = datetime.fromtimestamp(f.stat().st_mtime, tz=timezone.utc).isoformat()
+        row = _usage_row_from_payload(payload, default_mode="triplet_compare", default_ts=default_ts)
+        if row:
+            rows.append(row)
+
+    # Chat timed labels payloads
+    for f in sorted((outputs_dir / "chat_reviews").rglob("labels_*_chat.json")):
+        payload = _load_json(f, default={})
+        default_ts = datetime.fromtimestamp(f.stat().st_mtime, tz=timezone.utc).isoformat()
+        row = _usage_row_from_payload(payload, default_mode="timed_labels:chat", default_ts=default_ts)
+        if row:
+            rows.append(row)
+
+    # Vertex chat timed labels payloads
+    for f in sorted((outputs_dir / "vertex_chat_reviews").rglob("labels_*_vertex_chat.json")):
+        payload = _load_json(f, default={})
+        default_ts = datetime.fromtimestamp(f.stat().st_mtime, tz=timezone.utc).isoformat()
+        row = _usage_row_from_payload(payload, default_mode="timed_labels:vertex_chat", default_ts=default_ts)
+        if row:
+            rows.append(row)
+    return rows
+
+
+def _load_usage_from_episode_totals(outputs_dir: Path, review_index: Dict[str, Any]) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    by_episode: Dict[str, Dict[str, Any]] = {}
+
+    generated_ts = str(review_index.get("generated_at_utc", "") or "").strip()
+    episodes = review_index.get("episodes")
+    if isinstance(episodes, list):
+        for ep in episodes:
+            if not isinstance(ep, dict):
+                continue
+            eid = str(ep.get("episode_id", "") or "").strip().lower()
+            if not eid:
+                continue
+            cost = _to_float(ep.get("total_cost_usd", 0.0), 0.0)
+            if cost <= 0:
+                continue
+            ts = str(
+                ep.get("updated_at_utc")
+                or ep.get("generated_at_utc")
+                or generated_ts
+                or ""
+            ).strip()
+            by_episode[eid] = {
+                "ts_utc": ts or datetime.now(timezone.utc).isoformat(),
+                "model": "episode_total",
+                "mode": "episode_total",
+                "key_source": "fallback",
+                "prompt_tokens": 0,
+                "output_tokens": 0,
+                "total_tokens": 0,
+                "estimated_cost_usd": round(cost, 8),
+            }
+
+    # Backfill from chat episode meta files when review index doesn't have a positive cost.
+    for f in sorted((outputs_dir / "chat_reviews").rglob("episode_meta.json")):
+        payload = _load_json(f, default={})
+        if not isinstance(payload, dict):
+            continue
+        eid = str(payload.get("episode_id", "") or "").strip().lower()
+        if not eid:
+            eid = _extract_episode_id(str(f)) or ""
+        if not eid or eid in by_episode:
+            continue
+        cost = _to_float(payload.get("total_cost_usd", 0.0), 0.0)
+        if cost <= 0:
+            continue
+        ts = str(payload.get("generated_at_utc", "") or "").strip()
+        if not ts:
+            ts = datetime.fromtimestamp(f.stat().st_mtime, tz=timezone.utc).isoformat()
+        by_episode[eid] = {
+            "ts_utc": ts,
+            "model": "episode_total",
+            "mode": "episode_total",
+            "key_source": "fallback",
+            "prompt_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0,
+            "estimated_cost_usd": round(cost, 8),
+        }
+
+    rows.extend(by_episode.values())
+    return rows
+
+
+def load_usage(outputs_dir: Path, review_index: Optional[Dict[str, Any]] = None) -> Tuple[List[Dict[str, Any]], str]:
+    primary = _load_jsonl(outputs_dir / "gemini_usage.jsonl")
+    if primary:
+        return primary, "gemini_usage_jsonl"
+
+    review_index = review_index if isinstance(review_index, dict) else {}
+    payload_rows = _load_usage_from_payload_files(outputs_dir)
+    if payload_rows:
+        return payload_rows, "payload_usage_fallback"
+
+    episode_rows = _load_usage_from_episode_totals(outputs_dir, review_index)
+    if episode_rows:
+        return episode_rows, "episode_total_fallback"
+
+    return [], "none"
 
 
 def load_review_index(outputs_dir: Path) -> Dict[str, Any]:
@@ -1795,13 +1961,13 @@ def generate_dashboard(outputs_dir: Path, open_browser: bool = False) -> Path:
     print(f"[dashboard] reading outputs from: {outputs_dir}")
     outputs_dir.mkdir(parents=True, exist_ok=True)
 
-    usage = load_usage(outputs_dir)
+    review_index = load_review_index(outputs_dir)
+    usage, usage_source = load_usage(outputs_dir, review_index=review_index)
     states = load_task_states(outputs_dir)
     transitions = load_transitions(outputs_dir)
     lessons = load_lessons(outputs_dir)
     whatsapp_notes = load_whatsapp_notes(outputs_dir)
     discord_notes = load_discord_notes(outputs_dir)
-    review_index = load_review_index(outputs_dir)
     chat_evaluations = load_chat_evaluations(outputs_dir)
 
     task_state_candidates = [
@@ -1848,12 +2014,14 @@ def generate_dashboard(outputs_dir: Path, open_browser: bool = False) -> Path:
         "has_live_transitions": has_live_transitions,
         "has_runs_transition_files": has_runs_transition_files,
         "has_review_index": has_review_index,
+        "usage_source": usage_source,
         "source_rows": source_rows,
         "source_available": source_available,
         "completeness_pct": completeness_pct,
     }
 
-    print(f"[dashboard] usage_rows={len(usage)} task_states={len(states)} "
+    print(f"[dashboard] usage_rows={len(usage)} usage_source={usage_source} "
+          f"task_states={len(states)} "
           f"transitions={len(transitions)} lessons={len(lessons)} "
           f"chat_evals={len(chat_evaluations)} "
           f"whatsapp_notes={len(whatsapp_notes)} discord_notes={len(discord_notes)}")
